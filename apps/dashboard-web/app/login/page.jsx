@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { API_BASE_URL, getToken, saveSession } from "../../lib/api";
 
@@ -54,6 +55,7 @@ export default function Login() {
         <input className="input mt-2" value={password} onChange={e => setPassword(e.target.value)} type="password" required />
 
         <button className="btn mt-6 w-full" disabled={loading}>{loading ? "Signing in..." : "Sign in"}</button>
+        <Link href="/admin/login" className="mt-4 block text-center text-sm text-zinc-500 hover:text-white">Admin login</Link>
       </form>
     </main>
   );

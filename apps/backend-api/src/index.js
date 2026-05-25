@@ -61,6 +61,7 @@ app.get("/health", async (_, res) => {
 });
 
 app.use("/auth", require("./routes/auth"));
+app.use("/admin", require("./routes/admin"));
 app.use("/campaigns", require("./routes/campaigns"));
 app.use("/playbooks", require("./routes/playbooks"));
 app.use("/analytics", require("./routes/analytics"));

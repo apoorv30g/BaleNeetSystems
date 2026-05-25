@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { BarChart3, Bot, FileUp, LayoutDashboard, LogOut, Menu, PhoneCall, ShieldCheck, X } from "lucide-react";
+import { BarChart3, Bot, FileUp, LayoutDashboard, LogOut, Menu, PhoneCall, Settings, ShieldCheck, X } from "lucide-react";
 import { clearSession, getToken, getUser } from "../lib/api";
 
-const nav = [
+const baseNav = [
   ["Dashboard", "/", LayoutDashboard],
   ["Campaigns", "/campaigns", PhoneCall],
   ["Playbooks", "/playbooks", Bot],
@@ -41,6 +41,8 @@ export default function Shell({ children }) {
   if (!ready) {
     return <div className="flex min-h-screen items-center justify-center bg-[#05070b] text-sm text-zinc-400">Loading console...</div>;
   }
+
+  const nav = user?.role === "admin" ? [...baseNav, ["Admin", "/admin", Settings]] : baseNav;
 
   const sidebar = (
     <>

@@ -20,4 +20,23 @@ router.post("/login", async (req, res) => {
   });
 });
 
+router.post("/admin-login", async (req, res) => {
+  const { email, password } = req.body;
+  const result = await query(`SELECT * FROM users WHERE email=$1`, [email]);
+  const user = result.rows[0];
+
+  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  if (user.role !== "admin") {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+
+  res.json({
+    token: signToken(user),
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, tenantId: user.tenant_id }
+  });
+});
+
 module.exports = router;
