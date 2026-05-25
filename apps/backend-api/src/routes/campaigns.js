@@ -87,8 +87,7 @@ router.put("/:campaignId", async (req, res) => {
        daily_limit=COALESCE($5,daily_limit),
        max_attempts=COALESCE($6,max_attempts),
        language=COALESCE($7,language),
-       status=COALESCE($8,status),
-       updated_at=NOW()
+       status=COALESCE($8,status)
      WHERE id=$9 AND tenant_id=$10
      RETURNING *`,
     [name, description, campaignType, playbookType, dailyLimit, maxAttempts, language, status, req.params.campaignId, req.user.tenantId]
@@ -154,6 +153,8 @@ router.post("/:campaignId/queue-calls", async (req, res) => {
   );
 
   let queued = 0, blocked = 0;
+  const jobs = [];
+  const queuedLeadIds = [];
 
   for (const lead of leads.rows) {
     if (await isDnc(req.user.tenantId, lead.phone)) {
@@ -162,24 +163,28 @@ router.post("/:campaignId/queue-calls", async (req, res) => {
       continue;
     }
 
-    await callQueue.add(
-      "call-lead",
-      {
+    jobs.push({
+      name: "call-lead",
+      data: {
         tenantId: req.user.tenantId,
         campaignId: req.params.campaignId,
         leadId: lead.id
       },
-      {
+      opts: {
         jobId: `lead-call:${req.user.tenantId}:${req.params.campaignId}:${lead.id}`,
         attempts: settings.maxCallAttempts,
         backoff: { type: "fixed", delay: settings.retryDelayMinutes * 60 * 1000 },
         removeOnComplete: 1000,
         removeOnFail: 5000
       }
-    );
+    });
+    queuedLeadIds.push(lead.id);
+  }
 
-    await query(`UPDATE leads SET status='queued' WHERE id=$1`, [lead.id]);
-    queued++;
+  if (jobs.length) {
+    await callQueue.addBulk(jobs);
+    await query(`UPDATE leads SET status='queued' WHERE id = ANY($1::uuid[])`, [queuedLeadIds]);
+    queued = jobs.length;
   }
 
   await query(`UPDATE campaigns SET status='active' WHERE id=$1`, [req.params.campaignId]);
@@ -218,7 +223,7 @@ router.post("/:campaignId/clear-queue", async (req, res) => {
     );
   }
 
-  await query(`UPDATE campaigns SET status='paused', updated_at=NOW() WHERE id=$1 AND tenant_id=$2`, [req.params.campaignId, req.user.tenantId]);
+  await query(`UPDATE campaigns SET status='paused' WHERE id=$1 AND tenant_id=$2`, [req.params.campaignId, req.user.tenantId]);
 
   res.json({ ok: true, removedJobs, resetLeads: leadIds.size });
 });
