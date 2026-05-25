@@ -1,0 +1,7 @@
+{
+  "name": "loanconnect-playbook-ai",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ]
+}
