@@ -2,10 +2,15 @@ const { query } = require("../db/pool");
 const config = require("../config");
 
 async function getTenantSettings(tenantId) {
-  const result = await query(`SELECT * FROM tenant_settings WHERE tenant_id=$1`, [tenantId]);
-  if (result.rows[0]) return normalize(result.rows[0]);
+  try {
+    const result = await query(`SELECT * FROM tenant_settings WHERE tenant_id=$1`, [tenantId]);
+    if (result.rows[0]) return normalize(result.rows[0]);
 
-  await query(`INSERT INTO tenant_settings (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING`, [tenantId]);
+    await query(`INSERT INTO tenant_settings (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING`, [tenantId]);
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) throw err;
+  }
+
   return {
     tenantId,
     callWindowStart: config.callWindowStart,

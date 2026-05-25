@@ -14,6 +14,13 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 router.use(requireAuth);
 
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
+  ]);
+}
+
 router.get("/playbooks", async (req, res) => {
   const { PLAYBOOKS } = require("../services/playbooks");
   res.json(PLAYBOOKS);
@@ -87,8 +94,7 @@ router.put("/:campaignId", async (req, res) => {
        daily_limit=COALESCE($5,daily_limit),
        max_attempts=COALESCE($6,max_attempts),
        language=COALESCE($7,language),
-       status=COALESCE($8,status),
-       updated_at=NOW()
+       status=COALESCE($8,status)
      WHERE id=$9 AND tenant_id=$10
      RETURNING *`,
     [name, description, campaignType, playbookType, dailyLimit, maxAttempts, language, status, req.params.campaignId, req.user.tenantId]
@@ -144,52 +150,59 @@ router.post("/:campaignId/upload", upload.single("file"), async (req, res) => {
 });
 
 router.post("/:campaignId/queue-calls", async (req, res) => {
-  const settings = await getTenantSettings(req.user.tenantId);
-  const leads = await query(
-    `SELECT * FROM leads
-     WHERE tenant_id=$1 AND campaign_id=$2 AND status IN ('pending','failed')
-     AND attempt_count < $3
-     LIMIT 1000`,
-    [req.user.tenantId, req.params.campaignId, settings.maxCallAttempts]
-  );
+  try {
+    const settings = await getTenantSettings(req.user.tenantId);
+    const leads = await query(
+      `SELECT * FROM leads
+       WHERE tenant_id=$1 AND campaign_id=$2 AND status IN ('pending','failed')
+       AND attempt_count < $3
+       LIMIT 1000`,
+      [req.user.tenantId, req.params.campaignId, settings.maxCallAttempts]
+    );
 
-  let queued = 0, blocked = 0;
-  const jobs = [];
-  const queuedLeadIds = [];
+    let queued = 0, blocked = 0;
+    const jobs = [];
+    const queuedLeadIds = [];
 
-  for (const lead of leads.rows) {
-    if (await isDnc(req.user.tenantId, lead.phone)) {
-      await logCompliance({ tenantId: req.user.tenantId, leadId: lead.id, rule: "DNC", result: "blocked" });
-      blocked++;
-      continue;
+    for (const lead of leads.rows) {
+      if (await isDnc(req.user.tenantId, lead.phone)) {
+        try {
+          await logCompliance({ tenantId: req.user.tenantId, leadId: lead.id, rule: "DNC", result: "blocked" });
+        } catch {}
+        blocked++;
+        continue;
+      }
+
+      jobs.push({
+        name: "call-lead",
+        data: {
+          tenantId: req.user.tenantId,
+          campaignId: req.params.campaignId,
+          leadId: lead.id
+        },
+        opts: {
+          jobId: `lead-call:${req.user.tenantId}:${req.params.campaignId}:${lead.id}`,
+          attempts: settings.maxCallAttempts,
+          backoff: { type: "fixed", delay: settings.retryDelayMinutes * 60 * 1000 },
+          removeOnComplete: 1000,
+          removeOnFail: 5000
+        }
+      });
+      queuedLeadIds.push(lead.id);
     }
 
-    jobs.push({
-      name: "call-lead",
-      data: {
-        tenantId: req.user.tenantId,
-        campaignId: req.params.campaignId,
-        leadId: lead.id
-      },
-      opts: {
-        jobId: `lead-call:${req.user.tenantId}:${req.params.campaignId}:${lead.id}`,
-        attempts: settings.maxCallAttempts,
-        backoff: { type: "fixed", delay: settings.retryDelayMinutes * 60 * 1000 },
-        removeOnComplete: 1000,
-        removeOnFail: 5000
-      }
-    });
-    queuedLeadIds.push(lead.id);
-  }
+    if (jobs.length) {
+      await withTimeout(callQueue.addBulk(jobs), 10000, "Queue operation timed out");
+      await query(`UPDATE leads SET status='queued' WHERE id = ANY($1::uuid[])`, [queuedLeadIds]);
+      queued = jobs.length;
+    }
 
-  if (jobs.length) {
-    await callQueue.addBulk(jobs);
-    await query(`UPDATE leads SET status='queued' WHERE id = ANY($1::uuid[])`, [queuedLeadIds]);
-    queued = jobs.length;
+    await query(`UPDATE campaigns SET status='active' WHERE id=$1`, [req.params.campaignId]);
+    res.json({ queued, blocked });
+  } catch (err) {
+    console.error("queue-calls failed", err);
+    res.status(503).json({ error: "Queue calls failed", detail: err.message });
   }
-
-  await query(`UPDATE campaigns SET status='active' WHERE id=$1`, [req.params.campaignId]);
-  res.json({ queued, blocked });
 });
 
 router.post("/:campaignId/clear-queue", async (req, res) => {
