@@ -12,12 +12,12 @@ function required(name, fallback = "") {
   return value;
 }
 
-const frontendUrls = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || (isProduction ? "" : "http://localhost:3000"))
+const frontendUrls = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || (isProduction ? "https://app.baleneetsystems.in" : "http://localhost:3000"))
   .split(",")
   .map(url => url.trim())
   .filter(Boolean);
 
-const corsOriginSuffixes = (process.env.CORS_ORIGIN_SUFFIXES || "")
+const corsOriginSuffixes = (process.env.CORS_ORIGIN_SUFFIXES || ".baleneetsystems.in")
   .split(",")
   .map(suffix => suffix.trim().toLowerCase())
   .filter(Boolean);
