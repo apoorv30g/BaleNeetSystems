@@ -175,6 +175,21 @@ async function migrate() {
   `);
 
   await query(`
+    CREATE TABLE IF NOT EXISTS call_stt_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+      call_id UUID REFERENCES calls(id) ON DELETE SET NULL,
+      provider TEXT NOT NULL,
+      audio_url TEXT,
+      transcript TEXT,
+      confidence NUMERIC,
+      status TEXT DEFAULT 'completed',
+      error TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await query(`
     INSERT INTO tenant_settings (tenant_id)
     SELECT id FROM tenants
     ON CONFLICT (tenant_id) DO NOTHING;
@@ -185,6 +200,7 @@ async function migrate() {
   await query(`CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_dnc_phone ON dnc_list(tenant_id, phone);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_audio_expires ON call_audio_cache(expires_at);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_stt_call ON call_stt_events(call_id);`);
 
   console.log("Migration complete");
 }

@@ -2,6 +2,7 @@ const express = require("express");
 const { query } = require("../db/pool");
 const { generateReply } = require("../providers/gemini");
 const { synthesizeSpeech } = require("../providers/sarvam");
+const { transcribeAudioUrl } = require("../providers/deepgram");
 const { inferOutcome, isOptOut } = require("../services/outcomes");
 const { getTenantSettings } = require("../services/settings");
 const config = require("../config");
@@ -44,7 +45,7 @@ router.all("/exotel/respond", async (req, res) => {
   if (!lead) return res.type("text/xml").send(`<Response><Say>Lead not found.</Say></Response>`);
 
   const call = await latestCallForLead(lead.id);
-  const message = req.body.SpeechResult || req.body.speech || req.body.Digits || req.query.message || "";
+  const message = await resolveUserMessage(req, { lead, call });
 
   if (call && message) await addTranscript(call.id, "user", message);
 
@@ -76,6 +77,32 @@ router.all("/exotel/respond", async (req, res) => {
 
 router.get("/audio/:token", (req, res) => {
   serveAudio(req, res).catch(() => res.sendStatus(404));
+});
+
+router.get("/exotel/voicebot-health", (req, res) => {
+  res.json({
+    ok: true,
+    path: "/webhooks/exotel/voicebot",
+    wssUrl: `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`,
+    deepgramConfigured: Boolean(config.ai.deepgramApiKey),
+    sarvamConfigured: Boolean(config.ai.sarvamApiKey),
+    tokenRequired: Boolean(config.voicebotToken)
+  });
+});
+
+router.all("/exotel/passthru", async (req, res) => {
+  const callSid = req.body.CallSid || req.query.CallSid || req.body.Sid || req.query.Sid || "";
+  const callResult = callSid
+    ? await query(`SELECT * FROM calls WHERE call_sid=$1 ORDER BY created_at DESC LIMIT 1`, [callSid])
+    : { rows: [] };
+  const call = callResult.rows[0];
+  const escalate = ["DISPUTE", "CALLBACK", "WRONG_NUMBER"].includes(call?.outcome);
+
+  res.json({
+    escalate,
+    outcome: call?.outcome || "UNKNOWN",
+    callId: call?.id || null
+  });
 });
 
 async function serveAudio(req, res) {
@@ -112,6 +139,51 @@ async function addTranscript(callId, speaker, text) {
     `INSERT INTO transcripts (call_id, speaker, text) VALUES ($1,$2,$3)`,
     [callId, speaker, text]
   );
+}
+
+async function resolveUserMessage(req, { lead, call }) {
+  const directMessage = req.body.SpeechResult || req.body.speech || req.body.TranscriptionText || req.body.Digits || req.query.message || "";
+  if (directMessage) return String(directMessage).trim();
+
+  const audioUrl = req.body.RecordingUrl || req.body.RecordingURL || req.body.AudioUrl || req.body.AudioURL || req.query.audioUrl || "";
+  if (!audioUrl) return "";
+
+  try {
+    const result = await transcribeAudioUrl(audioUrl, { language: deepgramLanguage(lead.language) });
+    await logSttEvent({
+      tenantId: lead.tenant_id,
+      callId: call?.id,
+      audioUrl,
+      transcript: result.transcript,
+      confidence: result.confidence,
+      status: result.mode
+    });
+    return result.transcript || "";
+  } catch (err) {
+    await logSttEvent({
+      tenantId: lead.tenant_id,
+      callId: call?.id,
+      audioUrl,
+      status: "failed",
+      error: err.message
+    });
+    return "";
+  }
+}
+
+async function logSttEvent({ tenantId, callId, audioUrl, transcript = "", confidence = null, status, error = "" }) {
+  await query(
+    `INSERT INTO call_stt_events (tenant_id, call_id, provider, audio_url, transcript, confidence, status, error)
+     VALUES ($1,$2,'deepgram',$3,$4,$5,$6,$7)`,
+    [tenantId, callId || null, audioUrl || null, transcript, confidence, status, error || null]
+  );
+}
+
+function deepgramLanguage(language) {
+  const value = String(language || "").toLowerCase();
+  if (value.includes("hindi")) return "hi";
+  if (value.includes("english")) return "en";
+  return process.env.DEEPGRAM_LANGUAGE || "multi";
 }
 
 async function speechTag(text, callId) {

@@ -106,6 +106,8 @@ EXOTEL_API_BASE=https://api.in.exotel.com
 GEMINI_API_KEY=
 SARVAM_API_KEY=
 DEEPGRAM_API_KEY=
+DEEPGRAM_MODEL=nova-2
+DEEPGRAM_LANGUAGE=multi
 
 CALL_WINDOW_START=9
 CALL_WINDOW_END=20
@@ -116,6 +118,7 @@ CALL_RETRY_DELAY_MINUTES=360
 LOAN_APP_URL=https://yourapp.com/apply
 PAYMENT_LINK_BASE=https://yourapp.com/pay
 SUPPORT_PHONE=
+VOICEBOT_TOKEN=
 ```
 
 Optional notification webhooks can be configured from the dashboard Compliance page after login:
@@ -244,6 +247,38 @@ Answer webhook:
 https://your-backend-domain.com/webhooks/exotel/answer
 ```
 
+For the Exotel Voicebot applet, use this WSS URL:
+
+```txt
+wss://your-backend-domain.com/webhooks/exotel/voicebot
+```
+
+If you set `VOICEBOT_TOKEN`, include it in the WSS URL:
+
+```txt
+wss://your-backend-domain.com/webhooks/exotel/voicebot?token=your_shared_token
+```
+
+If your Exotel flow can pass dynamic parameters, prefer:
+
+```txt
+wss://your-backend-domain.com/webhooks/exotel/voicebot?token=your_shared_token&leadId=<leadId>&campaignId=<campaignId>
+```
+
+Enable recording in the applet. The WSS endpoint streams Exotel PCM audio into Deepgram live STT, sends final transcripts to Gemini, converts Sarvam output to 16-bit Linear PCM 8kHz mono via ffmpeg, and sends media back to Exotel.
+
+WSS health metadata:
+
+```txt
+https://your-backend-domain.com/webhooks/exotel/voicebot-health
+```
+
+Passthru endpoint to place after the Voicebot applet:
+
+```txt
+https://your-backend-domain.com/webhooks/exotel/passthru
+```
+
 The answer webhook now returns a gather/response loop and can serve short generated audio from:
 
 ```txt
@@ -256,7 +291,9 @@ Before live volume, place one test call through Exotel and confirm:
 
 - `Calls/connect.json` accepts the worker parameters in `apps/worker/src/exotel.js`
 - Exotel accepts the `<Gather input="speech dtmf">` response format
+- Voicebot applet connects successfully to `/webhooks/exotel/voicebot`
 - `SpeechResult` or equivalent speech payload reaches `/webhooks/exotel/respond`
+- If Exotel sends `RecordingUrl`, `RecordingURL`, `AudioUrl`, or `AudioURL` instead of speech text, Deepgram transcribes that audio and writes a `call_stt_events` row
 - Sarvam audio, if enabled, plays from `/webhooks/audio/:token`
 
 The worker triggers outbound calls through Exotel. Some Exotel accounts require slightly different call-flow parameters; adjust `apps/worker/src/exotel.js` after confirming with Exotel support.

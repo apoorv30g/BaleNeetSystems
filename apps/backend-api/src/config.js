@@ -33,6 +33,7 @@ module.exports = {
   loanAppUrl: process.env.LOAN_APP_URL || "https://yourapp.com/apply",
   paymentLinkBase: process.env.PAYMENT_LINK_BASE || "https://yourapp.com/pay",
   supportPhone: process.env.SUPPORT_PHONE || "",
+  voicebotToken: process.env.VOICEBOT_TOKEN || "",
   exotel: {
     accountSid: process.env.EXOTEL_ACCOUNT_SID,
     apiKey: process.env.EXOTEL_API_KEY,

@@ -1,11 +1,14 @@
+const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const config = require("./config");
 const { query } = require("./db/pool");
 const { redisClient } = require("./queue");
 const logger = require("./utils/logger");
+const { attachVoicebot } = require("./routes/voicebot");
 
 const app = express();
+const server = http.createServer(app);
 
 app.use(cors({
   origin(origin, callback) {
@@ -52,4 +55,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
-app.listen(config.port, () => logger.info("backend_started", { port: config.port }));
+attachVoicebot(server);
+
+server.listen(config.port, () => logger.info("backend_started", { port: config.port }));
