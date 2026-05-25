@@ -83,6 +83,22 @@ export default function CampaignDetail() {
     }
   }
 
+  async function clearQueue() {
+    if (!confirm("Remove queued calls for this campaign and reset queued leads to pending?")) return;
+    setError("");
+    setMessage("");
+    setLoading(true);
+    try {
+      const result = await apiFetch(`/campaigns/${campaignId}/clear-queue`, { method: "POST" });
+      setMessage(`Removed ${result.removedJobs} queued jobs. Reset ${result.resetLeads} leads.`);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function saveCampaign(e) {
     e.preventDefault();
     setError("");
@@ -125,6 +141,19 @@ export default function CampaignDetail() {
     }
   }
 
+  async function deleteLead(leadId) {
+    if (!confirm("Remove this lead from the campaign and queue?")) return;
+    setError("");
+    setMessage("");
+    try {
+      await apiFetch(`/campaigns/${campaignId}/leads/${leadId}`, { method: "DELETE" });
+      setMessage("Lead removed.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   const stats = [
     ["Leads", campaign?.lead_count || 0],
     ["Pending", campaign?.pending_count || 0],
@@ -143,6 +172,7 @@ export default function CampaignDetail() {
         </div>
         <div className="flex gap-2">
           <button onClick={() => setEditOpen(!editOpen)} className="btn-secondary">Edit</button>
+          <button onClick={clearQueue} className="btn-secondary" disabled={loading}>Clear Queue</button>
           <button onClick={queueCalls} className="btn" disabled={loading}>Queue Calls</button>
         </div>
       </div>
@@ -202,7 +232,10 @@ export default function CampaignDetail() {
                   <td>{lead.status}</td>
                   <td>{lead.attempt_count}</td>
                   <td className="pr-4 text-right">
-                    <button onClick={() => sendLink(lead.id, "sms")} className="btn-secondary">SMS</button>
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => sendLink(lead.id, "sms")} className="btn-secondary">SMS</button>
+                      <button onClick={() => deleteLead(lead.id)} className="btn-secondary">Remove</button>
+                    </div>
                   </td>
                 </tr>
               ))}

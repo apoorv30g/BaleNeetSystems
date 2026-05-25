@@ -170,6 +170,7 @@ router.post("/:campaignId/queue-calls", async (req, res) => {
         leadId: lead.id
       },
       {
+        jobId: `lead-call:${req.user.tenantId}:${req.params.campaignId}:${lead.id}`,
         attempts: settings.maxCallAttempts,
         backoff: { type: "fixed", delay: settings.retryDelayMinutes * 60 * 1000 },
         removeOnComplete: 1000,
@@ -183,6 +184,64 @@ router.post("/:campaignId/queue-calls", async (req, res) => {
 
   await query(`UPDATE campaigns SET status='active' WHERE id=$1`, [req.params.campaignId]);
   res.json({ queued, blocked });
+});
+
+router.post("/:campaignId/clear-queue", async (req, res) => {
+  const campaignResult = await query(
+    `SELECT id FROM campaigns WHERE id=$1 AND tenant_id=$2`,
+    [req.params.campaignId, req.user.tenantId]
+  );
+  if (!campaignResult.rows[0]) return res.status(404).json({ error: "Campaign not found" });
+
+  const queuedLeads = await query(
+    `SELECT id FROM leads WHERE tenant_id=$1 AND campaign_id=$2 AND status='queued'`,
+    [req.user.tenantId, req.params.campaignId]
+  );
+
+  const leadIds = new Set(queuedLeads.rows.map(row => row.id));
+  let removedJobs = 0;
+
+  for (const status of ["waiting", "delayed", "prioritized", "paused"]) {
+    const jobs = await callQueue.getJobs([status], 0, -1, false);
+    for (const job of jobs) {
+      if (job.data?.tenantId === req.user.tenantId && job.data?.campaignId === req.params.campaignId) {
+        await job.remove();
+        removedJobs++;
+      }
+    }
+  }
+
+  if (leadIds.size) {
+    await query(
+      `UPDATE leads SET status='pending' WHERE tenant_id=$1 AND campaign_id=$2 AND status='queued'`,
+      [req.user.tenantId, req.params.campaignId]
+    );
+  }
+
+  await query(`UPDATE campaigns SET status='paused', updated_at=NOW() WHERE id=$1 AND tenant_id=$2`, [req.params.campaignId, req.user.tenantId]);
+
+  res.json({ ok: true, removedJobs, resetLeads: leadIds.size });
+});
+
+router.delete("/:campaignId/leads/:leadId", async (req, res) => {
+  const leadResult = await query(
+    `SELECT * FROM leads WHERE id=$1 AND campaign_id=$2 AND tenant_id=$3`,
+    [req.params.leadId, req.params.campaignId, req.user.tenantId]
+  );
+  const lead = leadResult.rows[0];
+  if (!lead) return res.status(404).json({ error: "Lead not found" });
+
+  for (const status of ["waiting", "delayed", "prioritized", "paused"]) {
+    const jobs = await callQueue.getJobs([status], 0, -1, false);
+    for (const job of jobs) {
+      if (job.data?.leadId === req.params.leadId && job.data?.campaignId === req.params.campaignId) {
+        await job.remove();
+      }
+    }
+  }
+
+  await query(`DELETE FROM leads WHERE id=$1 AND campaign_id=$2 AND tenant_id=$3`, [req.params.leadId, req.params.campaignId, req.user.tenantId]);
+  res.json({ ok: true });
 });
 
 router.get("/:campaignId/leads", async (req, res) => {

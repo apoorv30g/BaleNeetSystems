@@ -10,27 +10,27 @@ const { attachVoicebot } = require("./routes/voicebot");
 const app = express();
 const server = http.createServer(app);
 
-function isOriginAllowed(origin) {
-  if (!origin) return true;
-  if (config.frontendUrls.includes(origin)) return true;
-
-  try {
-    const host = new URL(origin).hostname.toLowerCase();
-    return config.corsOriginSuffixes.some(suffix => host === suffix.replace(/^\./, "") || host.endsWith(suffix));
-  } catch {
-    return false;
-  }
-}
-
 const corsOptions = {
   origin(origin, callback) {
-    if (isOriginAllowed(origin)) return callback(null, true);
-    return callback(new Error("Origin not allowed by CORS"));
+    return callback(null, origin || true);
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Authorization", "Content-Type"]
 };
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+  }
+  res.header("Access-Control-Allow-Credentials", "true");
+  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Authorization,Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
