@@ -4,62 +4,77 @@ const PLAYBOOKS = {
   SOFT_PAYMENT_REMINDER: {
     category: "Collection",
     title: "Soft Payment Reminder",
-    goal: "Nudge user to pay before due date.",
+    task: "Payment reminders",
+    trigger: "Sent before due date, commonly T-5.",
+    cadence: "Configurable frequency, up to multiple reminders per day.",
+    goal: "Nudge user to pay before due date and preserve a good repayment record.",
     steps: [
       "Greet politely",
       "Remind upcoming payment date",
-      "Explain early payment benefits",
-      "Mention positive repayment pattern and CIBIL impact",
+      "Explain that early closure can reduce interest where applicable",
+      "Mention good repayment pattern before deadline and positive CIBIL impact",
+      "Mention better future loan terms where configurable, such as increased limit or reduced interest",
       "Share payment link"
     ]
   },
   HARD_PAYMENT_REMINDER: {
     category: "Collection",
     title: "Hard Payment Reminder",
+    task: "Defaulter follow-up",
+    trigger: "Sent after due date.",
+    cadence: "Configurable frequency, usually daily until resolved or max attempts reached.",
     goal: "Recover overdue payment without being aggressive.",
     steps: [
       "Notify missed deadline",
-      "Mention penalty and late fee carefully",
-      "Explain CIBIL impact",
-      "Ask when user can pay",
+      "Mention penalty charges and everyday late fees carefully",
+      "Nudge repayment of the full loan amount to avoid extra penalties and negative CIBIL impact",
+      "Ask when the user will pay and close on a payment commitment",
       "Offer restructuring/easy EMI if eligible"
     ]
   },
   UNAPPROVED_USERS: {
     category: "Retargeting",
     title: "Unapproved Users",
+    task: "Warm call registered users",
+    trigger: "User registered but did not upload documents or check final eligibility.",
+    cadence: "Configurable retargeting sequence.",
     goal: "Bring back users who registered but did not complete eligibility/doc upload.",
     steps: [
-      "Notify eligibility up to configured amount",
-      "Create urgency",
-      "Ask them to check eligibility in under 2 minutes",
-      "Guide process",
-      "Route to support if stuck"
+      "Notify eligibility up to the configured amount and create urgency",
+      "Ask them to check eligibility in under 2 minutes on call and view final loan offer",
+      "Guide the user through the process",
+      "If the user faces difficulty, route to customer support"
     ]
   },
   APPROVED_USERS: {
     category: "Retargeting",
     title: "Approved Users",
+    task: "Warm call approved users",
+    trigger: "User received an offer but did not take the loan.",
+    cadence: "Configurable retargeting sequence until offer expiry or closure.",
     goal: "Convert approved users who did not take loan.",
     steps: [
-      "Notify offer expiry",
-      "Create urgency",
-      "Ask why they did not proceed",
-      "Help continue process",
-      "Route to underwriting/support if required"
+      "Notify expiry of the loan offer amount and create urgency",
+      "Nudge the user to move forward with the process",
+      "Help the user through the process",
+      "If they say no, understand why and route to credit underwriter if required",
+      "If the user faces difficulty, route to customer support"
     ]
   },
   FRESH_LEAD: {
     category: "Targeting",
     title: "Fresh Lead",
+    task: "Cold calling fresh leads",
+    trigger: "Fresh lead sourced from database or campaign upload.",
+    cadence: "Configurable cold calling sequence.",
     goal: "Cold call fresh lead and guide to eligibility check.",
     steps: [
       "Greeting and introduction",
-      "Confirm reference info",
+      "Confirm user reference details such as name and age",
       "Ask loan requirement",
-      "Tell eligibility up to amount",
-      "Send UTM/SMS/WhatsApp link",
-      "Guide through process"
+      "Tell them loan eligibility up to the configured amount",
+      "Send UTM link via SMS/WhatsApp",
+      "Guide through the process, final loan amount check, and loan receipt"
     ]
   }
 };
@@ -73,6 +88,9 @@ You are a warm Hindi-English AI loan assistant.
 Playbook: ${playbook.title}
 Category: ${playbook.category}
 Goal: ${playbook.goal}
+Task: ${playbook.task || playbook.category}
+Trigger: ${playbook.trigger || "not provided"}
+Cadence: ${playbook.cadence || "configurable"}
 
 Customer:
 Name: ${lead.name || "Customer"}

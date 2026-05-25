@@ -44,6 +44,16 @@ redis
 
 Deploy frontend on Railway or Vercel.
 
+For a Railway-only deployment, create three application services from this repo and set each service root directory:
+
+```txt
+backend-api     root: apps/backend-api
+worker          root: apps/worker
+dashboard-web   root: apps/dashboard-web
+```
+
+Keep PostgreSQL and Redis as Railway database services.
+
 ---
 
 ## 3. Railway Setup
@@ -83,8 +93,9 @@ REDIS_URL=
 
 JWT_SECRET=replace_with_64_char_random_secret
 
-FRONTEND_URL=https://your-dashboard-domain.com
-SERVER_URL=https://your-backend-domain.com
+FRONTEND_URL=https://your-dashboard-service.up.railway.app
+FRONTEND_URLS=https://your-dashboard-service.up.railway.app
+SERVER_URL=https://your-backend-service.up.railway.app
 
 EXOTEL_ACCOUNT_SID=
 EXOTEL_API_KEY=
@@ -107,15 +118,30 @@ PAYMENT_LINK_BASE=https://yourapp.com/pay
 SUPPORT_PHONE=
 ```
 
+Optional notification webhooks can be configured from the dashboard Compliance page after login:
+
+```txt
+SMS webhook URL
+WhatsApp webhook URL
+AI disclosure text
+Call window
+Max attempts
+Retry delay
+```
+
 ---
 
 ## 5. Worker Variables
 
-Use the same variables as backend.
+Use the same database, Redis, Exotel and public backend URL variables as backend.
 
 Important:
 
 ```env
+NODE_ENV=production
+DATABASE_URL=
+REDIS_URL=
+SERVER_URL=https://your-backend-service.up.railway.app
 MAX_CONCURRENT_CALLS=20
 ```
 
@@ -125,13 +151,7 @@ Start with 10–20.
 
 ## 6. Backend Deploy
 
-```bash
-cd apps/backend-api
-npm install
-npm run migrate
-npm run seed
-npm start
-```
+In Railway, set root directory to `apps/backend-api`.
 
 Railway start command:
 
@@ -139,15 +159,20 @@ Railway start command:
 npm start
 ```
 
+After the first successful deploy, run these once from Railway shell or a one-off job:
+
+```bash
+npm run migrate
+npm run seed
+```
+
+Run migrations again after pulling this version because it adds tenant settings, durable short-lived audio cache, notification events, and migration tracking tables.
+
 ---
 
 ## 7. Worker Deploy
 
-```bash
-cd apps/worker
-npm install
-npm start
-```
+In Railway, set root directory to `apps/worker`.
 
 Railway start command:
 
@@ -159,6 +184,14 @@ npm start
 
 ## 8. Frontend Deploy
 
+In Railway, set root directory to `apps/dashboard-web`.
+
+Set:
+
+```env
+NEXT_PUBLIC_API_BASE_URL=https://your-backend-service.up.railway.app
+```
+
 ### Option A — Vercel
 
 ```bash
@@ -167,7 +200,7 @@ npm install
 vercel
 ```
 
-Set:
+Set the same frontend variable:
 
 ```env
 NEXT_PUBLIC_API_BASE_URL=https://your-backend-domain.com
@@ -175,10 +208,15 @@ NEXT_PUBLIC_API_BASE_URL=https://your-backend-domain.com
 
 ### Option B — Railway
 
+Railway build command:
+
 ```bash
-cd apps/dashboard-web
-npm install
 npm run build
+```
+
+Railway start command:
+
+```bash
 npm start
 ```
 
@@ -205,6 +243,21 @@ Answer webhook:
 ```txt
 https://your-backend-domain.com/webhooks/exotel/answer
 ```
+
+The answer webhook now returns a gather/response loop and can serve short generated audio from:
+
+```txt
+https://your-backend-domain.com/webhooks/audio/:token
+```
+
+Make sure `SERVER_URL` is the public Railway backend URL so Exotel can reach these callbacks.
+
+Before live volume, place one test call through Exotel and confirm:
+
+- `Calls/connect.json` accepts the worker parameters in `apps/worker/src/exotel.js`
+- Exotel accepts the `<Gather input="speech dtmf">` response format
+- `SpeechResult` or equivalent speech payload reaches `/webhooks/exotel/respond`
+- Sarvam audio, if enabled, plays from `/webhooks/audio/:token`
 
 The worker triggers outbound calls through Exotel. Some Exotel accounts require slightly different call-flow parameters; adjust `apps/worker/src/exotel.js` after confirming with Exotel support.
 
@@ -274,6 +327,9 @@ Before live calls:
 - [ ] No OTP/PIN/password asked by prompt
 - [ ] CSV validation working
 - [ ] Call outcomes stored
+- [ ] Campaign pause/edit/delete tested
+- [ ] Compliance settings saved from dashboard
+- [ ] SMS/WhatsApp webhook provider tested if link sending is enabled
 - [ ] Worker running separately
 - [ ] Dashboard shows campaigns/leads/calls
 - [ ] Test campaign on your own number

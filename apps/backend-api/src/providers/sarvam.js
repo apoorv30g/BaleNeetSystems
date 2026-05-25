@@ -20,7 +20,16 @@ async function synthesizeSpeech(text) {
     throw new Error(`Sarvam TTS failed: ${await res.text()}`);
   }
 
-  return res.json();
+  const data = await res.json();
+  const audioBase64 = data.audio || data.audioContent || data?.audios?.[0] || data?.data?.audio;
+
+  if (!audioBase64) return { mode: "text_only", text, raw: data };
+
+  return {
+    mode: "audio",
+    audioBase64,
+    mimeType: data.mimeType || data.mime_type || "audio/wav"
+  };
 }
 
 module.exports = { synthesizeSpeech };

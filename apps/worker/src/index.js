@@ -4,21 +4,32 @@ const config = require("./config");
 const { query } = require("./db");
 const { triggerOutboundCall } = require("./exotel");
 
-function insideCallWindow() {
+async function tenantSettings(tenantId) {
+  const result = await query(`SELECT * FROM tenant_settings WHERE tenant_id=$1`, [tenantId]);
+  const row = result.rows[0];
+  return {
+    callWindowStart: Number(row?.call_window_start || config.callWindowStart),
+    callWindowEnd: Number(row?.call_window_end || config.callWindowEnd),
+    maxCallAttempts: Number(row?.max_call_attempts || config.maxCallAttempts)
+  };
+}
+
+function insideCallWindow(settings) {
   const hour = new Date().getHours();
-  return hour >= config.callWindowStart && hour < config.callWindowEnd;
+  return hour >= settings.callWindowStart && hour < settings.callWindowEnd;
 }
 
 const worker = new Worker("lead-calls", async (job) => {
   const { tenantId, campaignId, leadId } = job.data;
+  const settings = await tenantSettings(tenantId);
 
-  if (!insideCallWindow()) throw new Error("Outside call window");
+  if (!insideCallWindow(settings)) throw new Error("Outside call window");
 
   const leadResult = await query(`SELECT * FROM leads WHERE id=$1 AND tenant_id=$2`, [leadId, tenantId]);
   const lead = leadResult.rows[0];
   if (!lead) throw new Error("Lead not found");
 
-  if (lead.attempt_count >= config.maxCallAttempts) {
+  if (lead.attempt_count >= settings.maxCallAttempts) {
     await query(`UPDATE leads SET status='max_attempts' WHERE id=$1`, [leadId]);
     return;
   }

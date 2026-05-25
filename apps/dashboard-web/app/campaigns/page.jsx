@@ -1,11 +1,51 @@
+"use client";
+
 import Shell from "../../components/Shell";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { apiFetch } from "../../lib/api";
 
 export default function Campaigns() {
-  const campaigns = [
-    ["KYC Recovery", "Retargeting", "Unapproved Users", "Active", "12,400"],
-    ["Soft EMI Reminder", "Collection", "Soft Payment Reminder", "Active", "4,200"],
-    ["Approved Offer Expiry", "Retargeting", "Approved Users", "Draft", "1,800"]
-  ];
+  const [campaigns, setCampaigns] = useState([]);
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState({ name: "", description: "", campaignType: "RETARGETING", playbookType: "UNAPPROVED_USERS", dailyLimit: 200, maxAttempts: 3, language: "Hinglish" });
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function loadCampaigns() {
+    setCampaigns(await apiFetch("/campaigns"));
+  }
+
+  useEffect(() => {
+    loadCampaigns().catch(err => setError(err.message));
+  }, []);
+
+  async function createCampaign(e) {
+    e.preventDefault();
+    setError("");
+    setMessage("");
+    try {
+      await apiFetch("/campaigns", { method: "POST", body: JSON.stringify(form) });
+      setFormOpen(false);
+      setForm({ ...form, name: "", description: "" });
+      setMessage("Campaign created.");
+      await loadCampaigns();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function queueCalls(campaignId) {
+    setError("");
+    setMessage("");
+    try {
+      const result = await apiFetch(`/campaigns/${campaignId}/queue-calls`, { method: "POST" });
+      setMessage(`Queued ${result.queued} calls. Blocked ${result.blocked} DNC leads.`);
+      await loadCampaigns();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   return (
     <Shell>
@@ -14,8 +54,34 @@ export default function Campaigns() {
           <h1 className="text-4xl font-black">Campaigns</h1>
           <p className="mt-2 text-zinc-400">Create use-case specific voice campaigns.</p>
         </div>
-        <button className="btn">New Campaign</button>
+        <button onClick={() => setFormOpen(!formOpen)} className="btn">New Campaign</button>
       </div>
+
+      {error && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+      {message && <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
+
+      {formOpen && (
+        <form onSubmit={createCampaign} className="card mt-8 grid grid-cols-2 gap-4 p-6">
+          <input className="input" placeholder="Campaign name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
+          <input className="input" placeholder="Description" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+          <select className="input" value={form.campaignType} onChange={e => setForm({ ...form, campaignType: e.target.value })}>
+            <option value="RETARGETING">Retargeting</option>
+            <option value="COLLECTION">Collection</option>
+            <option value="TARGETING">Targeting</option>
+          </select>
+          <select className="input" value={form.playbookType} onChange={e => setForm({ ...form, playbookType: e.target.value })}>
+            <option value="UNAPPROVED_USERS">Unapproved Users</option>
+            <option value="APPROVED_USERS">Approved Users</option>
+            <option value="SOFT_PAYMENT_REMINDER">Soft Payment Reminder</option>
+            <option value="HARD_PAYMENT_REMINDER">Hard Payment Reminder</option>
+            <option value="FRESH_LEAD">Fresh Lead</option>
+          </select>
+          <input className="input" type="number" min="1" value={form.dailyLimit} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
+          <input className="input" type="number" min="1" value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
+          <input className="input" value={form.language} onChange={e => setForm({ ...form, language: e.target.value })} />
+          <button className="btn">Create</button>
+        </form>
+      )}
 
       <div className="card mt-8 overflow-hidden">
         <table className="w-full text-sm">
@@ -26,14 +92,30 @@ export default function Campaigns() {
               <th>Playbook</th>
               <th>Status</th>
               <th>Leads</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {campaigns.map(row => (
-              <tr key={row[0]} className="border-t border-white/10">
-                {row.map(cell => <td key={cell} className="p-4">{cell}</td>)}
+            {campaigns.map(campaign => (
+              <tr key={campaign.id} className="border-t border-white/10">
+                <td className="p-4">
+                  <Link className="font-semibold text-white hover:text-blue-300" href={`/campaigns/${campaign.id}`}>{campaign.name}</Link>
+                </td>
+                <td>{campaign.campaign_type}</td>
+                <td>{campaign.playbook_type}</td>
+                <td>{campaign.status}</td>
+                <td>{campaign.lead_count || 0}</td>
+                <td className="pr-4 text-right">
+                  <div className="flex justify-end gap-2">
+                    <Link className="btn-secondary" href={`/campaigns/${campaign.id}`}>Open</Link>
+                    <button onClick={() => queueCalls(campaign.id)} className="btn-secondary">Queue Calls</button>
+                  </div>
+                </td>
               </tr>
             ))}
+            {!campaigns.length && (
+              <tr><td className="p-4 text-zinc-500" colSpan="6">No campaigns yet.</td></tr>
+            )}
           </tbody>
         </table>
       </div>

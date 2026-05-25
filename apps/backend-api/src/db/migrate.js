@@ -5,6 +5,13 @@ async function migrate() {
   await query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
 
   await query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await query(`
     CREATE TABLE IF NOT EXISTS tenants (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       name TEXT NOT NULL,
@@ -40,6 +47,8 @@ async function migrate() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+  await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS leads (
@@ -126,10 +135,56 @@ async function migrate() {
     );
   `);
 
+  await query(`
+    CREATE TABLE IF NOT EXISTS tenant_settings (
+      tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+      call_window_start INTEGER DEFAULT 9,
+      call_window_end INTEGER DEFAULT 20,
+      max_call_attempts INTEGER DEFAULT 3,
+      retry_delay_minutes INTEGER DEFAULT 360,
+      ai_disclosure TEXT DEFAULT 'This is an AI-assisted call from LoanConnect.',
+      sms_webhook_url TEXT,
+      whatsapp_webhook_url TEXT,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS call_audio_cache (
+      token UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      call_id UUID REFERENCES calls(id) ON DELETE CASCADE,
+      mime_type TEXT NOT NULL,
+      audio_base64 TEXT NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS notification_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+      lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+      channel TEXT NOT NULL,
+      destination TEXT NOT NULL,
+      status TEXT DEFAULT 'queued',
+      payload JSONB,
+      error TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await query(`
+    INSERT INTO tenant_settings (tenant_id)
+    SELECT id FROM tenants
+    ON CONFLICT (tenant_id) DO NOTHING;
+  `);
+
   await query(`CREATE INDEX IF NOT EXISTS idx_leads_campaign_status ON leads(campaign_id, status);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_calls_tenant_created ON calls(tenant_id, created_at DESC);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_dnc_phone ON dnc_list(tenant_id, phone);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_audio_expires ON call_audio_cache(expires_at);`);
 
   console.log("Migration complete");
 }
