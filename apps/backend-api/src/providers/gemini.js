@@ -6,7 +6,7 @@ async function generateReply({ lead, lastUserMessage = "" }) {
     return fallbackReply(lead);
   }
 
-  const prompt = buildPrompt(lead);
+  const prompt = await buildPrompt(lead);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.ai.geminiApiKey}`;
   const body = {

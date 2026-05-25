@@ -4,40 +4,130 @@ import Shell from "../../components/Shell";
 import { useEffect, useState } from "react";
 import { apiFetch } from "../../lib/api";
 
+const blankForm = {
+  key: "",
+  title: "",
+  category: "Custom",
+  task: "",
+  trigger: "",
+  cadence: "",
+  goal: "",
+  steps: ""
+};
+
 export default function Playbooks() {
   const [playbooks, setPlaybooks] = useState({});
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingKey, setEditingKey] = useState("");
+  const [form, setForm] = useState(blankForm);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function load() {
+    setPlaybooks(await apiFetch("/playbooks"));
+  }
 
   useEffect(() => {
-    apiFetch("/campaigns/playbooks").then(setPlaybooks).catch(err => setError(err.message));
+    load().catch(err => setError(err.message));
   }, []);
+
+  function editPlaybook(key, playbook) {
+    setEditingKey(key);
+    setForm({
+      key,
+      title: playbook.title || "",
+      category: playbook.category || "Custom",
+      task: playbook.task || "",
+      trigger: playbook.trigger || "",
+      cadence: playbook.cadence || "",
+      goal: playbook.goal || "",
+      steps: (playbook.steps || []).join("\n")
+    });
+    setFormOpen(true);
+  }
+
+  async function savePlaybook(e) {
+    e.preventDefault();
+    setError("");
+    setMessage("");
+    try {
+      const path = editingKey ? `/playbooks/${editingKey}` : "/playbooks";
+      const method = editingKey ? "PUT" : "POST";
+      await apiFetch(path, { method, body: JSON.stringify(form) });
+      setMessage(editingKey ? "Playbook updated." : "Playbook created.");
+      setForm(blankForm);
+      setEditingKey("");
+      setFormOpen(false);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deletePlaybook(key) {
+    if (!confirm("Deactivate this playbook? Existing campaign records will keep their playbook key.")) return;
+    setError("");
+    setMessage("");
+    try {
+      await apiFetch(`/playbooks/${key}`, { method: "DELETE" });
+      setMessage("Playbook deactivated.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   return (
     <Shell>
-      <h1 className="text-4xl font-black">Playbooks</h1>
-      <p className="mt-2 text-zinc-400">Controlled conversation flows keep quality high and cost low.</p>
-      {error && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="text-4xl font-black">Playbooks</h1>
+          <p className="mt-2 text-zinc-400">Create and tune conversation flows for each lending workflow.</p>
+        </div>
+        <button onClick={() => { setFormOpen(!formOpen); setEditingKey(""); setForm(blankForm); }} className="btn">New Playbook</button>
+      </div>
 
-      <div className="mt-8 grid grid-cols-2 gap-4">
+      {error && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+      {message && <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
+
+      {formOpen && (
+        <form onSubmit={savePlaybook} className="card mt-8 grid grid-cols-1 gap-4 p-6 lg:grid-cols-2">
+          <input className="input" placeholder="Key, e.g. RENEWAL_OFFER" value={form.key} onChange={e => setForm({ ...form, key: e.target.value })} disabled={Boolean(editingKey)} />
+          <input className="input" placeholder="Title" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} required />
+          <input className="input" placeholder="Category" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
+          <input className="input" placeholder="Task" value={form.task} onChange={e => setForm({ ...form, task: e.target.value })} />
+          <input className="input" placeholder="Trigger" value={form.trigger} onChange={e => setForm({ ...form, trigger: e.target.value })} />
+          <input className="input" placeholder="Cadence" value={form.cadence} onChange={e => setForm({ ...form, cadence: e.target.value })} />
+          <textarea className="input min-h-24 lg:col-span-2" placeholder="Goal" value={form.goal} onChange={e => setForm({ ...form, goal: e.target.value })} />
+          <textarea className="input min-h-40 lg:col-span-2" placeholder="One conversation step per line" value={form.steps} onChange={e => setForm({ ...form, steps: e.target.value })} />
+          <button className="btn">{editingKey ? "Save Playbook" : "Create Playbook"}</button>
+          <button type="button" onClick={() => { setFormOpen(false); setEditingKey(""); setForm(blankForm); }} className="btn-secondary">Cancel</button>
+        </form>
+      )}
+
+      <div className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-2">
         {Object.entries(playbooks).map(([key, playbook]) => (
           <div className="card p-6" key={key}>
-            <div className="text-xs uppercase tracking-widest text-blue-400">{playbook.category}</div>
-            <h2 className="mt-3 text-xl font-bold">{playbook.title}</h2>
-            <p className="mt-2 text-sm text-zinc-400">{playbook.goal}</p>
-            <div className="mt-5 grid gap-2 text-sm">
-              <div className="rounded-xl bg-white/[0.04] p-3">
-                <span className="text-zinc-500">Task: </span>{playbook.task}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-blue-400">{playbook.category}</div>
+                <h2 className="mt-3 text-xl font-bold">{playbook.title}</h2>
+                <p className="mt-1 text-xs text-zinc-500">{key}</p>
               </div>
-              <div className="rounded-xl bg-white/[0.04] p-3">
-                <span className="text-zinc-500">Trigger: </span>{playbook.trigger}
-              </div>
-              <div className="rounded-xl bg-white/[0.04] p-3">
-                <span className="text-zinc-500">Cadence: </span>{playbook.cadence}
+              <div className="flex gap-2">
+                <button onClick={() => editPlaybook(key, playbook)} className="btn-secondary">Edit</button>
+                <button onClick={() => deletePlaybook(key)} className="btn-secondary">Delete</button>
               </div>
             </div>
+            <p className="mt-4 text-sm text-zinc-400">{playbook.goal}</p>
+            <div className="mt-5 grid gap-2 text-sm">
+              <div className="rounded-xl bg-white/[0.04] p-3"><span className="text-zinc-500">Task: </span>{playbook.task}</div>
+              <div className="rounded-xl bg-white/[0.04] p-3"><span className="text-zinc-500">Trigger: </span>{playbook.trigger}</div>
+              <div className="rounded-xl bg-white/[0.04] p-3"><span className="text-zinc-500">Cadence: </span>{playbook.cadence}</div>
+            </div>
             <div className="mt-5 space-y-2">
-              {playbook.steps.map((step, index) => (
-                <div key={step} className="rounded-xl bg-white/[0.04] p-3 text-sm text-zinc-300">{index + 1}. {step}</div>
+              {(playbook.steps || []).map((step, index) => (
+                <div key={`${key}-${index}`} className="rounded-xl bg-white/[0.04] p-3 text-sm text-zinc-300">{index + 1}. {step}</div>
               ))}
             </div>
           </div>

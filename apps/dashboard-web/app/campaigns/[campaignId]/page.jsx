@@ -2,17 +2,24 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Download, Filter, PhoneCall, RefreshCcw, Trash2 } from "lucide-react";
 import Shell from "../../../components/Shell";
-import { apiFetch } from "../../../lib/api";
+import { API_BASE_URL, apiFetch, getToken } from "../../../lib/api";
+
+const outcomes = ["IN_PROGRESS", "INTERESTED", "PROMISE_TO_PAY", "PAID", "CALLBACK", "WRONG_NUMBER", "DISPUTE", "NOT_INTERESTED", "OPTED_OUT"];
 
 export default function CampaignDetail() {
   const { campaignId } = useParams();
   const router = useRouter();
   const [campaign, setCampaign] = useState(null);
+  const [playbooks, setPlaybooks] = useState({});
+  const [queueStatus, setQueueStatus] = useState(null);
   const [leads, setLeads] = useState([]);
   const [calls, setCalls] = useState([]);
   const [transcripts, setTranscripts] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const [filters, setFilters] = useState({ q: "", status: "all", playbook: "all" });
   const [file, setFile] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -21,17 +28,22 @@ export default function CampaignDetail() {
   const [form, setForm] = useState({});
 
   async function load() {
-    const [campaignData, leadData, callData, transcriptData] = await Promise.all([
+    const [campaignData, leadData, callData, transcriptData, playbookData, queueData] = await Promise.all([
       apiFetch(`/campaigns/${campaignId}`),
       apiFetch(`/campaigns/${campaignId}/leads`),
       apiFetch(`/campaigns/${campaignId}/calls`),
-      apiFetch(`/campaigns/${campaignId}/transcripts`)
+      apiFetch(`/campaigns/${campaignId}/transcripts`),
+      apiFetch("/playbooks"),
+      apiFetch(`/campaigns/${campaignId}/queue-status`).catch(() => null)
     ]);
+
     setCampaign(campaignData);
     setForm({
       name: campaignData.name || "",
       description: campaignData.description || "",
       status: campaignData.status || "draft",
+      campaignType: campaignData.campaign_type || "RETARGETING",
+      playbookType: campaignData.playbook_type || "UNAPPROVED_USERS",
       dailyLimit: campaignData.daily_limit || 200,
       maxAttempts: campaignData.max_attempts || 3,
       language: campaignData.language || "Hinglish"
@@ -39,121 +51,26 @@ export default function CampaignDetail() {
     setLeads(leadData);
     setCalls(callData);
     setTranscripts(transcriptData);
+    setPlaybooks(playbookData);
+    setQueueStatus(queueData);
+    setSelected(current => current.filter(id => leadData.some(lead => lead.id === id)));
   }
 
   useEffect(() => {
     load().catch(err => setError(err.message));
   }, [campaignId]);
 
-  async function upload(e) {
-    e.preventDefault();
-    setError("");
-    setMessage("");
-    if (!file) {
-      setError("Choose a CSV file first.");
-      return;
-    }
-
-    const body = new FormData();
-    body.append("file", file);
-    setLoading(true);
-    try {
-      const result = await apiFetch(`/campaigns/${campaignId}/upload`, { method: "POST", body });
-      setMessage(`Inserted ${result.inserted}, skipped ${result.skipped}, total ${result.total}.`);
-      await load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function queueCalls() {
-    setError("");
-    setMessage("");
-    setLoading(true);
-    try {
-      const result = await apiFetch(`/campaigns/${campaignId}/queue-calls`, { method: "POST" });
-      setMessage(`Queued ${result.queued} calls. Blocked ${result.blocked} DNC leads.`);
-      await load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function clearQueue() {
-    if (!confirm("Remove queued calls for this campaign and reset queued leads to pending?")) return;
-    setError("");
-    setMessage("");
-    setLoading(true);
-    try {
-      const result = await apiFetch(`/campaigns/${campaignId}/clear-queue`, { method: "POST" });
-      setMessage(`Removed ${result.removedJobs} queued jobs. Reset ${result.resetLeads} leads.`);
-      await load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function saveCampaign(e) {
-    e.preventDefault();
-    setError("");
-    setMessage("");
-    try {
-      await apiFetch(`/campaigns/${campaignId}`, { method: "PUT", body: JSON.stringify(form) });
-      setMessage("Campaign updated.");
-      setEditOpen(false);
-      await load();
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  async function deleteCampaign() {
-    if (!confirm("Delete this campaign and its leads?")) return;
-    await apiFetch(`/campaigns/${campaignId}`, { method: "DELETE" });
-    router.replace("/campaigns");
-  }
-
-  async function updateOutcome(callId, outcome) {
-    await apiFetch(`/campaigns/${campaignId}/calls/${callId}/outcome`, {
-      method: "PATCH",
-      body: JSON.stringify({ outcome })
+  const filteredLeads = useMemo(() => {
+    const q = filters.q.trim().toLowerCase();
+    return leads.filter(lead => {
+      const matchesText = !q || [lead.name, lead.phone, lead.playbook_type].some(value => String(value || "").toLowerCase().includes(q));
+      const matchesStatus = filters.status === "all" || lead.status === filters.status;
+      const matchesPlaybook = filters.playbook === "all" || lead.playbook_type === filters.playbook;
+      return matchesText && matchesStatus && matchesPlaybook;
     });
-    await load();
-  }
+  }, [filters, leads]);
 
-  async function sendLink(leadId, channel) {
-    setError("");
-    setMessage("");
-    try {
-      const event = await apiFetch(`/campaigns/${campaignId}/leads/${leadId}/send-link`, {
-        method: "POST",
-        body: JSON.stringify({ channel })
-      });
-      setMessage(`${channel.toUpperCase()} link ${event.status}.`);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  async function deleteLead(leadId) {
-    if (!confirm("Remove this lead from the campaign and queue?")) return;
-    setError("");
-    setMessage("");
-    try {
-      await apiFetch(`/campaigns/${campaignId}/leads/${leadId}`, { method: "DELETE" });
-      setMessage("Lead removed.");
-      await load();
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
+  const allVisibleSelected = filteredLeads.length > 0 && filteredLeads.every(lead => selected.includes(lead.id));
   const stats = [
     ["Leads", campaign?.lead_count || 0],
     ["Pending", campaign?.pending_count || 0],
@@ -162,120 +79,237 @@ export default function CampaignDetail() {
     ["Failed", campaign?.failed_count || 0]
   ];
 
+  function setNotice({ ok, text }) {
+    setError(ok ? "" : text);
+    setMessage(ok ? text : "");
+  }
+
+  async function runAction(action, success) {
+    setLoading(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await action();
+      setNotice({ ok: true, text: success(result) });
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function upload(e) {
+    e.preventDefault();
+    if (!file) return setError("Choose a CSV file first.");
+    const body = new FormData();
+    body.append("file", file);
+    await runAction(
+      () => apiFetch(`/campaigns/${campaignId}/upload`, { method: "POST", body }),
+      result => `Inserted ${result.inserted}, skipped ${result.skipped}. ${result.errors?.length ? "Review skipped rows in your CSV." : ""}`
+    );
+  }
+
+  async function saveCampaign(e) {
+    e.preventDefault();
+    await runAction(
+      () => apiFetch(`/campaigns/${campaignId}`, { method: "PUT", body: JSON.stringify(form) }),
+      () => "Campaign updated."
+    );
+    setEditOpen(false);
+  }
+
+  async function deleteCampaign() {
+    if (!confirm("Delete this campaign and its leads?")) return;
+    await apiFetch(`/campaigns/${campaignId}`, { method: "DELETE" });
+    router.replace("/campaigns");
+  }
+
+  async function bulkQueue(ids = selected) {
+    await runAction(
+      () => apiFetch(`/campaigns/${campaignId}/leads/bulk-queue`, { method: "POST", body: JSON.stringify({ leadIds: ids }) }),
+      result => `Queued ${result.queued} calls. Blocked ${result.blocked} DNC leads.`
+    );
+    setSelected([]);
+  }
+
+  async function bulkDelete(ids = selected) {
+    if (!ids.length || !confirm(`Remove ${ids.length} selected leads from this campaign?`)) return;
+    await runAction(
+      () => apiFetch(`/campaigns/${campaignId}/leads/bulk-delete`, { method: "POST", body: JSON.stringify({ leadIds: ids }) }),
+      result => `Removed ${result.deleted} leads and ${result.removedJobs} queued jobs.`
+    );
+    setSelected([]);
+  }
+
+  async function exportCsv(kind) {
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE_URL}/campaigns/${campaignId}/export/${kind}`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      if (!res.ok) throw new Error(`Could not export ${kind}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${kind}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function toggleVisible() {
+    if (allVisibleSelected) {
+      setSelected(current => current.filter(id => !filteredLeads.some(lead => lead.id === id)));
+      return;
+    }
+    setSelected(current => Array.from(new Set([...current, ...filteredLeads.map(lead => lead.id)])));
+  }
+
   return (
     <Shell>
-      <div className="flex items-start justify-between gap-6">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <Link href="/campaigns" className="text-sm text-zinc-500 hover:text-white">Campaigns</Link>
-          <h1 className="mt-2 text-4xl font-black">{campaign?.name || "Campaign"}</h1>
-          <p className="mt-2 text-zinc-400">{campaign?.description || "Upload leads, queue calls and inspect outcomes."}</p>
+          <h1 className="mt-2 text-3xl font-black sm:text-4xl">{campaign?.name || "Campaign"}</h1>
+          <p className="mt-2 max-w-3xl text-sm text-zinc-400 sm:text-base">{campaign?.description || "Upload leads, queue calls and inspect outcomes."}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button onClick={() => setEditOpen(!editOpen)} className="btn-secondary">Edit</button>
-          <button onClick={clearQueue} className="btn-secondary" disabled={loading}>Clear Queue</button>
-          <button onClick={queueCalls} className="btn" disabled={loading}>Queue Calls</button>
+          <button onClick={() => runAction(() => apiFetch(`/campaigns/${campaignId}/retry-failed`, { method: "POST", body: JSON.stringify({ resetAttempts: true }) }), result => `Retried ${result.queued} failed leads.`)} className="btn-secondary" disabled={loading}><RefreshCcw size={16} /> Retry Failed</button>
+          <button onClick={() => runAction(() => apiFetch(`/campaigns/${campaignId}/clear-queue`, { method: "POST" }), result => `Removed ${result.removedJobs} queued jobs. Reset ${result.resetLeads} leads.`)} className="btn-secondary" disabled={loading}>Clear Queue</button>
+          <button onClick={() => runAction(() => apiFetch(`/campaigns/${campaignId}/queue-calls`, { method: "POST" }), result => `Queued ${result.queued} calls. Blocked ${result.blocked} DNC leads.`)} className="btn" disabled={loading}><PhoneCall size={16} /> Queue Calls</button>
         </div>
       </div>
 
-      {error && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
-      {message && <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
+      {error && <div className="mt-6 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+      {message && <div className="mt-6 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
 
       {editOpen && (
-        <form onSubmit={saveCampaign} className="card mt-8 grid grid-cols-2 gap-4 p-6">
-          <input className="input" value={form.name || ""} onChange={e => setForm({ ...form, name: e.target.value })} />
+        <form onSubmit={saveCampaign} className="card mt-8 grid grid-cols-1 gap-4 p-5 md:grid-cols-2 md:p-6">
+          <input className="input" value={form.name || ""} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Campaign name" />
           <select className="input" value={form.status || "draft"} onChange={e => setForm({ ...form, status: e.target.value })}>
-            <option value="draft">Draft</option>
-            <option value="active">Active</option>
-            <option value="paused">Paused</option>
-            <option value="completed">Completed</option>
+            {["draft", "active", "paused", "completed"].map(status => <option key={status} value={status}>{status}</option>)}
           </select>
-          <input className="input" value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })} />
+          <input className="input" value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Description" />
+          <select className="input" value={form.campaignType || "RETARGETING"} onChange={e => setForm({ ...form, campaignType: e.target.value })}>
+            <option value="RETARGETING">Retargeting</option>
+            <option value="COLLECTION">Collection</option>
+            <option value="TARGETING">Targeting</option>
+          </select>
+          <select className="input" value={form.playbookType || ""} onChange={e => setForm({ ...form, playbookType: e.target.value })}>
+            {Object.entries(playbooks).map(([key, playbook]) => <option key={key} value={key}>{playbook.title}</option>)}
+          </select>
           <input className="input" value={form.language || ""} onChange={e => setForm({ ...form, language: e.target.value })} />
-          <input className="input" type="number" value={form.dailyLimit || 200} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
-          <input className="input" type="number" value={form.maxAttempts || 3} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
+          <input className="input" type="number" min="1" value={form.dailyLimit || 200} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
+          <input className="input" type="number" min="1" value={form.maxAttempts || 3} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
           <button className="btn">Save</button>
-          <button type="button" onClick={deleteCampaign} className="btn-secondary">Delete</button>
+          <button type="button" onClick={deleteCampaign} className="btn-secondary">Delete Campaign</button>
         </form>
       )}
 
-      <section className="mt-8 grid grid-cols-5 gap-4">
+      <section className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {stats.map(([label, value]) => (
-          <div className="card p-5" key={label}>
-            <p className="text-sm text-zinc-500">{label}</p>
-            <p className="mt-3 text-3xl font-black">{value}</p>
+          <div className="card p-4" key={label}>
+            <p className="text-xs text-zinc-500">{label}</p>
+            <p className="mt-2 text-2xl font-black">{value}</p>
           </div>
         ))}
+        <div className="card col-span-2 p-4 md:col-span-3 xl:col-span-1">
+          <p className="text-xs text-zinc-500">Queue</p>
+          <p className="mt-2 text-2xl font-black">{queueStatus?.campaignQueued || 0}</p>
+          <p className="mt-1 text-xs text-zinc-500">{queueStatus?.workerHint || "Queue status unavailable"}</p>
+        </div>
       </section>
 
-      <section className="mt-8 grid grid-cols-[360px_1fr] gap-4">
-        <form onSubmit={upload} className="card p-6">
+      <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
+        <form onSubmit={upload} className="card p-5">
           <h2 className="text-lg font-bold">Upload Leads</h2>
-          <p className="mt-2 text-sm text-zinc-400">Use the campaign CSV format with at least name, phone and playbookType.</p>
+          <p className="mt-2 text-sm text-zinc-400">CSV columns: name, phone, playbookType, dueDate, loanAmount, offerAmount, language.</p>
           <input className="input mt-5" type="file" accept=".csv,text/csv" onChange={e => setFile(e.target.files?.[0] || null)} />
           <button className="btn mt-4 w-full" disabled={loading}>{loading ? "Working..." : "Upload CSV"}</button>
         </form>
 
-        <div className="card overflow-hidden">
-          <div className="border-b border-white/10 p-5">
-            <h2 className="text-lg font-bold">Leads</h2>
+        <div className="card p-5">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_160px_220px_auto]">
+            <input className="input" placeholder="Search name, phone or playbook" value={filters.q} onChange={e => setFilters({ ...filters, q: e.target.value })} />
+            <select className="input" value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}>
+              {["all", "pending", "queued", "called", "completed", "failed"].map(status => <option key={status} value={status}>{status}</option>)}
+            </select>
+            <select className="input" value={filters.playbook} onChange={e => setFilters({ ...filters, playbook: e.target.value })}>
+              <option value="all">All playbooks</option>
+              {Object.entries(playbooks).map(([key, playbook]) => <option key={key} value={key}>{playbook.title}</option>)}
+            </select>
+            <button className="btn-secondary justify-center" type="button"><Filter size={16} /> {filteredLeads.length}</button>
           </div>
-          <table className="w-full text-sm">
-            <thead className="bg-white/[0.04] text-left text-zinc-400">
-              <tr><th className="p-4">Name</th><th>Phone</th><th>Playbook</th><th>Status</th><th>Attempts</th><th></th></tr>
-            </thead>
-            <tbody>
-              {leads.map(lead => (
-                <tr key={lead.id} className="border-t border-white/10">
-                  <td className="p-4">{lead.name || "Unknown"}</td>
-                  <td>{lead.phone}</td>
-                  <td>{lead.playbook_type}</td>
-                  <td>{lead.status}</td>
-                  <td>{lead.attempt_count}</td>
-                  <td className="pr-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button onClick={() => sendLink(lead.id, "sms")} className="btn-secondary">SMS</button>
-                      <button onClick={() => deleteLead(lead.id)} className="btn-secondary">Remove</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {!leads.length && <tr><td className="p-4 text-zinc-500" colSpan="6">No leads uploaded yet.</td></tr>}
-            </tbody>
-          </table>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button className="btn-secondary" type="button" onClick={() => selected.length && bulkQueue()} disabled={!selected.length || loading}><PhoneCall size={16} /> Call Selected</button>
+            <button className="btn-secondary" type="button" onClick={() => bulkDelete()} disabled={!selected.length || loading}><Trash2 size={16} /> Remove Selected</button>
+            {["leads", "calls", "transcripts"].map(kind => (
+              <button key={kind} className="btn-secondary" type="button" onClick={() => exportCsv(kind)}><Download size={16} /> {kind}</button>
+            ))}
+          </div>
         </div>
       </section>
 
-      <section className="mt-8 grid grid-cols-2 gap-4">
-        <div className="card overflow-hidden">
-          <div className="border-b border-white/10 p-5">
-            <h2 className="text-lg font-bold">Calls</h2>
-          </div>
-          <table className="w-full text-sm">
+      <section className="card mt-8 overflow-x-auto">
+        <table className="w-full min-w-[920px] text-sm">
+          <thead className="bg-white/[0.04] text-left text-zinc-400">
+            <tr>
+              <th className="p-4"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisible} /></th>
+              <th>Name</th><th>Phone</th><th>Playbook</th><th>Status</th><th>Attempts</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredLeads.map(lead => (
+              <tr key={lead.id} className="border-t border-white/10">
+                <td className="p-4"><input type="checkbox" checked={selected.includes(lead.id)} onChange={() => setSelected(current => current.includes(lead.id) ? current.filter(id => id !== lead.id) : [...current, lead.id])} /></td>
+                <td className="font-semibold text-white">{lead.name || "Unknown"}</td>
+                <td>{lead.phone}</td>
+                <td>{playbooks[lead.playbook_type]?.title || lead.playbook_type}</td>
+                <td>{lead.status}</td>
+                <td>{lead.attempt_count}</td>
+                <td className="pr-4 text-right">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button onClick={() => bulkQueue([lead.id])} className="btn" disabled={loading}>Call</button>
+                    <button onClick={() => runAction(() => apiFetch(`/campaigns/${campaignId}/leads/${lead.id}/send-link`, { method: "POST", body: JSON.stringify({ channel: "sms" }) }), event => `SMS link ${event.status}.`)} className="btn-secondary">SMS</button>
+                    <button onClick={() => bulkDelete([lead.id])} className="btn-secondary">Remove</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {!filteredLeads.length && <tr><td className="p-4 text-zinc-500" colSpan="7">No leads match the current view.</td></tr>}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="card overflow-x-auto">
+          <div className="border-b border-white/10 p-5"><h2 className="text-lg font-bold">Calls</h2></div>
+          <table className="w-full min-w-[760px] text-sm">
             <thead className="bg-white/[0.04] text-left text-zinc-400">
-              <tr><th className="p-4">Lead</th><th>Status</th><th>Outcome</th><th>Duration</th></tr>
+              <tr><th className="p-4">Lead</th><th>Status</th><th>Outcome</th><th>Summary</th><th>Duration</th></tr>
             </thead>
             <tbody>
               {calls.map(call => (
                 <tr key={call.id} className="border-t border-white/10">
                   <td className="p-4">{call.lead_name || call.phone || "Unknown"}</td>
                   <td>{call.status}</td>
-                  <td>
-                    <select className="input max-w-44 py-2" value={call.outcome || "IN_PROGRESS"} onChange={e => updateOutcome(call.id, e.target.value)}>
-                      {["IN_PROGRESS","INTERESTED","PROMISE_TO_PAY","PAID","CALLBACK","WRONG_NUMBER","DISPUTE","NOT_INTERESTED","OPTED_OUT"].map(outcome => <option key={outcome} value={outcome}>{outcome}</option>)}
-                    </select>
-                  </td>
+                  <td><select className="input max-w-44 py-2" value={call.outcome || "IN_PROGRESS"} onChange={e => runAction(() => apiFetch(`/campaigns/${campaignId}/calls/${call.id}/outcome`, { method: "PATCH", body: JSON.stringify({ outcome: e.target.value }) }), () => "Outcome updated.")}>{outcomes.map(outcome => <option key={outcome} value={outcome}>{outcome}</option>)}</select></td>
+                  <td className="max-w-80 pr-4 text-zinc-400">{call.summary || "-"}</td>
                   <td>{call.duration_seconds || 0}s</td>
                 </tr>
               ))}
-              {!calls.length && <tr><td className="p-4 text-zinc-500" colSpan="4">No calls yet.</td></tr>}
+              {!calls.length && <tr><td className="p-4 text-zinc-500" colSpan="5">No calls yet.</td></tr>}
             </tbody>
           </table>
         </div>
 
         <div className="card overflow-hidden">
-          <div className="border-b border-white/10 p-5">
-            <h2 className="text-lg font-bold">Transcripts</h2>
-          </div>
+          <div className="border-b border-white/10 p-5"><h2 className="text-lg font-bold">Transcripts</h2></div>
           <div className="max-h-[420px] overflow-auto">
             {transcripts.map(item => (
               <div key={item.id} className="border-b border-white/10 p-4 text-sm">

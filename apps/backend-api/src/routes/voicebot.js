@@ -4,7 +4,7 @@ const { generateReply } = require("../providers/gemini");
 const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
 const { createDeepgramLive } = require("../providers/deepgramLive");
-const { inferOutcome, isOptOut } = require("../services/outcomes");
+const { classifyConversation, isOptOut } = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
 
@@ -196,7 +196,12 @@ async function handleTranscript(ws, session, event) {
   const reply = await generateReply({ lead: session.lead, lastUserMessage: text });
   if (session.callId) {
     await addTranscript(session.callId, "assistant", reply);
-    await query(`UPDATE calls SET outcome=$1, updated_at=NOW() WHERE id=$2`, [inferOutcome(text), session.callId]);
+    const transcript = await getTranscript(session.callId);
+    const classification = classifyConversation({ userMessage: text, transcript, playbookType: session.lead.playbook_type });
+    await query(
+      `UPDATE calls SET outcome=$1, summary=$2, updated_at=NOW() WHERE id=$3`,
+      [classification.outcome, classification.summary, session.callId]
+    );
   }
 
   await speakText(ws, session, reply, "reply_played");
@@ -250,6 +255,14 @@ async function addTranscript(callId, speaker, text) {
     `INSERT INTO transcripts (call_id, speaker, text) VALUES ($1,$2,$3)`,
     [callId, speaker, text]
   );
+}
+
+async function getTranscript(callId) {
+  const result = await query(
+    `SELECT speaker, text FROM transcripts WHERE call_id=$1 ORDER BY created_at ASC`,
+    [callId]
+  );
+  return result.rows;
 }
 
 module.exports = { attachVoicebot };

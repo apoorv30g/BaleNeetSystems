@@ -1,4 +1,5 @@
 const config = require("../config");
+const { query } = require("../db/pool");
 
 const PLAYBOOKS = {
   SOFT_PAYMENT_REMINDER: {
@@ -79,8 +80,99 @@ const PLAYBOOKS = {
   }
 };
 
-function buildPrompt(lead) {
-  const playbook = PLAYBOOKS[lead.playbook_type] || PLAYBOOKS.UNAPPROVED_USERS;
+async function listPlaybooks(tenantId) {
+  try {
+    await seedDefaultPlaybooks(tenantId);
+    const result = await query(
+      `SELECT * FROM playbooks WHERE tenant_id=$1 AND is_active=true ORDER BY category, title`,
+      [tenantId]
+    );
+    if (result.rows.length) return rowsToMap(result.rows);
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) throw err;
+  }
+
+  return PLAYBOOKS;
+}
+
+async function getPlaybook(tenantId, key) {
+  try {
+    await seedDefaultPlaybooks(tenantId);
+    const result = await query(
+      `SELECT * FROM playbooks WHERE tenant_id=$1 AND key=$2 AND is_active=true LIMIT 1`,
+      [tenantId, key]
+    );
+    if (result.rows[0]) return rowToPlaybook(result.rows[0]);
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) throw err;
+  }
+
+  return PLAYBOOKS[key] || PLAYBOOKS.UNAPPROVED_USERS;
+}
+
+async function upsertPlaybook(tenantId, payload) {
+  const key = normalizeKey(payload.key || payload.title);
+  const steps = normalizeSteps(payload.steps);
+
+  const result = await query(
+    `INSERT INTO playbooks (tenant_id, key, title, category, task, trigger, cadence, goal, steps, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
+     ON CONFLICT (tenant_id, key) DO UPDATE SET
+       title=EXCLUDED.title,
+       category=EXCLUDED.category,
+       task=EXCLUDED.task,
+       trigger=EXCLUDED.trigger,
+       cadence=EXCLUDED.cadence,
+       goal=EXCLUDED.goal,
+       steps=EXCLUDED.steps,
+       is_active=true
+     RETURNING *`,
+    [
+      tenantId,
+      key,
+      payload.title || key,
+      payload.category || "Custom",
+      payload.task || "",
+      payload.trigger || "",
+      payload.cadence || "",
+      payload.goal || "",
+      JSON.stringify(steps)
+    ]
+  );
+
+  return { key: result.rows[0].key, ...rowToPlaybook(result.rows[0]) };
+}
+
+async function deletePlaybook(tenantId, key) {
+  await query(`UPDATE playbooks SET is_active=false WHERE tenant_id=$1 AND key=$2`, [tenantId, key]);
+}
+
+async function seedDefaultPlaybooks(tenantId) {
+  const existing = await query(`SELECT 1 FROM playbooks WHERE tenant_id=$1 LIMIT 1`, [tenantId]);
+  if (existing.rows.length) return;
+
+  for (const [key, playbook] of Object.entries(PLAYBOOKS)) {
+    await query(
+      `INSERT INTO playbooks (tenant_id, key, title, category, task, trigger, cadence, goal, steps, is_active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
+       ON CONFLICT (tenant_id, key) DO NOTHING`,
+      [
+        tenantId,
+        key,
+        playbook.title,
+        playbook.category,
+        playbook.task,
+        playbook.trigger,
+        playbook.cadence,
+        playbook.goal,
+        JSON.stringify(playbook.steps)
+      ]
+    );
+  }
+}
+
+async function buildPrompt(lead) {
+  const playbook = await getPlaybook(lead.tenant_id, lead.playbook_type);
   const amount = lead.offer_amount || lead.loan_amount || "eligible";
   return `
 You are a warm Hindi-English AI loan assistant.
@@ -122,4 +214,37 @@ Now generate the first spoken message only.
 `;
 }
 
-module.exports = { PLAYBOOKS, buildPrompt };
+function rowsToMap(rows) {
+  return rows.reduce((acc, row) => {
+    acc[row.key] = rowToPlaybook(row);
+    return acc;
+  }, {});
+}
+
+function rowToPlaybook(row) {
+  return {
+    category: row.category,
+    title: row.title,
+    task: row.task || "",
+    trigger: row.trigger || "",
+    cadence: row.cadence || "",
+    goal: row.goal || "",
+    steps: Array.isArray(row.steps) ? row.steps : []
+  };
+}
+
+function normalizeKey(value) {
+  return String(value || "CUSTOM_PLAYBOOK")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || "CUSTOM_PLAYBOOK";
+}
+
+function normalizeSteps(steps) {
+  if (Array.isArray(steps)) return steps.map(step => String(step).trim()).filter(Boolean);
+  return String(steps || "").split(/\r?\n/).map(step => step.trim()).filter(Boolean);
+}
+
+module.exports = { PLAYBOOKS, buildPrompt, deletePlaybook, listPlaybooks, upsertPlaybook };

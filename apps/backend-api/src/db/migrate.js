@@ -169,6 +169,33 @@ async function migrate() {
   `);
 
   await query(`
+    CREATE TABLE IF NOT EXISTS playbooks (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      category TEXT NOT NULL,
+      task TEXT,
+      trigger TEXT,
+      cadence TEXT,
+      goal TEXT,
+      steps JSONB DEFAULT '[]'::jsonb,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(tenant_id, key)
+    );
+  `);
+
+  await query(`DROP TRIGGER IF EXISTS playbooks_set_updated_at ON playbooks;`);
+  await query(`
+    CREATE TRIGGER playbooks_set_updated_at
+      BEFORE UPDATE ON playbooks
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  `);
+
+  await query(`
     CREATE TABLE IF NOT EXISTS call_audio_cache (
       token UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       call_id UUID REFERENCES calls(id) ON DELETE CASCADE,
@@ -218,6 +245,7 @@ async function migrate() {
   await query(`CREATE INDEX IF NOT EXISTS idx_calls_tenant_created ON calls(tenant_id, created_at DESC);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_dnc_phone ON dnc_list(tenant_id, phone);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_playbooks_tenant_key ON playbooks(tenant_id, key);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_audio_expires ON call_audio_cache(expires_at);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_stt_call ON call_stt_events(call_id);`);
 

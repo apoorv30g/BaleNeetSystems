@@ -7,6 +7,7 @@ import { apiFetch } from "../../lib/api";
 
 export default function Campaigns() {
   const [campaigns, setCampaigns] = useState([]);
+  const [playbooks, setPlaybooks] = useState({});
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState({ name: "", description: "", campaignType: "RETARGETING", playbookType: "UNAPPROVED_USERS", dailyLimit: 200, maxAttempts: 3, language: "Hinglish" });
   const [error, setError] = useState("");
@@ -18,6 +19,7 @@ export default function Campaigns() {
 
   useEffect(() => {
     loadCampaigns().catch(err => setError(err.message));
+    apiFetch("/playbooks").then(setPlaybooks).catch(() => {});
   }, []);
 
   async function createCampaign(e) {
@@ -49,7 +51,7 @@ export default function Campaigns() {
 
   return (
     <Shell>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-4xl font-black">Campaigns</h1>
           <p className="mt-2 text-zinc-400">Create use-case specific voice campaigns.</p>
@@ -61,7 +63,7 @@ export default function Campaigns() {
       {message && <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
 
       {formOpen && (
-        <form onSubmit={createCampaign} className="card mt-8 grid grid-cols-2 gap-4 p-6">
+        <form onSubmit={createCampaign} className="card mt-8 grid grid-cols-1 gap-4 p-5 md:grid-cols-2 md:p-6">
           <input className="input" placeholder="Campaign name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
           <input className="input" placeholder="Description" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
           <select className="input" value={form.campaignType} onChange={e => setForm({ ...form, campaignType: e.target.value })}>
@@ -70,11 +72,7 @@ export default function Campaigns() {
             <option value="TARGETING">Targeting</option>
           </select>
           <select className="input" value={form.playbookType} onChange={e => setForm({ ...form, playbookType: e.target.value })}>
-            <option value="UNAPPROVED_USERS">Unapproved Users</option>
-            <option value="APPROVED_USERS">Approved Users</option>
-            <option value="SOFT_PAYMENT_REMINDER">Soft Payment Reminder</option>
-            <option value="HARD_PAYMENT_REMINDER">Hard Payment Reminder</option>
-            <option value="FRESH_LEAD">Fresh Lead</option>
+            {Object.entries(playbooks).map(([key, playbook]) => <option key={key} value={key}>{playbook.title}</option>)}
           </select>
           <input className="input" type="number" min="1" value={form.dailyLimit} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
           <input className="input" type="number" min="1" value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
@@ -83,7 +81,7 @@ export default function Campaigns() {
         </form>
       )}
 
-      <div className="card mt-8 overflow-hidden">
+      <div className="card mt-8 overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-white/[0.04] text-left text-zinc-400">
             <tr>

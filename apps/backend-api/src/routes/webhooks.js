@@ -3,7 +3,7 @@ const { query } = require("../db/pool");
 const { generateReply } = require("../providers/gemini");
 const { synthesizeSpeech } = require("../providers/sarvam");
 const { transcribeAudioUrl } = require("../providers/deepgram");
-const { inferOutcome, isOptOut } = require("../services/outcomes");
+const { classifyConversation, isOptOut } = require("../services/outcomes");
 const { getTenantSettings } = require("../services/settings");
 const config = require("../config");
 
@@ -66,9 +66,11 @@ router.all("/exotel/respond", async (req, res) => {
   const reply = await generateReply({ lead, lastUserMessage: message });
   if (call) {
     await addTranscript(call.id, "assistant", reply);
+    const transcript = await getTranscript(call.id);
+    const classification = classifyConversation({ userMessage: message, transcript, playbookType: lead.playbook_type });
     await query(
-      `UPDATE calls SET outcome=$1, updated_at=NOW() WHERE id=$2`,
-      [inferOutcome(message), call.id]
+      `UPDATE calls SET outcome=$1, summary=$2, updated_at=NOW() WHERE id=$3`,
+      [classification.outcome, classification.summary, call.id]
     );
   }
 
@@ -139,6 +141,14 @@ async function addTranscript(callId, speaker, text) {
     `INSERT INTO transcripts (call_id, speaker, text) VALUES ($1,$2,$3)`,
     [callId, speaker, text]
   );
+}
+
+async function getTranscript(callId) {
+  const result = await query(
+    `SELECT speaker, text FROM transcripts WHERE call_id=$1 ORDER BY created_at ASC`,
+    [callId]
+  );
+  return result.rows;
 }
 
 async function resolveUserMessage(req, { lead, call }) {
