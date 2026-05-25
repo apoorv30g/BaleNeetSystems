@@ -87,7 +87,8 @@ router.put("/:campaignId", async (req, res) => {
        daily_limit=COALESCE($5,daily_limit),
        max_attempts=COALESCE($6,max_attempts),
        language=COALESCE($7,language),
-       status=COALESCE($8,status)
+       status=COALESCE($8,status),
+       updated_at=NOW()
      WHERE id=$9 AND tenant_id=$10
      RETURNING *`,
     [name, description, campaignType, playbookType, dailyLimit, maxAttempts, language, status, req.params.campaignId, req.user.tenantId]
