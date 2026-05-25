@@ -50,6 +50,25 @@ async function migrate() {
 
   await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();`);
 
+  // Back-fill any rows that pre-date the column (no-op on fresh installs).
+  await query(`UPDATE campaigns SET updated_at = created_at WHERE updated_at IS NULL;`);
+
+  // Trigger function that stamps updated_at on every UPDATE (shared across tables).
+  await query(
+    "CREATE OR REPLACE FUNCTION set_updated_at()" +
+    " RETURNS TRIGGER LANGUAGE plpgsql AS" +
+    " $func$ BEGIN NEW.updated_at = NOW(); RETURN NEW; END; $func$"
+  );
+
+  // Attach the trigger to campaigns (idempotent via DROP IF EXISTS).
+  await query(`DROP TRIGGER IF EXISTS campaigns_set_updated_at ON campaigns;`);
+  await query(`
+    CREATE TRIGGER campaigns_set_updated_at
+      BEFORE UPDATE ON campaigns
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  `);
+
   await query(`
     CREATE TABLE IF NOT EXISTS leads (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

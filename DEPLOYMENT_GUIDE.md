@@ -172,6 +172,20 @@ npm run seed
 
 Run migrations again after pulling this version because it adds tenant settings, durable short-lived audio cache, notification events, and migration tracking tables.
 
+**Hotfix — `updated_at` column on campaigns table**
+
+If your deployment is returning `column "updated_at" of relation "campaigns" does not exist` errors (causing all `/campaigns/*` API calls to fail with 500), run the migration immediately from the Railway shell:
+
+```bash
+# Option A — run the dedicated SQL migration directly against the database
+psql $DATABASE_URL -f apps/backend-api/migrations/001_add_campaigns_updated_at.sql
+
+# Option B — re-run the full migrate script (idempotent, safe to run again)
+npm run migrate
+```
+
+Both options are fully idempotent. The migration adds the missing `updated_at` column, back-fills existing rows, and installs a trigger that keeps the column current on every UPDATE.
+
 ---
 
 ## 7. Worker Deploy
