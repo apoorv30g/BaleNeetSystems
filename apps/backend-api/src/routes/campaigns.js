@@ -181,7 +181,7 @@ router.post("/:campaignId/queue-calls", async (req, res) => {
           leadId: lead.id
         },
         opts: {
-          jobId: `lead-call:${req.user.tenantId}:${req.params.campaignId}:${lead.id}`,
+          jobId: `lead-call_${req.user.tenantId}_${req.params.campaignId}_${lead.id}`,
           attempts: settings.maxCallAttempts,
           backoff: { type: "fixed", delay: settings.retryDelayMinutes * 60 * 1000 },
           removeOnComplete: 1000,
