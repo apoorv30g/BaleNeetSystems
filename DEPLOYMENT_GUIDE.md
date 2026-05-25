@@ -95,6 +95,7 @@ JWT_SECRET=replace_with_64_char_random_secret
 
 FRONTEND_URL=https://your-dashboard-service.up.railway.app
 FRONTEND_URLS=https://your-dashboard-service.up.railway.app
+CORS_ORIGIN_SUFFIXES=.baleneetsystems.in
 SERVER_URL=https://your-backend-service.up.railway.app
 
 EXOTEL_ACCOUNT_SID=

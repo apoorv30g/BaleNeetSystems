@@ -17,6 +17,11 @@ const frontendUrls = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || (
   .map(url => url.trim())
   .filter(Boolean);
 
+const corsOriginSuffixes = (process.env.CORS_ORIGIN_SUFFIXES || "")
+  .split(",")
+  .map(suffix => suffix.trim().toLowerCase())
+  .filter(Boolean);
+
 module.exports = {
   port: process.env.PORT || 4000,
   nodeEnv: process.env.NODE_ENV || "development",
@@ -25,6 +30,7 @@ module.exports = {
   jwtSecret: required("JWT_SECRET", isProduction ? "" : "dev_secret_change_me"),
   frontendUrl: frontendUrls[0] || "",
   frontendUrls,
+  corsOriginSuffixes,
   serverUrl: required("SERVER_URL", isProduction ? railwayUrl() : "http://localhost:4000"),
   callWindowStart: Number(process.env.CALL_WINDOW_START || 9),
   callWindowEnd: Number(process.env.CALL_WINDOW_END || 20),

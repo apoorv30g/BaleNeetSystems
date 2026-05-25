@@ -10,14 +10,30 @@ const { attachVoicebot } = require("./routes/voicebot");
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors({
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (config.frontendUrls.includes(origin)) return true;
+
+  try {
+    const host = new URL(origin).hostname.toLowerCase();
+    return config.corsOriginSuffixes.some(suffix => host === suffix.replace(/^\./, "") || host.endsWith(suffix));
+  } catch {
+    return false;
+  }
+}
+
+const corsOptions = {
   origin(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (config.frontendUrls.includes(origin)) return callback(null, true);
+    if (isOriginAllowed(origin)) return callback(null, true);
     return callback(new Error("Origin not allowed by CORS"));
   },
-  credentials: true
-}));
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Authorization", "Content-Type"]
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
