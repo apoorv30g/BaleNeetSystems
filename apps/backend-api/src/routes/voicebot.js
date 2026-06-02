@@ -11,7 +11,8 @@ const config = require("../config");
 const FAST_INTRO_TEXT = "Namaste, LoanConnect AI assistant bol raha hoon.";
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
-const VOICEBOT_MEDIA_VERSION = "2026-06-03-320-byte-paced-v1";
+const VOICEBOT_MEDIA_VERSION = "2026-06-03-first-media-3200-seq-v2";
+const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
 const pcmCache = new Map();
 
 function attachVoicebot(server) {
@@ -59,6 +60,7 @@ function attachVoicebot(server) {
       outboundSequence: 1,
       outboundChunk: 1,
       introTimer: null,
+      introStarted: false,
       startedAt: Date.now()
     };
 
@@ -108,7 +110,11 @@ async function handleMessage(ws, session, data) {
   if (event === "start") {
     await initializeSession(session, message);
     startStt(ws, session);
-    scheduleIntro(ws, session);
+    if (INTRO_START_MODE === "first_media") {
+      scheduleIntro(ws, session, Number(process.env.VOICEBOT_FIRST_MEDIA_FALLBACK_MS || 350));
+    } else {
+      scheduleIntro(ws, session, INTRO_DELAY_MS);
+    }
     return;
   }
 
@@ -124,6 +130,9 @@ async function handleMessage(ws, session, data) {
           mediaChunks: session.mediaChunks,
           bytesReceived: session.bytesReceived
         });
+      }
+      if (INTRO_START_MODE === "first_media" && !session.introStarted) {
+        startIntro(ws, session, "first_media");
       }
       session.stt?.sendAudio(audio);
     }
@@ -150,28 +159,35 @@ async function handleMessage(ws, session, data) {
   }
 }
 
-function scheduleIntro(ws, session) {
+function scheduleIntro(ws, session, delayMs = INTRO_DELAY_MS) {
   if (session.introTimer) clearTimeout(session.introTimer);
 
-  if (INTRO_DELAY_MS <= 0) {
-    logVoicebotEvent(session, "intro_started", { delayMs: 0 }).catch(() => {});
-    speakIntro(ws, session).catch(err => {
-      logger.error("voicebot_intro_failed", { error: err.message, callId: session.callId });
-      logVoicebotEvent(session, "intro_failed", { error: err.message }).catch(() => {});
-    });
+  if (delayMs <= 0) {
+    startIntro(ws, session, "immediate");
     return;
   }
 
   session.introTimer = setTimeout(() => {
     session.introTimer = null;
-    logVoicebotEvent(session, "intro_started", { delayMs: INTRO_DELAY_MS }).catch(() => {});
-    speakIntro(ws, session).catch(err => {
-      logger.error("voicebot_intro_failed", { error: err.message, callId: session.callId });
-      logVoicebotEvent(session, "intro_failed", { error: err.message }).catch(() => {});
-    });
-  }, INTRO_DELAY_MS);
+    startIntro(ws, session, "timer");
+  }, delayMs);
 
-  logVoicebotEvent(session, "intro_scheduled", { delayMs: INTRO_DELAY_MS }).catch(() => {});
+  logVoicebotEvent(session, "intro_scheduled", { delayMs, mode: INTRO_START_MODE }).catch(() => {});
+}
+
+function startIntro(ws, session, trigger) {
+  if (session.introStarted || session.closed || ws.readyState !== ws.OPEN) return;
+  session.introStarted = true;
+  if (session.introTimer) {
+    clearTimeout(session.introTimer);
+    session.introTimer = null;
+  }
+
+  logVoicebotEvent(session, "intro_started", { trigger, mode: INTRO_START_MODE }).catch(() => {});
+  speakIntro(ws, session).catch(err => {
+    logger.error("voicebot_intro_failed", { error: err.message, callId: session.callId });
+    logVoicebotEvent(session, "intro_failed", { error: err.message }).catch(() => {});
+  });
 }
 
 function parseMessage(data) {
@@ -494,9 +510,9 @@ async function sendMedia(ws, session, audioBase64) {
 }
 
 function outboundChunkBytes() {
-  const configured = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 320);
-  const bounded = Number.isFinite(configured) ? Math.min(Math.max(configured, 320), 3200) : 320;
-  return Math.floor(bounded / 320) * 320 || 320;
+  const configured = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
+  const bounded = Number.isFinite(configured) ? Math.min(Math.max(configured, 320), 100000) : 3200;
+  return Math.floor(bounded / 320) * 320 || 3200;
 }
 
 function padToChunkSize(audio, chunkBytes) {
@@ -513,6 +529,7 @@ function sendMediaFrame(ws, session, payload, timestamp) {
   if (ws.readyState !== ws.OPEN) return;
   ws.send(JSON.stringify({
     event: "media",
+    sequence_number: String(session.outboundSequence++),
     stream_sid: session.streamSid || undefined,
     media: {
       chunk: session.outboundChunk++,

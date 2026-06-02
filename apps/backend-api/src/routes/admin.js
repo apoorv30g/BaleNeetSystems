@@ -142,6 +142,27 @@ router.get("/voicebot-events", async (req, res) => {
   res.json(result.rows);
 });
 
+router.get("/exotel-calls/:callSid", async (req, res) => {
+  if (!config.exotel.accountSid || !config.exotel.apiKey || !config.exotel.apiToken) {
+    return res.status(503).json({ error: "Exotel credentials are not configured" });
+  }
+
+  const callSid = req.params.callSid;
+  const [callDetails, legDetails] = await Promise.all([
+    fetchExotelFirst([
+      `/v1/Accounts/${encodeURIComponent(config.exotel.accountSid)}/Calls/${encodeURIComponent(callSid)}.json`,
+      `/v1/Accounts/${encodeURIComponent(config.exotel.accountSid)}/Calls/${encodeURIComponent(callSid)}`
+    ]),
+    fetchExotelFirst([
+      `/v1/Accounts/${encodeURIComponent(config.exotel.accountSid)}/Calls/${encodeURIComponent(callSid)}/Legs.json`,
+      `/v1/Accounts/${encodeURIComponent(config.exotel.accountSid)}/Calls/${encodeURIComponent(callSid)}/Legs`
+    ])
+      .catch(err => ({ ok: false, status: err.status || 500, error: err.message }))
+  ]);
+
+  res.json({ callSid, callDetails, legDetails });
+});
+
 async function audit(req, action, details) {
   await query(
     `INSERT INTO audit_logs (tenant_id, user_id, action, details)
@@ -155,6 +176,44 @@ function rowsToCountMap(rows) {
     acc[row.status || "unknown"] = row.count;
     return acc;
   }, {});
+}
+
+function exotelAuthHeader() {
+  return `Basic ${Buffer.from(`${config.exotel.apiKey}:${config.exotel.apiToken}`).toString("base64")}`;
+}
+
+async function fetchExotel(path) {
+  const res = await fetch(`${config.exotel.apiBase}${path}`, {
+    headers: { Authorization: exotelAuthHeader() }
+  });
+  const text = await res.text();
+  const body = parseMaybeJson(text);
+  if (!res.ok) {
+    const err = new Error(typeof body === "string" ? body : JSON.stringify(body));
+    err.status = res.status;
+    throw err;
+  }
+  return { ok: true, status: res.status, body };
+}
+
+async function fetchExotelFirst(paths) {
+  let lastError;
+  for (const path of paths) {
+    try {
+      return await fetchExotel(path);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
+function parseMaybeJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 module.exports = router;

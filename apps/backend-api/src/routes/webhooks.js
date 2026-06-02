@@ -93,18 +93,20 @@ router.get("/audio/:token", (req, res) => {
 });
 
 router.get("/exotel/voicebot-health", (req, res) => {
-  const configuredChunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 320);
+  const configuredChunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
   const chunkBytes = Number.isFinite(configuredChunkBytes)
-    ? Math.floor(Math.min(Math.max(configuredChunkBytes, 320), 3200) / 320) * 320
-    : 320;
+    ? Math.floor(Math.min(Math.max(configuredChunkBytes, 320), 100000) / 320) * 320
+    : 3200;
 
   res.json({
     ok: true,
     path: "/webhooks/exotel/voicebot",
     pathTokenFormat: "/webhooks/exotel/voicebot/:token",
     wssUrl: `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`,
-    mediaVersion: "2026-06-03-320-byte-paced-v1",
-    chunkBytes: chunkBytes || 320,
+    mediaVersion: "2026-06-03-first-media-3200-seq-v2",
+    chunkBytes: chunkBytes || 3200,
+    introStartMode: process.env.VOICEBOT_INTRO_START_MODE || "first_media",
+    firstMediaFallbackMs: Number(process.env.VOICEBOT_FIRST_MEDIA_FALLBACK_MS || 350),
     silenceKeepaliveEnabled: process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true",
     introDelayMs: Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0),
     deepgramConfigured: Boolean(config.ai.deepgramApiKey),
