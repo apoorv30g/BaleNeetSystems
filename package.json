@@ -1,6 +1,11 @@
 {
   "name": "loanconnect-playbook-ai",
   "private": true,
+  "scripts": {
+    "migrate": "npm --workspace backend-api run migrate",
+    "seed": "npm --workspace backend-api run seed",
+    "test": "npm --workspace backend-api test"
+  },
   "workspaces": [
     "apps/*"
   ]
