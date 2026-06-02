@@ -8,9 +8,10 @@ const { classifyConversation, isOptOut } = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
 
-const FAST_INTRO_TEXT = "Namaste, LoanConnect se AI assistant bol raha hoon. Kya aap ek minute de sakte hain?";
+const FAST_INTRO_TEXT = "Namaste, LoanConnect AI assistant bol raha hoon.";
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
+const VOICEBOT_MEDIA_VERSION = "2026-06-03-320-byte-paced-v1";
 const pcmCache = new Map();
 
 function attachVoicebot(server) {
@@ -401,15 +402,20 @@ function firstGreeting(lead) {
 async function speakText(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
   session.speaking = true;
+  const startedAt = Date.now();
   const stopKeepalive = SILENCE_KEEPALIVE_ENABLED ? startSilenceKeepalive(ws, session, markName) : () => {};
   try {
     const pcmBase64 = await getPcmBase64(text);
     stopKeepalive();
 
     if (pcmBase64) {
-      const chunks = await sendMedia(ws, session, pcmBase64);
-      await logVoicebotEvent(session, "media_sent", { markName, chunks, pcmBytes: Buffer.from(pcmBase64, "base64").length });
-      sendMark(ws, session, markName);
+      const sendResult = await sendMedia(ws, session, pcmBase64);
+      await logVoicebotEvent(session, "media_sent", {
+        markName,
+        ...sendResult,
+        elapsedMs: Date.now() - startedAt
+      });
+      if (!session.closed && ws.readyState === ws.OPEN) sendMark(ws, session, markName);
       return;
     }
     sendMark(ws, session, `${markName}_text_only`);
@@ -462,13 +468,14 @@ function startSilenceKeepalive(ws, session, markName) {
 }
 
 async function sendMedia(ws, session, audioBase64) {
-  if (ws.readyState !== ws.OPEN) return 0;
+  if (ws.readyState !== ws.OPEN) return { chunks: 0, stoppedEarly: true, chunkBytes: outboundChunkBytes(), pcmBytes: 0 };
   const chunkBytes = outboundChunkBytes();
-  const audio = padToChunkSize(Buffer.from(audioBase64, "base64"), chunkBytes);
+  const rawAudio = Buffer.from(audioBase64, "base64");
+  const audio = padToChunkSize(rawAudio, chunkBytes);
   let chunks = 0;
 
   for (let offset = 0; offset < audio.length; offset += chunkBytes) {
-    if (ws.readyState !== ws.OPEN) break;
+    if (ws.readyState !== ws.OPEN || session.closed) break;
     const chunk = audio.subarray(offset, offset + chunkBytes);
     const payload = chunk.toString("base64");
     sendMediaFrame(ws, session, payload, Math.floor(offset / 16));
@@ -476,13 +483,20 @@ async function sendMedia(ws, session, audioBase64) {
     if (offset + chunkBytes < audio.length) await sleep(pcmDurationMs(chunk.length));
   }
 
-  return chunks;
+  return {
+    chunks,
+    chunkBytes,
+    pcmBytes: rawAudio.length,
+    paddedBytes: audio.length,
+    stoppedEarly: chunks * chunkBytes < audio.length,
+    mediaVersion: VOICEBOT_MEDIA_VERSION
+  };
 }
 
 function outboundChunkBytes() {
-  const configured = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
-  const bounded = Number.isFinite(configured) ? Math.min(Math.max(configured, 3200), 3200) : 3200;
-  return Math.floor(bounded / 320) * 320 || 3200;
+  const configured = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 320);
+  const bounded = Number.isFinite(configured) ? Math.min(Math.max(configured, 320), 3200) : 320;
+  return Math.floor(bounded / 320) * 320 || 320;
 }
 
 function padToChunkSize(audio, chunkBytes) {
