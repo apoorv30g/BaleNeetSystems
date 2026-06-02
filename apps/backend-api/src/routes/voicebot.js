@@ -88,7 +88,9 @@ function attachVoicebot(server) {
 async function handleMessage(ws, session, data) {
   const message = parseMessage(data);
   const event = String(message.event || message.Event || "").toLowerCase();
-  await logVoicebotEvent(session, event || "unknown_message", summarizeMessage(message));
+  if (event !== "media") {
+    await logVoicebotEvent(session, event || "unknown_message", summarizeMessage(message));
+  }
 
   if (event === "connected") {
     sendMark(ws, session, "connected");
@@ -108,6 +110,13 @@ async function handleMessage(ws, session, data) {
       session.mediaChunks++;
       const audio = Buffer.from(payload, "base64");
       session.bytesReceived += audio.length;
+      if (session.mediaChunks === 1 || session.mediaChunks % 100 === 0) {
+        await logVoicebotEvent(session, "media", {
+          payloadBytes: audio.length,
+          mediaChunks: session.mediaChunks,
+          bytesReceived: session.bytesReceived
+        });
+      }
       session.stt?.sendAudio(audio);
     }
     return;
@@ -202,6 +211,7 @@ async function initializeSession(session, message) {
 
   session.tenantId = lead.tenant_id;
   session.lead = lead;
+  session.campaignId = session.campaignId || lead.campaign_id;
 
   const callResult = session.requestedCallId
     ? await query(
@@ -214,23 +224,49 @@ async function initializeSession(session, message) {
       [callSid || null, session.requestedCallId, lead.tenant_id, lead.id]
     )
     : { rows: [] };
+  let reuseMode = callResult.rows[0] ? "requested_call_id" : "";
+
+  if (!callResult.rows[0]) {
+    const matchedPlaceholder = await query(
+      `UPDATE calls
+       SET call_sid=COALESCE($1, call_sid),
+           status='streaming',
+           updated_at=NOW()
+       WHERE id=(
+         SELECT id FROM calls
+         WHERE tenant_id=$2
+           AND lead_id=$3
+           AND campaign_id=$4
+           AND status IN ('initiated','dialing','queued')
+           AND created_at > NOW() - INTERVAL '20 minutes'
+         ORDER BY created_at DESC
+         LIMIT 1
+       )
+       RETURNING *`,
+      [callSid || null, lead.tenant_id, lead.id, session.campaignId]
+    );
+    callResult.rows = matchedPlaceholder.rows;
+    if (callResult.rows[0]) reuseMode = "latest_outbound_placeholder";
+  }
 
   if (!callResult.rows[0]) {
     const inserted = await query(
       `INSERT INTO calls (tenant_id, campaign_id, lead_id, call_sid, status)
        VALUES ($1,$2,$3,$4,'streaming')
        RETURNING *`,
-      [lead.tenant_id, session.campaignId || lead.campaign_id, lead.id, callSid || null]
+      [lead.tenant_id, session.campaignId, lead.id, callSid || null]
     );
     callResult.rows = inserted.rows;
+    reuseMode = "inserted_streaming_call";
   }
 
   session.callId = callResult.rows[0].id;
   await logVoicebotEvent(session, "lead_matched", {
     leadId: lead.id,
     callId: session.callId,
-    reusedCall: Boolean(session.requestedCallId),
-    campaignId: session.campaignId || lead.campaign_id
+    reusedCall: reuseMode !== "inserted_streaming_call",
+    reuseMode,
+    campaignId: session.campaignId
   });
 }
 
