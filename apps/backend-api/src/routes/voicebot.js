@@ -40,6 +40,8 @@ function attachVoicebot(server) {
       callId: null,
       tenantId: null,
       lead: null,
+      callerPhone: "",
+      calledPhone: "",
       stt: null,
       speaking: false,
       closed: false,
@@ -121,19 +123,58 @@ function parseMessage(data) {
 }
 
 async function initializeSession(session, message) {
-  const callSid = session.callSid || message?.start?.callSid || message?.start?.call_sid || message?.CallSid || "";
+  const callSid = session.callSid
+    || pick(message, ["start.callSid", "start.call_sid", "start.call_sid", "CallSid", "callSid", "Sid"])
+    || "";
   session.callSid = callSid;
 
-  if (!session.leadId && message?.start?.customParameters?.leadId) {
-    session.leadId = message.start.customParameters.leadId;
+  const customParameters = message?.start?.customParameters || message?.start?.custom_parameters || message?.customParameters || {};
+
+  if (!session.leadId && customParameters.leadId) {
+    session.leadId = customParameters.leadId;
   }
-  if (!session.campaignId && message?.start?.customParameters?.campaignId) {
-    session.campaignId = message.start.customParameters.campaignId;
+  if (!session.campaignId && customParameters.campaignId) {
+    session.campaignId = customParameters.campaignId;
   }
 
-  if (!session.leadId) return;
+  session.callerPhone = normalizePhone(pick(message, [
+    "start.from",
+    "start.caller",
+    "start.callFrom",
+    "start.call_from",
+    "From",
+    "Caller",
+    "CallFrom"
+  ]));
+  session.calledPhone = normalizePhone(pick(message, [
+    "start.to",
+    "start.called",
+    "start.callTo",
+    "start.call_to",
+    "To",
+    "Called",
+    "CallTo"
+  ]));
 
-  const leadResult = await query(`SELECT * FROM leads WHERE id=$1`, [session.leadId]);
+  if (!session.leadId) {
+    const matchedLead = await findLatestLeadByPhone(session.callerPhone || session.calledPhone);
+    if (matchedLead) {
+      session.leadId = matchedLead.id;
+      session.lead = matchedLead;
+      session.campaignId = session.campaignId || matchedLead.campaign_id;
+    }
+  }
+
+  if (!session.leadId) {
+    logger.warn("voicebot_started_without_lead", {
+      callSid,
+      callerPhone: session.callerPhone,
+      calledPhone: session.calledPhone
+    });
+    return;
+  }
+
+  const leadResult = session.lead ? { rows: [session.lead] } : await query(`SELECT * FROM leads WHERE id=$1`, [session.leadId]);
   const lead = leadResult.rows[0];
   if (!lead) return;
 
@@ -150,10 +191,21 @@ async function initializeSession(session, message) {
 }
 
 async function speakIntro(ws, session) {
-  if (!session.leadId) return;
+  if (!session.leadId) {
+    await speakText(
+      ws,
+      session,
+      "Namaste, LoanConnect se AI assistant bol raha hoon. Kya aap abhi loan eligibility ke baare mein baat kar sakte hain?",
+      "generic_intro_played"
+    );
+    return;
+  }
 
   const lead = session.lead || (await query(`SELECT * FROM leads WHERE id=$1`, [session.leadId])).rows[0];
-  if (!lead) return;
+  if (!lead) {
+    await speakText(ws, session, "Namaste, LoanConnect se AI assistant bol raha hoon. Kya aap abhi baat kar sakte hain?", "fallback_intro_played");
+    return;
+  }
 
   const text = await generateReply({ lead });
   if (session.callId) await addTranscript(session.callId, "assistant", text);
@@ -162,10 +214,10 @@ async function speakIntro(ws, session) {
 }
 
 function startStt(ws, session) {
-  if (!session.lead || session.stt) return;
+  if (session.stt) return;
 
   session.stt = createDeepgramLive({
-    language: deepgramLanguage(session.lead.language),
+    language: deepgramLanguage(session.lead?.language),
     onTranscript: event => handleTranscript(ws, session, event).catch(err => {
       logger.error("voicebot_transcript_failed", { error: err.message, callId: session.callId });
     }),
@@ -177,6 +229,11 @@ async function handleTranscript(ws, session, event) {
   if (!event.isFinal && !event.speechFinal) return;
   const text = event.transcript.trim();
   if (!text || session.speaking) return;
+
+  if (!session.lead) {
+    await speakText(ws, session, "Dhanyavaad. Main aapki baat note kar raha hoon. LoanConnect team aapki request process karegi.", "generic_reply_played");
+    return;
+  }
 
   if (session.callId) {
     await addTranscript(session.callId, "user", text);
@@ -247,6 +304,29 @@ function deepgramLanguage(language) {
   if (value.includes("hindi")) return "hi";
   if (value.includes("english")) return "en";
   return process.env.DEEPGRAM_LANGUAGE || "multi";
+}
+
+function pick(obj, paths) {
+  for (const path of paths) {
+    const value = path.split(".").reduce((acc, key) => acc?.[key], obj);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return "";
+}
+
+function normalizePhone(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+async function findLatestLeadByPhone(phone) {
+  if (!phone) return null;
+  const result = await query(
+    `SELECT * FROM leads
+     WHERE RIGHT(phone, 10)=RIGHT($1, 10)
+     ORDER BY created_at DESC LIMIT 1`,
+    [phone]
+  );
+  return result.rows[0] || null;
 }
 
 function sendMark(ws, name) {
