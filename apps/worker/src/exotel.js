@@ -4,7 +4,7 @@ function authHeader() {
   return `Basic ${Buffer.from(`${config.exotel.apiKey}:${config.exotel.apiToken}`).toString("base64")}`;
 }
 
-async function triggerOutboundCall({ to, leadId, campaignId }) {
+async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   if (!config.exotel.accountSid || !config.exotel.apiKey || !config.exotel.apiToken) {
     console.log("[mock] call", { to, leadId, campaignId });
     return { callSid: `mock_${Date.now()}` };
@@ -15,7 +15,7 @@ async function triggerOutboundCall({ to, leadId, campaignId }) {
   params.set("From", formatCustomerNumber(to));
   params.set("CallerId", config.exotel.fromNumber);
   params.set("StreamType", "bidirectional");
-  params.set("StreamUrl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}`);
+  params.set("StreamUrl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}&callId=${encodeURIComponent(callId)}`);
   params.set("StreamName", "loanconnect_bot");
   params.set("Record", "true");
   params.set("StatusCallback", `${config.serverUrl}/webhooks/exotel/status`);

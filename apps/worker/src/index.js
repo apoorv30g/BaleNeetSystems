@@ -40,7 +40,7 @@ const worker = new Worker("lead-calls", async (job) => {
   );
 
   try {
-    const result = await triggerOutboundCall({ to: lead.phone, leadId, campaignId });
+    const result = await triggerOutboundCall({ to: lead.phone, leadId, campaignId, callId: callRow.rows[0].id });
     await query(`UPDATE calls SET call_sid=$1, status='dialing', updated_at=NOW() WHERE id=$2`, [result.callSid, callRow.rows[0].id]);
     await query(`UPDATE leads SET status='called', attempt_count=attempt_count+1, last_called_at=NOW() WHERE id=$1`, [leadId]);
   } catch (err) {

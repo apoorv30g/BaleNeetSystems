@@ -8,8 +8,12 @@ const { classifyConversation, isOptOut } = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
 
+const FAST_INTRO_TEXT = "Namaste, LoanConnect se AI assistant bol raha hoon. Kya aap ek minute de sakte hain?";
+const pcmCache = new Map();
+
 function attachVoicebot(server) {
   const wss = new WebSocketServer({ noServer: true });
+  prewarmAudio(FAST_INTRO_TEXT).catch(err => logger.warn("voicebot_prewarm_failed", { error: err.message }));
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
@@ -36,6 +40,7 @@ function attachVoicebot(server) {
     const session = {
       leadId: url.searchParams.get("leadId"),
       campaignId: url.searchParams.get("campaignId"),
+      requestedCallId: url.searchParams.get("callId"),
       callSid: url.searchParams.get("callSid") || "",
       streamSid: "",
       callId: null,
@@ -86,7 +91,7 @@ async function handleMessage(ws, session, data) {
   await logVoicebotEvent(session, event || "unknown_message", summarizeMessage(message));
 
   if (event === "connected") {
-    sendMark(ws, "connected");
+    sendMark(ws, session, "connected");
     return;
   }
 
@@ -111,12 +116,12 @@ async function handleMessage(ws, session, data) {
   if (event === "dtmf") {
     const digit = message?.dtmf?.digit || message?.digits || message?.Digit || "";
     if (session.callId && digit) await addTranscript(session.callId, "user", `DTMF:${digit}`);
-    sendMark(ws, `dtmf_${digit || "unknown"}`);
+    sendMark(ws, session, `dtmf_${digit || "unknown"}`);
     return;
   }
 
   if (event === "clear") {
-    sendMark(ws, "context_cleared");
+    sendMark(ws, session, "context_cleared");
     return;
   }
 
@@ -198,14 +203,35 @@ async function initializeSession(session, message) {
   session.tenantId = lead.tenant_id;
   session.lead = lead;
 
-  const callResult = await query(
-    `INSERT INTO calls (tenant_id, campaign_id, lead_id, call_sid, status)
-     VALUES ($1,$2,$3,$4,'streaming')
-     RETURNING *`,
-    [lead.tenant_id, session.campaignId || lead.campaign_id, lead.id, callSid || null]
-  );
+  const callResult = session.requestedCallId
+    ? await query(
+      `UPDATE calls
+       SET call_sid=COALESCE($1, call_sid),
+           status='streaming',
+           updated_at=NOW()
+       WHERE id=$2 AND tenant_id=$3 AND lead_id=$4
+       RETURNING *`,
+      [callSid || null, session.requestedCallId, lead.tenant_id, lead.id]
+    )
+    : { rows: [] };
+
+  if (!callResult.rows[0]) {
+    const inserted = await query(
+      `INSERT INTO calls (tenant_id, campaign_id, lead_id, call_sid, status)
+       VALUES ($1,$2,$3,$4,'streaming')
+       RETURNING *`,
+      [lead.tenant_id, session.campaignId || lead.campaign_id, lead.id, callSid || null]
+    );
+    callResult.rows = inserted.rows;
+  }
+
   session.callId = callResult.rows[0].id;
-  await logVoicebotEvent(session, "lead_matched", { leadId: lead.id, campaignId: session.campaignId || lead.campaign_id });
+  await logVoicebotEvent(session, "lead_matched", {
+    leadId: lead.id,
+    callId: session.callId,
+    reusedCall: Boolean(session.requestedCallId),
+    campaignId: session.campaignId || lead.campaign_id
+  });
 }
 
 async function speakIntro(ws, session) {
@@ -299,34 +325,70 @@ async function safeGenerateReply(session, args) {
 }
 
 function firstGreeting(lead) {
-  const name = lead.name ? `${lead.name} ji` : "ji";
-  const amount = lead.offer_amount || lead.loan_amount;
-  if (amount) {
-    return `Namaste ${name}, main LoanConnect ka AI assistant bol raha hoon. Aapki loan eligibility ${amount} tak ho sakti hai. Kya main ek minute le sakta hoon?`;
-  }
-  return `Namaste ${name}, main LoanConnect ka AI assistant bol raha hoon. Aapne loan eligibility ke liye interest dikhaya tha. Kya main ek minute le sakta hoon?`;
+  return FAST_INTRO_TEXT;
 }
 
 async function speakText(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
   session.speaking = true;
+  const stopKeepalive = startSilenceKeepalive(ws, session, markName);
   try {
-    const speech = await synthesizeSpeech(text);
-    if (speech.mode === "audio") {
-      const pcmBase64 = await toExotelPcmBase64(speech.audioBase64);
+    const pcmBase64 = await getPcmBase64(text);
+    stopKeepalive();
+
+    if (pcmBase64) {
       const chunks = await sendMedia(ws, session, pcmBase64);
       await logVoicebotEvent(session, "media_sent", { markName, chunks, pcmBytes: Buffer.from(pcmBase64, "base64").length });
-      sendMark(ws, markName);
+      sendMark(ws, session, markName);
       return;
     }
-    sendMark(ws, `${markName}_text_only`);
+    sendMark(ws, session, `${markName}_text_only`);
   } catch (err) {
+    stopKeepalive();
     logger.warn("voicebot_tts_failed", { error: err.message, leadId: session.leadId });
     await logVoicebotEvent(session, "tts_failed", { error: err.message, markName });
-    sendMark(ws, `${markName}_tts_failed`);
+    sendMark(ws, session, `${markName}_tts_failed`);
   } finally {
+    stopKeepalive();
     session.speaking = false;
   }
+}
+
+async function getPcmBase64(text) {
+  if (pcmCache.has(text)) return pcmCache.get(text);
+
+  const speech = await synthesizeSpeech(text);
+  if (speech.mode !== "audio") return null;
+
+  const pcmBase64 = await toExotelPcmBase64(speech.audioBase64);
+  if (pcmCache.size < Number(process.env.VOICEBOT_PCM_CACHE_LIMIT || 50)) {
+    pcmCache.set(text, pcmBase64);
+  }
+  return pcmBase64;
+}
+
+async function prewarmAudio(text) {
+  await getPcmBase64(text);
+}
+
+function startSilenceKeepalive(ws, session, markName) {
+  const chunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
+  const delayMs = Number(process.env.EXOTEL_MEDIA_CHUNK_DELAY_MS || 100);
+  const silence = Buffer.alloc(chunkBytes).toString("base64");
+  let stopped = false;
+
+  const timer = setInterval(() => {
+    if (stopped || ws.readyState !== ws.OPEN || session.closed) return;
+    sendMediaFrame(ws, session, silence, 0);
+  }, delayMs);
+
+  logVoicebotEvent(session, "silence_keepalive_started", { markName, chunkBytes, delayMs }).catch(() => {});
+
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 async function sendMedia(ws, session, audioBase64) {
@@ -339,21 +401,26 @@ async function sendMedia(ws, session, audioBase64) {
   for (let offset = 0; offset < audio.length; offset += chunkBytes) {
     if (ws.readyState !== ws.OPEN) break;
     const payload = audio.subarray(offset, offset + chunkBytes).toString("base64");
-    ws.send(JSON.stringify({
-      event: "media",
-      sequence_number: session.outboundSequence++,
-      stream_sid: session.streamSid || undefined,
-      media: {
-        chunk: session.outboundChunk++,
-        timestamp: String(Math.floor(offset / 32)),
-        payload
-      }
-    }));
+    sendMediaFrame(ws, session, payload, Math.floor(offset / 16));
     chunks++;
     if (offset + chunkBytes < audio.length) await sleep(delayMs);
   }
 
   return chunks;
+}
+
+function sendMediaFrame(ws, session, payload, timestamp) {
+  if (ws.readyState !== ws.OPEN) return;
+  ws.send(JSON.stringify({
+    event: "media",
+    sequence_number: session.outboundSequence++,
+    stream_sid: session.streamSid || undefined,
+    media: {
+      chunk: session.outboundChunk++,
+      timestamp: String(timestamp),
+      payload
+    }
+  }));
 }
 
 function deepgramLanguage(language) {
@@ -424,11 +491,11 @@ async function logVoicebotEvent(session, eventType, details = {}) {
   }
 }
 
-function sendMark(ws, name) {
+function sendMark(ws, session, name) {
   if (ws.readyState !== ws.OPEN) return;
   ws.send(JSON.stringify({
     event: "mark",
-    stream_sid: undefined,
+    stream_sid: session?.streamSid || undefined,
     mark: { name }
   }));
 }
