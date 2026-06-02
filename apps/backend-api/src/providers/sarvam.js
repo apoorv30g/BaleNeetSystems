@@ -3,6 +3,10 @@ const config = require("../config");
 async function synthesizeSpeech(text) {
   if (!config.ai.sarvamApiKey) return { mode: "text_only", text };
 
+  const targetLanguageCode = process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
+  const speaker = process.env.SARVAM_TTS_SPEAKER || "shubh";
+  const model = process.env.SARVAM_TTS_MODEL || "bulbul:v3";
+
   const res = await fetch("https://api.sarvam.ai/text-to-speech", {
     method: "POST",
     headers: {
@@ -11,8 +15,9 @@ async function synthesizeSpeech(text) {
     },
     body: JSON.stringify({
       text,
-      target_language_code: "hi-IN",
-      speaker: "meera"
+      target_language_code: targetLanguageCode,
+      speaker,
+      model
     })
   });
 
@@ -21,7 +26,7 @@ async function synthesizeSpeech(text) {
   }
 
   const data = await res.json();
-  const audioBase64 = data.audio || data.audioContent || data?.audios?.[0] || data?.data?.audio;
+  const audioBase64 = data.audio || data.audioContent || data?.audios?.join("") || data?.data?.audio;
 
   if (!audioBase64) return { mode: "text_only", text, raw: data };
 

@@ -2,6 +2,7 @@ const express = require("express");
 const { query } = require("../db/pool");
 const { generateReply } = require("../providers/gemini");
 const { synthesizeSpeech } = require("../providers/sarvam");
+const { toExotelPcmBase64 } = require("../providers/audio");
 const { transcribeAudioUrl } = require("../providers/deepgram");
 const { classifyConversation, isOptOut } = require("../services/outcomes");
 const { getTenantSettings } = require("../services/settings");
@@ -91,6 +92,25 @@ router.get("/exotel/voicebot-health", (req, res) => {
     sarvamConfigured: Boolean(config.ai.sarvamApiKey),
     tokenRequired: Boolean(config.voicebotToken)
   });
+});
+
+router.get("/exotel/tts-health", async (req, res) => {
+  try {
+    const speech = await synthesizeSpeech("Namaste, LoanConnect se AI assistant bol raha hoon.");
+    let pcmBytes = 0;
+    if (speech.mode === "audio") {
+      const pcmBase64 = await toExotelPcmBase64(speech.audioBase64);
+      pcmBytes = Buffer.from(pcmBase64, "base64").length;
+    }
+    res.json({
+      ok: speech.mode === "audio",
+      mode: speech.mode,
+      mimeType: speech.mimeType || null,
+      pcmBytes
+    });
+  } catch (err) {
+    res.status(503).json({ ok: false, error: err.message });
+  }
 });
 
 router.all("/exotel/passthru", async (req, res) => {
