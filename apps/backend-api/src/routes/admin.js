@@ -132,6 +132,16 @@ router.get("/audit-logs", async (req, res) => {
   res.json(result.rows);
 });
 
+router.get("/voicebot-events", async (req, res) => {
+  const result = await query(
+    `SELECT ve.*, l.name as lead_name, l.phone
+     FROM voicebot_events ve
+     LEFT JOIN leads l ON l.id=ve.lead_id
+     ORDER BY ve.created_at DESC LIMIT 300`
+  );
+  res.json(result.rows);
+});
+
 async function audit(req, action, details) {
   await query(
     `INSERT INTO audit_logs (tenant_id, user_id, action, details)

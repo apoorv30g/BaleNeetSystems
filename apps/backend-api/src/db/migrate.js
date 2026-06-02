@@ -236,6 +236,18 @@ async function migrate() {
   `);
 
   await query(`
+    CREATE TABLE IF NOT EXISTS voicebot_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      call_sid TEXT,
+      lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+      campaign_id UUID REFERENCES campaigns(id) ON DELETE SET NULL,
+      event_type TEXT NOT NULL,
+      details JSONB,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await query(`
     INSERT INTO tenant_settings (tenant_id)
     SELECT id FROM tenants
     ON CONFLICT (tenant_id) DO NOTHING;
@@ -248,6 +260,8 @@ async function migrate() {
   await query(`CREATE INDEX IF NOT EXISTS idx_playbooks_tenant_key ON playbooks(tenant_id, key);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_audio_expires ON call_audio_cache(expires_at);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_stt_call ON call_stt_events(call_id);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_voicebot_events_created ON voicebot_events(created_at DESC);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_voicebot_events_call_sid ON voicebot_events(call_sid);`);
 
   console.log("Migration complete");
 }

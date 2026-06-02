@@ -51,9 +51,11 @@ function attachVoicebot(server) {
     };
 
     logger.info("voicebot_connected", { leadId: session.leadId, campaignId: session.campaignId });
+    logVoicebotEvent(session, "ws_connected", { url: req.url, remoteAddress: req.socket.remoteAddress }).catch(() => {});
 
     ws.on("message", data => handleMessage(ws, session, data).catch(err => {
       logger.error("voicebot_message_failed", { error: err.message, leadId: session.leadId });
+      logVoicebotEvent(session, "message_failed", { error: err.message }).catch(() => {});
     }));
 
     ws.on("close", () => {
@@ -66,6 +68,11 @@ function attachVoicebot(server) {
         bytesReceived: session.bytesReceived,
         durationMs: Date.now() - session.startedAt
       });
+      logVoicebotEvent(session, "ws_closed", {
+        mediaChunks: session.mediaChunks,
+        bytesReceived: session.bytesReceived,
+        durationMs: Date.now() - session.startedAt
+      }).catch(() => {});
     });
   });
 }
@@ -73,6 +80,7 @@ function attachVoicebot(server) {
 async function handleMessage(ws, session, data) {
   const message = parseMessage(data);
   const event = String(message.event || message.Event || "").toLowerCase();
+  await logVoicebotEvent(session, event || "unknown_message", summarizeMessage(message));
 
   if (event === "connected") {
     sendMark(ws, "connected");
@@ -127,6 +135,7 @@ async function initializeSession(session, message) {
     || pick(message, ["start.callSid", "start.call_sid", "start.call_sid", "CallSid", "callSid", "Sid"])
     || "";
   session.callSid = callSid;
+  await logVoicebotEvent(session, "start_received", { callSid, rawKeys: Object.keys(message || {}) });
 
   const customParameters = message?.start?.customParameters || message?.start?.custom_parameters || message?.customParameters || {};
 
@@ -171,6 +180,10 @@ async function initializeSession(session, message) {
       callerPhone: session.callerPhone,
       calledPhone: session.calledPhone
     });
+    await logVoicebotEvent(session, "started_without_lead", {
+      callerPhone: session.callerPhone,
+      calledPhone: session.calledPhone
+    });
     return;
   }
 
@@ -188,6 +201,7 @@ async function initializeSession(session, message) {
     [lead.tenant_id, session.campaignId || lead.campaign_id, lead.id, callSid || null]
   );
   session.callId = callResult.rows[0].id;
+  await logVoicebotEvent(session, "lead_matched", { leadId: lead.id, campaignId: session.campaignId || lead.campaign_id });
 }
 
 async function speakIntro(ws, session) {
@@ -278,25 +292,37 @@ async function speakText(ws, session, text, markName) {
     const speech = await synthesizeSpeech(text);
     if (speech.mode === "audio") {
       const pcmBase64 = await toExotelPcmBase64(speech.audioBase64);
-      sendMedia(ws, pcmBase64);
+      const chunks = await sendMedia(ws, pcmBase64);
+      await logVoicebotEvent(session, "media_sent", { markName, chunks, pcmBytes: Buffer.from(pcmBase64, "base64").length });
       sendMark(ws, markName);
       return;
     }
     sendMark(ws, `${markName}_text_only`);
   } catch (err) {
     logger.warn("voicebot_tts_failed", { error: err.message, leadId: session.leadId });
+    await logVoicebotEvent(session, "tts_failed", { error: err.message, markName });
     sendMark(ws, `${markName}_tts_failed`);
   } finally {
     session.speaking = false;
   }
 }
 
-function sendMedia(ws, audioBase64) {
-  if (ws.readyState !== ws.OPEN) return;
-  ws.send(JSON.stringify({
-    event: "media",
-    media: { payload: audioBase64 }
-  }));
+async function sendMedia(ws, audioBase64) {
+  if (ws.readyState !== ws.OPEN) return 0;
+  const audio = Buffer.from(audioBase64, "base64");
+  const chunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 1600);
+  const delayMs = Number(process.env.EXOTEL_MEDIA_CHUNK_DELAY_MS || 100);
+  let chunks = 0;
+
+  for (let offset = 0; offset < audio.length; offset += chunkBytes) {
+    if (ws.readyState !== ws.OPEN) break;
+    const payload = audio.subarray(offset, offset + chunkBytes).toString("base64");
+    ws.send(JSON.stringify({ event: "media", media: { payload } }));
+    chunks++;
+    if (offset + chunkBytes < audio.length) await sleep(delayMs);
+  }
+
+  return chunks;
 }
 
 function deepgramLanguage(language) {
@@ -327,6 +353,44 @@ async function findLatestLeadByPhone(phone) {
     [phone]
   );
   return result.rows[0] || null;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function summarizeMessage(message) {
+  const event = String(message.event || message.Event || "").toLowerCase();
+  const start = message.start || message.Start || {};
+  if (event === "media") {
+    const payload = message?.media?.payload || message?.Media?.Payload || message.payload || "";
+    return { event, payloadBytes: payload ? Buffer.from(payload, "base64").length : 0 };
+  }
+  return {
+    event,
+    keys: Object.keys(message || {}),
+    callSid: start.callSid || start.call_sid || message.CallSid || message.Sid || "",
+    from: start.from || start.caller || message.From || message.Caller || "",
+    to: start.to || start.called || message.To || message.Called || ""
+  };
+}
+
+async function logVoicebotEvent(session, eventType, details = {}) {
+  try {
+    await query(
+      `INSERT INTO voicebot_events (call_sid, lead_id, campaign_id, event_type, details)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [
+        session.callSid || details.callSid || null,
+        session.leadId || null,
+        session.campaignId || null,
+        eventType || "unknown",
+        details
+      ]
+    );
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) throw err;
+  }
 }
 
 function sendMark(ws, name) {
