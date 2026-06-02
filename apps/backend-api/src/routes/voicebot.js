@@ -9,7 +9,7 @@ const logger = require("../utils/logger");
 const config = require("../config");
 
 const FAST_INTRO_TEXT = "Namaste, LoanConnect se AI assistant bol raha hoon. Kya aap ek minute de sakte hain?";
-const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 1200);
+const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
 const pcmCache = new Map();
 
@@ -151,8 +151,19 @@ async function handleMessage(ws, session, data) {
 
 function scheduleIntro(ws, session) {
   if (session.introTimer) clearTimeout(session.introTimer);
+
+  if (INTRO_DELAY_MS <= 0) {
+    logVoicebotEvent(session, "intro_started", { delayMs: 0 }).catch(() => {});
+    speakIntro(ws, session).catch(err => {
+      logger.error("voicebot_intro_failed", { error: err.message, callId: session.callId });
+      logVoicebotEvent(session, "intro_failed", { error: err.message }).catch(() => {});
+    });
+    return;
+  }
+
   session.introTimer = setTimeout(() => {
     session.introTimer = null;
+    logVoicebotEvent(session, "intro_started", { delayMs: INTRO_DELAY_MS }).catch(() => {});
     speakIntro(ws, session).catch(err => {
       logger.error("voicebot_intro_failed", { error: err.message, callId: session.callId });
       logVoicebotEvent(session, "intro_failed", { error: err.message }).catch(() => {});
