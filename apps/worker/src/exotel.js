@@ -12,20 +12,20 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
 
   const endpoint = `${config.exotel.apiBase}/v1/Accounts/${config.exotel.accountSid}/Calls/connect`;
   const params = new FormData();
-  params.set("From", formatCustomerNumber(to));
-  params.set("CallerId", config.exotel.fromNumber);
-  params.set("StreamType", "bidirectional");
-  params.set("StreamUrl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}&callId=${encodeURIComponent(callId)}`);
-  params.set("StreamName", "loanconnect_bot");
-  params.set("Record", "true");
+  params.set("from", formatCustomerNumber(to));
+  params.set("callerid", config.exotel.fromNumber);
+  params.set("streamtype", "bidirectional");
+  params.set("streamurl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}&callId=${encodeURIComponent(callId)}`);
+  params.set("streamname", "loanconnect_bot");
+  params.set("record", "true");
   params.set("TimeOut", String(config.exotel.ringTimeoutSeconds));
-  params.set("TimeLimit", String(config.exotel.timeLimitSeconds));
-  params.set("CustomField", `lc_call:${callId}`);
-  if (config.exotel.callType) params.set("CallType", config.exotel.callType);
-  params.set("StatusCallback", `${config.serverUrl}/webhooks/exotel/status`);
-  params.append("StatusCallbackEvents[]", "ringing");
-  params.append("StatusCallbackEvents[]", "answered");
-  params.append("StatusCallbackEvents[]", "terminal");
+  params.set("timelimit", String(config.exotel.timeLimitSeconds));
+  params.set("customfield", `lc_call:${callId}`);
+  if (config.exotel.callType) params.set("calltype", config.exotel.callType);
+  params.set("statuscallback", `${config.serverUrl}/webhooks/exotel/status`);
+  params.append("statuscallbackevents[]", "ringing");
+  params.append("statuscallbackevents[]", "answered");
+  params.append("statuscallbackevents[]", "terminal");
 
   const res = await fetch(endpoint, { method: "POST", headers: { Authorization: authHeader() }, body: params });
   const text = await res.text();

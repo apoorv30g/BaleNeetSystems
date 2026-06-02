@@ -9,6 +9,8 @@ const logger = require("../utils/logger");
 const config = require("../config");
 
 const FAST_INTRO_TEXT = "Namaste, LoanConnect se AI assistant bol raha hoon. Kya aap ek minute de sakte hain?";
+const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 1200);
+const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
 const pcmCache = new Map();
 
 function attachVoicebot(server) {
@@ -55,6 +57,7 @@ function attachVoicebot(server) {
       bytesReceived: 0,
       outboundSequence: 1,
       outboundChunk: 1,
+      introTimer: null,
       startedAt: Date.now()
     };
 
@@ -66,17 +69,22 @@ function attachVoicebot(server) {
       logVoicebotEvent(session, "message_failed", { error: err.message }).catch(() => {});
     }));
 
-    ws.on("close", () => {
+    ws.on("close", (code, reason) => {
       session.closed = true;
+      if (session.introTimer) clearTimeout(session.introTimer);
       session.stt?.close();
       logger.info("voicebot_closed", {
         leadId: session.leadId,
         callId: session.callId,
+        code,
+        reason: reason?.toString(),
         mediaChunks: session.mediaChunks,
         bytesReceived: session.bytesReceived,
         durationMs: Date.now() - session.startedAt
       });
       logVoicebotEvent(session, "ws_closed", {
+        code,
+        reason: reason?.toString(),
         mediaChunks: session.mediaChunks,
         bytesReceived: session.bytesReceived,
         durationMs: Date.now() - session.startedAt
@@ -93,14 +101,13 @@ async function handleMessage(ws, session, data) {
   }
 
   if (event === "connected") {
-    sendMark(ws, session, "connected");
     return;
   }
 
   if (event === "start") {
     await initializeSession(session, message);
     startStt(ws, session);
-    await speakIntro(ws, session);
+    scheduleIntro(ws, session);
     return;
   }
 
@@ -135,8 +142,24 @@ async function handleMessage(ws, session, data) {
   }
 
   if (event === "stop") {
+    if (session.callId) {
+      await query(`UPDATE calls SET status='completed', updated_at=NOW() WHERE id=$1 AND status='streaming'`, [session.callId]);
+    }
     ws.close();
   }
+}
+
+function scheduleIntro(ws, session) {
+  if (session.introTimer) clearTimeout(session.introTimer);
+  session.introTimer = setTimeout(() => {
+    session.introTimer = null;
+    speakIntro(ws, session).catch(err => {
+      logger.error("voicebot_intro_failed", { error: err.message, callId: session.callId });
+      logVoicebotEvent(session, "intro_failed", { error: err.message }).catch(() => {});
+    });
+  }, INTRO_DELAY_MS);
+
+  logVoicebotEvent(session, "intro_scheduled", { delayMs: INTRO_DELAY_MS }).catch(() => {});
 }
 
 function parseMessage(data) {
@@ -367,7 +390,7 @@ function firstGreeting(lead) {
 async function speakText(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
   session.speaking = true;
-  const stopKeepalive = startSilenceKeepalive(ws, session, markName);
+  const stopKeepalive = SILENCE_KEEPALIVE_ENABLED ? startSilenceKeepalive(ws, session, markName) : () => {};
   try {
     const pcmBase64 = await getPcmBase64(text);
     stopKeepalive();
@@ -449,7 +472,6 @@ function sendMediaFrame(ws, session, payload, timestamp) {
   if (ws.readyState !== ws.OPEN) return;
   ws.send(JSON.stringify({
     event: "media",
-    sequence_number: session.outboundSequence++,
     stream_sid: session.streamSid || undefined,
     media: {
       chunk: session.outboundChunk++,
@@ -496,9 +518,28 @@ function sleep(ms) {
 function summarizeMessage(message) {
   const event = String(message.event || message.Event || "").toLowerCase();
   const start = message.start || message.Start || {};
+  const stop = message.stop || message.Stop || {};
+  const mark = message.mark || message.Mark || {};
   if (event === "media") {
     const payload = message?.media?.payload || message?.Media?.Payload || message.payload || "";
     return { event, payloadBytes: payload ? Buffer.from(payload, "base64").length : 0 };
+  }
+  if (event === "stop") {
+    return {
+      event,
+      keys: Object.keys(message || {}),
+      callSid: stop.callSid || stop.call_sid || message.CallSid || message.Sid || "",
+      reason: stop.reason || stop.Reason || "",
+      accountSid: stop.accountSid || stop.account_sid || ""
+    };
+  }
+  if (event === "mark") {
+    return {
+      event,
+      keys: Object.keys(message || {}),
+      markName: mark.name || mark.Name || "",
+      streamSid: message.stream_sid || message.streamSid || ""
+    };
   }
   return {
     event,
