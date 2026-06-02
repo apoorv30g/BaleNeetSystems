@@ -25,6 +25,9 @@ module.exports = {
     apiKey: process.env.EXOTEL_API_KEY,
     apiToken: process.env.EXOTEL_API_TOKEN,
     fromNumber: process.env.EXOTEL_FROM_NUMBER,
-    apiBase: process.env.EXOTEL_API_BASE || "https://api.in.exotel.com"
+    apiBase: process.env.EXOTEL_API_BASE || "https://api.in.exotel.com",
+    ringTimeoutSeconds: Number(process.env.EXOTEL_RING_TIMEOUT_SECONDS || 45),
+    timeLimitSeconds: Number(process.env.EXOTEL_TIME_LIMIT_SECONDS || 600),
+    callType: process.env.EXOTEL_CALL_TYPE || ""
   }
 };

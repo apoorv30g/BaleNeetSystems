@@ -18,7 +18,12 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   params.set("StreamUrl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}&callId=${encodeURIComponent(callId)}`);
   params.set("StreamName", "loanconnect_bot");
   params.set("Record", "true");
+  params.set("TimeOut", String(config.exotel.ringTimeoutSeconds));
+  params.set("TimeLimit", String(config.exotel.timeLimitSeconds));
+  params.set("CustomField", `lc_call:${callId}`);
+  if (config.exotel.callType) params.set("CallType", config.exotel.callType);
   params.set("StatusCallback", `${config.serverUrl}/webhooks/exotel/status`);
+  params.append("StatusCallbackEvents[]", "ringing");
   params.append("StatusCallbackEvents[]", "answered");
   params.append("StatusCallbackEvents[]", "terminal");
 
@@ -29,7 +34,7 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   let callSid = `exotel_${Date.now()}`;
   try {
     const json = JSON.parse(text);
-    callSid = json?.Call?.Sid || json?.Call?.CallSid || callSid;
+    callSid = json?.Call?.Sid || json?.Call?.CallSid || json?.call?.sid || json?.call?.call_sid || callSid;
   } catch {}
   return { callSid, raw: text };
 }

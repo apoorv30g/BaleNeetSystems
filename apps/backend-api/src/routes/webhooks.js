@@ -14,13 +14,23 @@ router.post("/exotel/status", async (req, res) => {
   const callSid = req.body.CallSid || req.body.Sid;
   const status = req.body.Status || req.body.CallStatus || "unknown";
   const duration = Number(req.body.DialCallDuration || req.body.Duration || 0);
+  const customCallId = parseCustomCallId(req.body.CustomField || req.body.customField || req.body.Customfield);
 
-  if (callSid) {
-    await query(
-      `UPDATE calls SET status=$1, duration_seconds=$2, updated_at=NOW()
-       WHERE call_sid=$3`,
-      [status === "completed" ? "completed" : status, duration, callSid]
+  if (callSid || customCallId) {
+    const callResult = await query(
+      `UPDATE calls SET status=$1, duration_seconds=$2, call_sid=COALESCE($3, call_sid), updated_at=NOW()
+       WHERE ($3::text IS NOT NULL AND call_sid=$3)
+          OR ($4::uuid IS NOT NULL AND id=$4)
+       RETURNING id, lead_id, campaign_id`,
+      [status === "completed" ? "completed" : status, duration, callSid || null, customCallId]
     );
+    await logStatusEvent({
+      callSid,
+      call: callResult.rows[0],
+      status,
+      duration,
+      body: req.body
+    });
   }
   res.sendStatus(200);
 });
@@ -215,6 +225,28 @@ function deepgramLanguage(language) {
   if (value.includes("hindi")) return "hi";
   if (value.includes("english")) return "en";
   return process.env.DEEPGRAM_LANGUAGE || "multi";
+}
+
+function parseCustomCallId(value) {
+  const match = String(value || "").match(/lc_call:([0-9a-fA-F-]{36})/);
+  return match ? match[1] : null;
+}
+
+async function logStatusEvent({ callSid, call, status, duration, body }) {
+  try {
+    await query(
+      `INSERT INTO voicebot_events (call_sid, lead_id, campaign_id, event_type, details)
+       VALUES ($1,$2,$3,'status_callback',$4)`,
+      [
+        callSid || null,
+        call?.lead_id || null,
+        call?.campaign_id || null,
+        { status, duration, body }
+      ]
+    );
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) throw err;
+  }
 }
 
 async function speechTag(text, callId) {
