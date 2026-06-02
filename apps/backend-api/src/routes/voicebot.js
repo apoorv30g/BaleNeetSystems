@@ -442,8 +442,8 @@ async function prewarmAudio(text) {
 }
 
 function startSilenceKeepalive(ws, session, markName) {
-  const chunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
-  const delayMs = Number(process.env.EXOTEL_MEDIA_CHUNK_DELAY_MS || 100);
+  const chunkBytes = outboundChunkBytes();
+  const delayMs = pcmDurationMs(chunkBytes);
   const silence = Buffer.alloc(chunkBytes).toString("base64");
   let stopped = false;
 
@@ -463,20 +463,36 @@ function startSilenceKeepalive(ws, session, markName) {
 
 async function sendMedia(ws, session, audioBase64) {
   if (ws.readyState !== ws.OPEN) return 0;
-  const audio = Buffer.from(audioBase64, "base64");
-  const chunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
-  const delayMs = Number(process.env.EXOTEL_MEDIA_CHUNK_DELAY_MS || 100);
+  const chunkBytes = outboundChunkBytes();
+  const audio = padToChunkSize(Buffer.from(audioBase64, "base64"), chunkBytes);
   let chunks = 0;
 
   for (let offset = 0; offset < audio.length; offset += chunkBytes) {
     if (ws.readyState !== ws.OPEN) break;
-    const payload = audio.subarray(offset, offset + chunkBytes).toString("base64");
+    const chunk = audio.subarray(offset, offset + chunkBytes);
+    const payload = chunk.toString("base64");
     sendMediaFrame(ws, session, payload, Math.floor(offset / 16));
     chunks++;
-    if (offset + chunkBytes < audio.length) await sleep(delayMs);
+    if (offset + chunkBytes < audio.length) await sleep(pcmDurationMs(chunk.length));
   }
 
   return chunks;
+}
+
+function outboundChunkBytes() {
+  const configured = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
+  const bounded = Number.isFinite(configured) ? Math.min(Math.max(configured, 3200), 3200) : 3200;
+  return Math.floor(bounded / 320) * 320 || 3200;
+}
+
+function padToChunkSize(audio, chunkBytes) {
+  const remainder = audio.length % chunkBytes;
+  if (!remainder) return audio;
+  return Buffer.concat([audio, Buffer.alloc(chunkBytes - remainder)]);
+}
+
+function pcmDurationMs(byteLength) {
+  return Math.max(20, Math.floor(byteLength / 16));
 }
 
 function sendMediaFrame(ws, session, payload, timestamp) {
