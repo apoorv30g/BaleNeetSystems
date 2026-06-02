@@ -10,14 +10,19 @@ async function triggerOutboundCall({ to, leadId, campaignId }) {
     return { callSid: `mock_${Date.now()}` };
   }
 
-  const endpoint = `${config.exotel.apiBase}/v1/Accounts/${config.exotel.accountSid}/Calls/connect.json`;
-  const params = new URLSearchParams();
-  params.set("From", config.exotel.fromNumber);
-  params.set("To", to);
-  params.set("Url", `${config.serverUrl}/webhooks/exotel/answer?leadId=${leadId}&campaignId=${campaignId}`);
+  const endpoint = `${config.exotel.apiBase}/v1/Accounts/${config.exotel.accountSid}/Calls/connect`;
+  const params = new FormData();
+  params.set("From", formatCustomerNumber(to));
+  params.set("CallerId", config.exotel.fromNumber);
+  params.set("StreamType", "bidirectional");
+  params.set("StreamUrl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}`);
+  params.set("StreamName", "loanconnect_bot");
+  params.set("Record", "true");
   params.set("StatusCallback", `${config.serverUrl}/webhooks/exotel/status`);
+  params.append("StatusCallbackEvents[]", "answered");
+  params.append("StatusCallbackEvents[]", "terminal");
 
-  const res = await fetch(endpoint, { method: "POST", headers: { Authorization: authHeader(), "Content-Type": "application/x-www-form-urlencoded" }, body: params });
+  const res = await fetch(endpoint, { method: "POST", headers: { Authorization: authHeader() }, body: params });
   const text = await res.text();
   if (!res.ok) throw new Error(`Exotel failed: ${text}`);
 
@@ -27,6 +32,14 @@ async function triggerOutboundCall({ to, leadId, campaignId }) {
     callSid = json?.Call?.Sid || json?.Call?.CallSid || callSid;
   } catch {}
   return { callSid, raw: text };
+}
+
+function formatCustomerNumber(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 11 && digits.startsWith("0")) return `+91${digits.slice(1)}`;
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+  return value;
 }
 
 module.exports = { triggerOutboundCall };

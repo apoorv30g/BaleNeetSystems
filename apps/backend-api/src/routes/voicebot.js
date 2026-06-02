@@ -37,6 +37,7 @@ function attachVoicebot(server) {
       leadId: url.searchParams.get("leadId"),
       campaignId: url.searchParams.get("campaignId"),
       callSid: url.searchParams.get("callSid") || "",
+      streamSid: "",
       callId: null,
       tenantId: null,
       lead: null,
@@ -47,6 +48,8 @@ function attachVoicebot(server) {
       closed: false,
       mediaChunks: 0,
       bytesReceived: 0,
+      outboundSequence: 1,
+      outboundChunk: 1,
       startedAt: Date.now()
     };
 
@@ -135,6 +138,7 @@ async function initializeSession(session, message) {
     || pick(message, ["start.callSid", "start.call_sid", "start.call_sid", "CallSid", "callSid", "Sid"])
     || "";
   session.callSid = callSid;
+  session.streamSid = pick(message, ["stream_sid", "streamSid", "start.stream_sid", "start.streamSid"]) || session.streamSid;
   await logVoicebotEvent(session, "start_received", { callSid, rawKeys: Object.keys(message || {}) });
 
   const customParameters = message?.start?.customParameters || message?.start?.custom_parameters || message?.customParameters || {};
@@ -292,7 +296,7 @@ async function speakText(ws, session, text, markName) {
     const speech = await synthesizeSpeech(text);
     if (speech.mode === "audio") {
       const pcmBase64 = await toExotelPcmBase64(speech.audioBase64);
-      const chunks = await sendMedia(ws, pcmBase64);
+      const chunks = await sendMedia(ws, session, pcmBase64);
       await logVoicebotEvent(session, "media_sent", { markName, chunks, pcmBytes: Buffer.from(pcmBase64, "base64").length });
       sendMark(ws, markName);
       return;
@@ -307,17 +311,26 @@ async function speakText(ws, session, text, markName) {
   }
 }
 
-async function sendMedia(ws, audioBase64) {
+async function sendMedia(ws, session, audioBase64) {
   if (ws.readyState !== ws.OPEN) return 0;
   const audio = Buffer.from(audioBase64, "base64");
-  const chunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 1600);
+  const chunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
   const delayMs = Number(process.env.EXOTEL_MEDIA_CHUNK_DELAY_MS || 100);
   let chunks = 0;
 
   for (let offset = 0; offset < audio.length; offset += chunkBytes) {
     if (ws.readyState !== ws.OPEN) break;
     const payload = audio.subarray(offset, offset + chunkBytes).toString("base64");
-    ws.send(JSON.stringify({ event: "media", media: { payload } }));
+    ws.send(JSON.stringify({
+      event: "media",
+      sequence_number: session.outboundSequence++,
+      stream_sid: session.streamSid || undefined,
+      media: {
+        chunk: session.outboundChunk++,
+        timestamp: String(Math.floor(offset / 32)),
+        payload
+      }
+    }));
     chunks++;
     if (offset + chunkBytes < audio.length) await sleep(delayMs);
   }
@@ -397,6 +410,7 @@ function sendMark(ws, name) {
   if (ws.readyState !== ws.OPEN) return;
   ws.send(JSON.stringify({
     event: "mark",
+    stream_sid: undefined,
     mark: { name }
   }));
 }
