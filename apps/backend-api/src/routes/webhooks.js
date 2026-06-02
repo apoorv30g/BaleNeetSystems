@@ -85,6 +85,7 @@ router.get("/exotel/voicebot-health", (req, res) => {
   res.json({
     ok: true,
     path: "/webhooks/exotel/voicebot",
+    pathTokenFormat: "/webhooks/exotel/voicebot/:token",
     wssUrl: `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`,
     deepgramConfigured: Boolean(config.ai.deepgramApiKey),
     sarvamConfigured: Boolean(config.ai.sarvamApiKey),

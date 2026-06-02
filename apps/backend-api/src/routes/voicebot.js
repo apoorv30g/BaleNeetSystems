@@ -13,8 +13,15 @@ function attachVoicebot(server) {
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
-    if (url.pathname !== "/webhooks/exotel/voicebot") return;
-    if (config.voicebotToken && url.searchParams.get("token") !== config.voicebotToken) {
+    if (!url.pathname.startsWith("/webhooks/exotel/voicebot")) return;
+
+    const pathToken = url.pathname
+      .replace("/webhooks/exotel/voicebot", "")
+      .split("/")
+      .filter(Boolean)[0];
+    const providedToken = url.searchParams.get("token") || pathToken || "";
+
+    if (config.voicebotToken && providedToken !== config.voicebotToken) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
