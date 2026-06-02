@@ -225,7 +225,7 @@ async function speakIntro(ws, session) {
     return;
   }
 
-  const text = await generateReply({ lead });
+  const text = firstGreeting(lead);
   if (session.callId) await addTranscript(session.callId, "assistant", text);
 
   await speakText(ws, session, text, "intro_played");
@@ -275,7 +275,7 @@ async function handleTranscript(ws, session, event) {
     return;
   }
 
-  const reply = await generateReply({ lead: session.lead, lastUserMessage: text });
+  const reply = await safeGenerateReply(session, { lead: session.lead, lastUserMessage: text });
   if (session.callId) {
     await addTranscript(session.callId, "assistant", reply);
     const transcript = await getTranscript(session.callId);
@@ -287,6 +287,24 @@ async function handleTranscript(ws, session, event) {
   }
 
   await speakText(ws, session, reply, "reply_played");
+}
+
+async function safeGenerateReply(session, args) {
+  try {
+    return await generateReply(args);
+  } catch (err) {
+    await logVoicebotEvent(session, "llm_failed", { error: err.message });
+    return "Samajh gaya. Main LoanConnect ka AI assistant hoon. Kya aap loan eligibility aur offer details ke liye ek minute de sakte hain?";
+  }
+}
+
+function firstGreeting(lead) {
+  const name = lead.name ? `${lead.name} ji` : "ji";
+  const amount = lead.offer_amount || lead.loan_amount;
+  if (amount) {
+    return `Namaste ${name}, main LoanConnect ka AI assistant bol raha hoon. Aapki loan eligibility ${amount} tak ho sakti hai. Kya main ek minute le sakta hoon?`;
+  }
+  return `Namaste ${name}, main LoanConnect ka AI assistant bol raha hoon. Aapne loan eligibility ke liye interest dikhaya tha. Kya main ek minute le sakta hoon?`;
 }
 
 async function speakText(ws, session, text, markName) {
