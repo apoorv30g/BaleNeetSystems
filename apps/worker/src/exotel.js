@@ -31,6 +31,12 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   if (config.exotel.outboundMode === "flow") {
     if (!config.exotel.flowUrl) throw new Error("EXOTEL_FLOW_URL is required when EXOTEL_OUTBOUND_MODE=flow");
     params.set("Url", config.exotel.flowUrl);
+  } else if (config.exotel.outboundMode === "exoml") {
+    const answerUrl = new URL(`${config.serverUrl}/webhooks/exotel/answer`);
+    answerUrl.searchParams.set("leadId", leadId);
+    answerUrl.searchParams.set("campaignId", campaignId);
+    answerUrl.searchParams.set("callId", callId);
+    params.set("Url", answerUrl.toString());
   } else {
     params.set("StreamType", "bidirectional");
     params.set("StreamUrl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}&callId=${encodeURIComponent(callId)}`);
