@@ -28,6 +28,7 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   params.set("TimeOut", String(config.exotel.ringTimeoutSeconds));
   params.set("TimeLimit", String(config.exotel.timeLimitSeconds));
   params.set("CustomField", customField);
+  if (config.exotel.callType) params.set("CallType", config.exotel.callType);
   if (config.exotel.outboundMode === "flow") {
     if (!config.exotel.flowUrl) throw new Error("EXOTEL_FLOW_URL is required when EXOTEL_OUTBOUND_MODE=flow");
     params.set("Url", config.exotel.flowUrl);
