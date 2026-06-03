@@ -49,6 +49,7 @@ module.exports = {
   },
   ai: {
     geminiApiKey: process.env.GEMINI_API_KEY,
+    geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
     sarvamApiKey: process.env.SARVAM_API_KEY,
     deepgramApiKey: process.env.DEEPGRAM_API_KEY
   }

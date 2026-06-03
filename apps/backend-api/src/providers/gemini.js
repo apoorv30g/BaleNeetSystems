@@ -8,7 +8,8 @@ async function generateReply({ lead, lastUserMessage = "" }) {
 
   const prompt = await buildPrompt(lead);
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.ai.geminiApiKey}`;
+  const model = config.ai.geminiModel || "gemini-2.0-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${config.ai.geminiApiKey}`;
   const body = {
     contents: [{ parts: [{ text: `${prompt}\nCustomer said: ${lastUserMessage}\nRespond now.` }] }]
   };
