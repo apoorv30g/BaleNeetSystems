@@ -174,8 +174,10 @@ async function seedDefaultPlaybooks(tenantId) {
 async function buildPrompt(lead, { transcript = [], lastUserMessage = "" } = {}) {
   const playbook = await getPlaybook(lead.tenant_id, lead.playbook_type);
   const amount = lead.offer_amount || lead.loan_amount || "eligible";
-  const userTurns = transcript.filter(item => item.speaker === "user").length;
-  const stepIndex = Math.min(Math.max(userTurns - 1, 0), Math.max(playbook.steps.length - 1, 0));
+  const transcriptUserTurns = transcript.filter(item => item.speaker === "user").length;
+  const userTurns = (transcriptUserTurns || lastUserMessage) ? Math.max(transcriptUserTurns, 1) : 0;
+  const openingAlreadySpoken = transcript.some(item => item.speaker === "assistant");
+  const stepIndex = Math.min(Math.max(userTurns + (openingAlreadySpoken ? 0 : -1), 0), Math.max(playbook.steps.length - 1, 0));
   const currentStep = playbook.steps[stepIndex] || playbook.goal || "Continue the playbook conversation";
   const upcomingStep = playbook.steps[stepIndex + 1] || "";
   const recentTranscript = formatTranscript(transcript);
@@ -215,7 +217,14 @@ Rules:
 - Follow the current required playbook action. Do not restart from the beginning unless the user asks.
 - If the customer answers a question, progress to the next relevant action.
 - If the customer asks a question, answer briefly and then return to the playbook path.
-- Speak in natural Hinglish unless language says otherwise.
+- Speak in natural Indian phone-call Hinglish unless language says otherwise.
+- Sound calm, helpful, and conversational, like a patient assistant on a real call.
+- Start with a tiny acknowledgement only when it fits, such as "haan ji", "theek hai", or "samajh gaya".
+- Do not repeat the customer's name, LoanConnect, or the same sentence structure in every turn.
+- Ask only one clear question at a time.
+- Use everyday words. Avoid internal terms like playbook, campaign, drop stage, trigger, cadence, UTM, or routing.
+- If the customer sounds busy or hesitant, make the ask smaller and offer a callback.
+- If the latest message is just a greeting, greet back briefly and move to the current playbook action.
 - Keep it short and human.
 - Use moderate pace.
 - Do not sound like a robotic call center script.

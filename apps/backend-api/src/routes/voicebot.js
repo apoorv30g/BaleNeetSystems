@@ -8,9 +8,10 @@ const { classifyConversation, isOptOut } = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
 
-const FAST_INTRO_TEXT = "Namaste, LoanConnect AI assistant bol raha hoon.";
-const FAST_ACK_TEXT = process.env.VOICEBOT_FAST_ACK_TEXT || "Ji, samjha.";
-const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Maaf kijiye, mujhe clear nahi suna. Kya aap dobara bol sakte hain?";
+const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, main LoanConnect ka AI assistant bol raha hoon. Kya main aapse ek minute baat kar sakta hoon?";
+const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Okay.|Got it.|Sure.|Haan ji.|Theek hai.|Samjha.");
+const FAST_ACK_TEXT = FAST_ACK_TEXTS[0] || "Haan ji.";
+const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?";
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
 const FAST_ACK_ENABLED = process.env.VOICEBOT_FAST_ACK_ENABLED !== "false";
@@ -23,7 +24,9 @@ const pcmCache = new Map();
 function attachVoicebot(server) {
   const wss = new WebSocketServer({ noServer: true });
   prewarmAudio(FAST_INTRO_TEXT).catch(err => logger.warn("voicebot_prewarm_failed", { error: err.message }));
-  prewarmAudio(FAST_ACK_TEXT).catch(err => logger.warn("voicebot_ack_prewarm_failed", { error: err.message }));
+  for (const ackText of FAST_ACK_TEXTS) {
+    prewarmAudio(ackText).catch(err => logger.warn("voicebot_ack_prewarm_failed", { error: err.message, ackText }));
+  }
   prewarmAudio(FAST_CLARIFY_TEXT).catch(err => logger.warn("voicebot_clarify_prewarm_failed", { error: err.message }));
 
   server.on("upgrade", (req, socket, head) => {
@@ -66,6 +69,7 @@ function attachVoicebot(server) {
       bytesReceived: 0,
       outboundSequence: 1,
       outboundChunk: 1,
+      userTurns: 0,
       introTimer: null,
       introStarted: false,
       startedAt: Date.now()
@@ -409,6 +413,7 @@ async function handleTranscript(ws, session, event) {
       [session.tenantId, session.callId, text, event.confidence]
     );
   }
+  session.userTurns++;
 
   if (isOptOut(text)) {
     await query(
@@ -425,8 +430,9 @@ async function handleTranscript(ws, session, event) {
 
   const promptTranscript = session.callId ? await getTranscript(session.callId) : [];
   const replyPromise = safeGenerateReply(session, { lead: session.lead, lastUserMessage: text, transcript: promptTranscript });
-  if (FAST_ACK_ENABLED) {
-    await speakText(ws, session, FAST_ACK_TEXT, "ack_played");
+  const ackText = pickAckText(session);
+  if (FAST_ACK_ENABLED && ackText) {
+    await speakText(ws, session, ackText, "ack_played");
   }
 
   const reply = await replyPromise;
@@ -458,6 +464,20 @@ async function safeGenerateReply(session, args) {
 
 function firstGreeting(lead) {
   return FAST_INTRO_TEXT;
+}
+
+function parseVoicebotTexts(value) {
+  return String(value || "")
+    .split("|")
+    .map(item => item.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function pickAckText(session) {
+  if (!FAST_ACK_TEXTS.length) return "";
+  const index = Math.max((session.userTurns || 1) - 1, 0) % FAST_ACK_TEXTS.length;
+  return FAST_ACK_TEXTS[index];
 }
 
 function isLikelyMisheardTranscript(text, event) {

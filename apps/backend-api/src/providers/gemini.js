@@ -14,12 +14,12 @@ async function generateReply({ lead, lastUserMessage = "", transcript = [] }) {
     contents: [{
       parts: [{
         text: `${prompt}
-Respond now in one natural Hinglish sentence, maximum 18 words. No bullet points.`
+Respond now in one natural Hinglish sentence, maximum 22 words. No bullet points.`
       }]
     }],
     generationConfig: {
       maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 80),
-      temperature: Number(process.env.GEMINI_TEMPERATURE || 0.4)
+      temperature: Number(process.env.GEMINI_TEMPERATURE || 0.5)
     }
   };
 
@@ -37,7 +37,7 @@ Respond now in one natural Hinglish sentence, maximum 18 words. No bullet points
     }
 
     const data = await res.json();
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text || fallbackReply(lead);
+    return cleanReply(data?.candidates?.[0]?.content?.parts?.[0]?.text) || fallbackReply(lead);
   }
 
   throw new Error(`Gemini failed for all configured models: ${errors.join(" | ")}`);
@@ -47,20 +47,41 @@ function uniqueModels(models) {
   return [...new Set(models.map(model => String(model || "").trim()).filter(Boolean))];
 }
 
+function cleanReply(value) {
+  const maxWords = Number(process.env.GEMINI_REPLY_MAX_WORDS || 24);
+  const text = String(value || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^[\s"'`*_>-]+/g, "")
+    .replace(/^\d+[\).:-]\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text) return "";
+  const words = text.split(/\s+/);
+  if (!Number.isFinite(maxWords) || words.length <= maxWords) return text;
+  return words.slice(0, maxWords).join(" ");
+}
+
 function fallbackReply(lead) {
+  const name = firstName(lead.name);
+  const prefix = name ? `${name} ji, ` : "";
   if (lead.playbook_type === "SOFT_PAYMENT_REMINDER") {
-    return `Namaste ${lead.name || ""} ji, aapki payment due date nazdeek hai. Agar aap abhi pay kar dete hain to repayment record positive rahega. Main secure payment link bhej deta hoon.`;
+    return `${prefix}aapki payment due date paas hai. Kya main payment link abhi share kar doon?`;
   }
   if (lead.playbook_type === "HARD_PAYMENT_REMINDER") {
-    return `Namaste ${lead.name || ""} ji, aapki payment due date miss ho gayi hai. Late fee aur CIBIL impact avoid karne ke liye payment jaldi complete karna better rahega.`;
+    return `${prefix}payment overdue dikh rahi hai. Kya aap bata sakte hain payment kab tak kar payenge?`;
   }
   if (lead.playbook_type === "APPROVED_USERS") {
-    return `Namaste ${lead.name || ""} ji, aapka loan offer ready hai aur expire ho sakta hai. Agar aap chahein to main process continue karne ka secure link bhej deta hoon.`;
+    return `${prefix}aapka loan offer ready hai. Kya aap ise aaj continue karna chahenge?`;
   }
   if (lead.playbook_type === "FRESH_LEAD") {
-    return `Namaste ${lead.name || ""} ji, main loan eligibility ke regarding call kar raha hoon. Aap 2 minute mein eligibility check kar sakte hain.`;
+    return `${prefix}main loan eligibility ke liye call kar raha hoon. Aapko kitna loan chahiye?`;
   }
-  return `Namaste ${lead.name || ""} ji, aapka loan application incomplete hai. Main aapko secure link bhej deta hoon jisse aap process complete kar sakte hain.`;
+  return `${prefix}aapki loan eligibility pending hai. Kya main aapko final offer check karne mein guide karun?`;
+}
+
+function firstName(name) {
+  return String(name || "").trim().split(/\s+/)[0] || "";
 }
 
 module.exports = { generateReply };
