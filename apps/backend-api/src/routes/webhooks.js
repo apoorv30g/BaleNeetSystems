@@ -104,6 +104,7 @@ router.get("/exotel/voicebot-health", (req, res) => {
     pathTokenFormat: "/webhooks/exotel/voicebot/:token",
     wssUrl: `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`,
     dynamicUrl: `${config.serverUrl}/webhooks/exotel/voicebot-url`,
+    dynamicTextUrl: `${config.serverUrl}/webhooks/exotel/voicebot-url?format=text`,
     mediaVersion: "2026-06-03-first-media-3200-seq-v2",
     chunkBytes: chunkBytes || 3200,
     introStartMode: process.env.VOICEBOT_INTRO_START_MODE || "first_media",
@@ -130,7 +131,19 @@ router.all("/exotel/voicebot-url", async (req, res) => {
   if (callId) wssUrl.searchParams.set("callId", callId);
   if (callSid) wssUrl.searchParams.set("callSid", callSid);
 
-  res.type("text/plain").send(wssUrl.toString());
+  await logVoicebotUrlRequest({
+    callSid,
+    leadId,
+    campaignId,
+    callId,
+    method: req.method,
+    params,
+    wssUrl: wssUrl.toString()
+  });
+
+  const wantsText = String(params.format || "").toLowerCase() === "text";
+  if (wantsText) return res.type("text/plain").send(wssUrl.toString());
+  res.json({ url: wssUrl.toString() });
 });
 
 router.get("/exotel/tts-health", async (req, res) => {
@@ -294,6 +307,28 @@ async function logStatusEvent({ callSid, call, status, duration, body }) {
         call?.lead_id || null,
         call?.campaign_id || null,
         { status, duration, body }
+      ]
+    );
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) throw err;
+  }
+}
+
+async function logVoicebotUrlRequest({ callSid, leadId, campaignId, callId, method, params, wssUrl }) {
+  try {
+    await query(
+      `INSERT INTO voicebot_events (call_sid, lead_id, campaign_id, event_type, details)
+       VALUES ($1,$2,$3,'voicebot_url_requested',$4)`,
+      [
+        callSid || null,
+        leadId || null,
+        campaignId || null,
+        {
+          callId: callId || null,
+          method,
+          params,
+          wssUrl
+        }
       ]
     );
   } catch (err) {
