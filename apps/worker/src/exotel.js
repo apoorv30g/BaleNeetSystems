@@ -44,7 +44,7 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   }
   params.set("Record", "true");
   params.set("StatusCallback", statusCallback);
-  if (config.exotel.outboundMode !== "flow") {
+  if (config.exotel.outboundMode === "direct") {
     params.append("StatusCallbackEvents[]", "answered");
     params.append("StatusCallbackEvents[]", "terminal");
   }
