@@ -9,12 +9,14 @@ const { getTenantSettings } = require("../services/settings");
 const config = require("../config");
 
 const router = express.Router();
+const FAST_EXOML_GREETING = "Namaste, LoanConnect se AI assistant bol raha hoon. Yeh ek test call hai. Dhanyavaad.";
 
 router.post("/exotel/status", async (req, res) => {
-  const callSid = req.body.CallSid || req.body.Sid;
-  const status = req.body.Status || req.body.CallStatus || "unknown";
-  const duration = Number(req.body.DialCallDuration || req.body.Duration || 0);
-  const customCallId = parseCustomCallId(req.body.CustomField || req.body.customField || req.body.Customfield);
+  const body = bodyOf(req);
+  const callSid = body.CallSid || body.Sid;
+  const status = body.Status || body.CallStatus || "unknown";
+  const duration = Number(body.DialCallDuration || body.Duration || 0);
+  const customCallId = parseCustomCallId(body.CustomField || body.customField || body.Customfield);
 
   if (callSid || customCallId) {
     const callResult = await query(
@@ -29,28 +31,37 @@ router.post("/exotel/status", async (req, res) => {
       call: callResult.rows[0],
       status,
       duration,
-      body: req.body
+      body
     });
   }
   res.sendStatus(200);
 });
 
 router.all("/exotel/answer", async (req, res) => {
-  const leadId = req.query.leadId || req.body.leadId;
-  const lead = await findLead(leadId);
+  try {
+    const body = bodyOf(req);
+    const leadId = req.query.leadId || body.leadId;
+    const lead = await findLead(leadId);
 
-  if (!lead) return res.type("text/xml").send(`<Response><Say>Lead not found.</Say></Response>`);
+    if (!lead) return res.type("text/xml").send(`<Response><Say>Lead not found.</Say></Response>`);
 
-  const text = await generateReply({ lead });
-  const call = await latestCallForLead(lead.id);
+    const call = await latestCallForLead(lead.id);
+    const text = process.env.EXOML_DYNAMIC_REPLY === "true"
+      ? await safeGenerateReply({ lead }, FAST_EXOML_GREETING)
+      : FAST_EXOML_GREETING;
 
-  if (call) await addTranscript(call.id, "assistant", text);
+    if (call) await addTranscript(call.id, "assistant", text);
 
-  res.type("text/xml").send(await conversationXml({ text, leadId: lead.id, callId: call?.id }));
+    res.type("text/xml").send(await conversationXml({ text, leadId: lead.id, callId: call?.id }));
+  } catch (err) {
+    console.error("exotel answer failed", err);
+    res.type("text/xml").send(`<Response><Say>${escapeXml(FAST_EXOML_GREETING)}</Say></Response>`);
+  }
 });
 
 router.all("/exotel/respond", async (req, res) => {
-  const leadId = req.query.leadId || req.body.leadId;
+  const body = bodyOf(req);
+  const leadId = req.query.leadId || body.leadId;
   const lead = await findLead(leadId);
 
   if (!lead) return res.type("text/xml").send(`<Response><Say>Lead not found.</Say></Response>`);
@@ -74,7 +85,7 @@ router.all("/exotel/respond", async (req, res) => {
     return res.type("text/xml").send(`<Response><Say>Samajh gaya. Hum aapko dobara call nahi karenge. Dhanyavaad.</Say></Response>`);
   }
 
-  const reply = await generateReply({ lead, lastUserMessage: message });
+  const reply = await safeGenerateReply({ lead, lastUserMessage: message }, "Dhanyavaad. Hum aapse baad mein sampark karenge.");
   if (call) {
     await addTranscript(call.id, "assistant", reply);
     const transcript = await getTranscript(call.id);
@@ -118,7 +129,7 @@ router.get("/exotel/voicebot-health", (req, res) => {
 });
 
 router.all("/exotel/voicebot-url", async (req, res) => {
-  const params = { ...req.query, ...req.body };
+  const params = { ...req.query, ...bodyOf(req) };
   const lead = await resolveVoicebotLead(params);
   const leadId = params.leadId || lead?.id || "";
   const campaignId = params.campaignId || lead?.campaign_id || "";
@@ -165,7 +176,8 @@ router.get("/exotel/tts-health", async (req, res) => {
 });
 
 router.all("/exotel/passthru", async (req, res) => {
-  const callSid = req.body.CallSid || req.query.CallSid || req.body.Sid || req.query.Sid || "";
+  const body = bodyOf(req);
+  const callSid = body.CallSid || req.query.CallSid || body.Sid || req.query.Sid || "";
   const callResult = callSid
     ? await query(`SELECT * FROM calls WHERE call_sid=$1 ORDER BY created_at DESC LIMIT 1`, [callSid])
     : { rows: [] };
@@ -247,10 +259,11 @@ async function getTranscript(callId) {
 }
 
 async function resolveUserMessage(req, { lead, call }) {
-  const directMessage = req.body.SpeechResult || req.body.speech || req.body.TranscriptionText || req.body.Digits || req.query.message || "";
+  const body = bodyOf(req);
+  const directMessage = body.SpeechResult || body.speech || body.TranscriptionText || body.Digits || req.query.message || "";
   if (directMessage) return String(directMessage).trim();
 
-  const audioUrl = req.body.RecordingUrl || req.body.RecordingURL || req.body.AudioUrl || req.body.AudioURL || req.query.audioUrl || "";
+  const audioUrl = body.RecordingUrl || body.RecordingURL || body.AudioUrl || body.AudioURL || req.query.audioUrl || "";
   if (!audioUrl) return "";
 
   try {
@@ -356,12 +369,31 @@ async function speechTag(text, callId) {
 }
 
 async function conversationXml({ text, leadId, callId }) {
+  if (process.env.EXOML_ENABLE_GATHER !== "true") {
+    return `<Response><Say>${escapeXml(text)}</Say></Response>`;
+  }
+
   const lead = await findLead(leadId);
   const settings = lead ? await getTenantSettings(lead.tenant_id) : null;
   const disclosure = settings?.aiDisclosure ? `<Say>${escapeXml(settings.aiDisclosure)}</Say>` : "";
-  const prompt = await speechTag(text, callId);
+  const prompt = process.env.EXOML_USE_SARVAM_AUDIO === "true"
+    ? await speechTag(text, callId)
+    : `<Say>${escapeXml(text)}</Say>`;
   const action = `${config.serverUrl}/webhooks/exotel/respond?leadId=${encodeURIComponent(leadId)}`;
   return `<Response>${disclosure}<Gather input="speech dtmf" timeout="5" action="${escapeXml(action)}" method="POST">${prompt}</Gather><Say>Dhanyavaad.</Say></Response>`;
+}
+
+async function safeGenerateReply(args, fallback) {
+  try {
+    return await generateReply(args);
+  } catch (err) {
+    console.error("generate reply failed", err.message);
+    return fallback;
+  }
+}
+
+function bodyOf(req) {
+  return req.body && typeof req.body === "object" ? req.body : {};
 }
 
 module.exports = router;
