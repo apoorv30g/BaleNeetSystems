@@ -95,7 +95,8 @@ router.all("/exotel/respond", async (req, res) => {
     return res.type("text/xml").send(`<Response><Say>Samajh gaya. Hum aapko dobara call nahi karenge. Dhanyavaad.</Say></Response>`);
   }
 
-  const reply = await safeGenerateReply({ lead, lastUserMessage: message }, "Dhanyavaad. Hum aapse baad mein sampark karenge.");
+  const promptTranscript = call ? await getTranscript(call.id) : [];
+  const reply = await safeGenerateReply({ lead, lastUserMessage: message, transcript: promptTranscript }, "Dhanyavaad. Hum aapse baad mein sampark karenge.");
   if (call) {
     await addTranscript(call.id, "assistant", reply);
     const transcript = await getTranscript(call.id);

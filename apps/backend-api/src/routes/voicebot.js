@@ -10,9 +10,12 @@ const config = require("../config");
 
 const FAST_INTRO_TEXT = "Namaste, LoanConnect AI assistant bol raha hoon.";
 const FAST_ACK_TEXT = process.env.VOICEBOT_FAST_ACK_TEXT || "Ji, samjha.";
+const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Maaf kijiye, mujhe clear nahi suna. Kya aap dobara bol sakte hain?";
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
 const FAST_ACK_ENABLED = process.env.VOICEBOT_FAST_ACK_ENABLED !== "false";
+const MIN_TRANSCRIPT_CONFIDENCE = Number(process.env.VOICEBOT_MIN_TRANSCRIPT_CONFIDENCE || 0.62);
+const LOW_CONFIDENCE_MAX_WORDS = Number(process.env.VOICEBOT_LOW_CONFIDENCE_MAX_WORDS || 3);
 const VOICEBOT_MEDIA_VERSION = "2026-06-03-first-media-3200-seq-v2";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
 const pcmCache = new Map();
@@ -21,6 +24,7 @@ function attachVoicebot(server) {
   const wss = new WebSocketServer({ noServer: true });
   prewarmAudio(FAST_INTRO_TEXT).catch(err => logger.warn("voicebot_prewarm_failed", { error: err.message }));
   prewarmAudio(FAST_ACK_TEXT).catch(err => logger.warn("voicebot_ack_prewarm_failed", { error: err.message }));
+  prewarmAudio(FAST_CLARIFY_TEXT).catch(err => logger.warn("voicebot_clarify_prewarm_failed", { error: err.message }));
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
@@ -367,9 +371,30 @@ async function handleTranscript(ws, session, event) {
   await logVoicebotEvent(session, "transcript_final", {
     text,
     confidence: event.confidence,
+    words: event.words,
+    languages: event.languages,
     isFinal: event.isFinal,
     speechFinal: event.speechFinal
   });
+
+  if (isLikelyMisheardTranscript(text, event)) {
+    await logVoicebotEvent(session, "transcript_low_confidence", {
+      text,
+      confidence: event.confidence,
+      wordCount: transcriptWordCount(text),
+      threshold: MIN_TRANSCRIPT_CONFIDENCE,
+      words: event.words
+    });
+    if (session.callId) {
+      await query(
+        `INSERT INTO call_stt_events (tenant_id, call_id, provider, transcript, confidence, status)
+         VALUES ($1,$2,'deepgram-live',$3,$4,'ignored_low_confidence')`,
+        [session.tenantId, session.callId, text, event.confidence]
+      );
+    }
+    await speakText(ws, session, FAST_CLARIFY_TEXT, "clarify_low_confidence");
+    return;
+  }
 
   if (!session.lead) {
     await speakText(ws, session, "Dhanyavaad. Main aapki baat note kar raha hoon. LoanConnect team aapki request process karegi.", "generic_reply_played");
@@ -398,7 +423,8 @@ async function handleTranscript(ws, session, event) {
     return;
   }
 
-  const replyPromise = safeGenerateReply(session, { lead: session.lead, lastUserMessage: text });
+  const promptTranscript = session.callId ? await getTranscript(session.callId) : [];
+  const replyPromise = safeGenerateReply(session, { lead: session.lead, lastUserMessage: text, transcript: promptTranscript });
   if (FAST_ACK_ENABLED) {
     await speakText(ws, session, FAST_ACK_TEXT, "ack_played");
   }
@@ -432,6 +458,49 @@ async function safeGenerateReply(session, args) {
 
 function firstGreeting(lead) {
   return FAST_INTRO_TEXT;
+}
+
+function isLikelyMisheardTranscript(text, event) {
+  const confidence = Number(event.confidence);
+  if (!Number.isFinite(confidence) || confidence >= MIN_TRANSCRIPT_CONFIDENCE) return false;
+  if (transcriptWordCount(text) > LOW_CONFIDENCE_MAX_WORDS) return false;
+  return !isAllowedShortIntent(text);
+}
+
+function transcriptWordCount(text) {
+  return normalizeTranscript(text).split(/\s+/).filter(Boolean).length;
+}
+
+function isAllowedShortIntent(text) {
+  const normalized = normalizeTranscript(text);
+  if (!normalized) return false;
+  return [
+    "haan",
+    "han",
+    "haa",
+    "yes",
+    "yeah",
+    "ji",
+    "ok",
+    "okay",
+    "theek",
+    "thik",
+    "nahi",
+    "nahin",
+    "no",
+    "callback",
+    "call back",
+    "interested",
+    "not interested"
+  ].some(intent => normalized === intent || normalized.includes(` ${intent} `));
+}
+
+function normalizeTranscript(text) {
+  return ` ${String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()} `;
 }
 
 async function speakText(ws, session, text, markName) {

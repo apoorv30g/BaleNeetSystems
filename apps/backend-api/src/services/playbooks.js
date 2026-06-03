@@ -171,9 +171,15 @@ async function seedDefaultPlaybooks(tenantId) {
   }
 }
 
-async function buildPrompt(lead) {
+async function buildPrompt(lead, { transcript = [], lastUserMessage = "" } = {}) {
   const playbook = await getPlaybook(lead.tenant_id, lead.playbook_type);
   const amount = lead.offer_amount || lead.loan_amount || "eligible";
+  const userTurns = transcript.filter(item => item.speaker === "user").length;
+  const stepIndex = Math.min(Math.max(userTurns - 1, 0), Math.max(playbook.steps.length - 1, 0));
+  const currentStep = playbook.steps[stepIndex] || playbook.goal || "Continue the playbook conversation";
+  const upcomingStep = playbook.steps[stepIndex + 1] || "";
+  const recentTranscript = formatTranscript(transcript);
+
   return `
 You are a warm Hindi-English AI loan assistant.
 
@@ -183,6 +189,8 @@ Goal: ${playbook.goal}
 Task: ${playbook.task || playbook.category}
 Trigger: ${playbook.trigger || "not provided"}
 Cadence: ${playbook.cadence || "configurable"}
+Current required playbook action: ${currentStep}
+Next action after this, if user cooperates: ${upcomingStep || "Close politely based on user intent."}
 
 Customer:
 Name: ${lead.name || "Customer"}
@@ -196,7 +204,17 @@ Language: ${lead.language || "Hinglish"}
 Conversation steps:
 ${playbook.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")}
 
+Recent transcript:
+${recentTranscript || "No prior conversation except the opening greeting."}
+
+Latest customer message:
+${lastUserMessage || "No clear customer message captured yet."}
+
 Rules:
+- Treat the selected playbook as the source of truth for what to do next.
+- Follow the current required playbook action. Do not restart from the beginning unless the user asks.
+- If the customer answers a question, progress to the next relevant action.
+- If the customer asks a question, answer briefly and then return to the playbook path.
 - Speak in natural Hinglish unless language says otherwise.
 - Keep it short and human.
 - Use moderate pace.
@@ -206,12 +224,25 @@ Rules:
 - Never threaten the user.
 - For collections, be firm but respectful.
 - If user is interested, tell them secure link will be shared.
+- If user declines, ask for one short reason only once, then close politely.
+- There is no live human transfer in this call. If the playbook says route to support, capture the issue and mention support through the app/support channel.
 - Loan app link: ${config.loanAppUrl}
 - Payment link base: ${config.paymentLinkBase}
 - Support phone: ${config.supportPhone || "available in app"}
 
-Now generate the first spoken message only.
+Now generate only the next spoken response.
 `;
+}
+
+function formatTranscript(transcript) {
+  return transcript
+    .slice(-10)
+    .map(item => {
+      const speaker = item.speaker === "assistant" ? "Assistant" : "Customer";
+      return `${speaker}: ${String(item.text || "").replace(/\s+/g, " ").trim().slice(0, 220)}`;
+    })
+    .filter(line => !line.endsWith(": "))
+    .join("\n");
 }
 
 function rowsToMap(rows) {

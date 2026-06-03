@@ -1,12 +1,12 @@
 const config = require("../config");
 const { buildPrompt } = require("../services/playbooks");
 
-async function generateReply({ lead, lastUserMessage = "" }) {
+async function generateReply({ lead, lastUserMessage = "", transcript = [] }) {
   if (!config.ai.geminiApiKey) {
     return fallbackReply(lead);
   }
 
-  const prompt = await buildPrompt(lead);
+  const prompt = await buildPrompt(lead, { transcript, lastUserMessage });
   const models = uniqueModels([config.ai.geminiModel, ...(config.ai.geminiFallbackModels || [])]);
   const errors = [];
 
@@ -14,7 +14,6 @@ async function generateReply({ lead, lastUserMessage = "" }) {
     contents: [{
       parts: [{
         text: `${prompt}
-Customer said: ${lastUserMessage}
 Respond now in one natural Hinglish sentence, maximum 18 words. No bullet points.`
       }]
     }],
