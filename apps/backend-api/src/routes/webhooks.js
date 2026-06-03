@@ -103,6 +103,7 @@ router.get("/exotel/voicebot-health", (req, res) => {
     path: "/webhooks/exotel/voicebot",
     pathTokenFormat: "/webhooks/exotel/voicebot/:token",
     wssUrl: `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`,
+    dynamicUrl: `${config.serverUrl}/webhooks/exotel/voicebot-url`,
     mediaVersion: "2026-06-03-first-media-3200-seq-v2",
     chunkBytes: chunkBytes || 3200,
     introStartMode: process.env.VOICEBOT_INTRO_START_MODE || "first_media",
@@ -113,6 +114,23 @@ router.get("/exotel/voicebot-health", (req, res) => {
     sarvamConfigured: Boolean(config.ai.sarvamApiKey),
     tokenRequired: Boolean(config.voicebotToken)
   });
+});
+
+router.all("/exotel/voicebot-url", async (req, res) => {
+  const params = { ...req.query, ...req.body };
+  const lead = await resolveVoicebotLead(params);
+  const leadId = params.leadId || lead?.id || "";
+  const campaignId = params.campaignId || lead?.campaign_id || "";
+  const callId = await latestCallIdForLead(leadId);
+  const callSid = params.CallSid || params.callSid || params.Sid || "";
+
+  const wssUrl = new URL(`${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`);
+  if (leadId) wssUrl.searchParams.set("leadId", leadId);
+  if (campaignId) wssUrl.searchParams.set("campaignId", campaignId);
+  if (callId) wssUrl.searchParams.set("callId", callId);
+  if (callSid) wssUrl.searchParams.set("callSid", callSid);
+
+  res.type("text/plain").send(wssUrl.toString());
 });
 
 router.get("/exotel/tts-health", async (req, res) => {
@@ -176,6 +194,29 @@ async function latestCallForLead(leadId) {
     [leadId]
   );
   return result.rows[0];
+}
+
+async function latestCallIdForLead(leadId) {
+  if (!leadId) return "";
+  const call = await latestCallForLead(leadId);
+  return call?.id || "";
+}
+
+async function resolveVoicebotLead(params) {
+  if (params.leadId) return findLead(params.leadId);
+  const phone = normalizePhone(params.From || params.from || params.Caller || params.caller || params.CallFrom || params.callFrom);
+  if (!phone) return null;
+  const result = await query(
+    `SELECT * FROM leads
+     WHERE RIGHT(phone, 10)=RIGHT($1, 10)
+     ORDER BY created_at DESC LIMIT 1`,
+    [phone]
+  );
+  return result.rows[0] || null;
+}
+
+function normalizePhone(value) {
+  return String(value || "").replace(/\D/g, "");
 }
 
 async function addTranscript(callId, speaker, text) {

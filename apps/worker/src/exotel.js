@@ -11,14 +11,24 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   }
 
   const endpoint = `${config.exotel.apiBase}/v1/Accounts/${config.exotel.accountSid}/Calls/connect`;
+  const statusCallback = `${config.serverUrl}/webhooks/exotel/status`;
+  const customField = `lc_call:${callId};lead:${leadId};campaign:${campaignId}`;
   const params = new FormData();
   params.set("From", formatCustomerNumber(to));
   params.set("CallerId", config.exotel.fromNumber);
-  params.set("StreamType", "bidirectional");
-  params.set("StreamUrl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}&callId=${encodeURIComponent(callId)}`);
-  params.set("StreamName", "loanconnect_bot");
+  if (config.exotel.outboundMode === "flow") {
+    if (!config.exotel.flowUrl) throw new Error("EXOTEL_FLOW_URL is required when EXOTEL_OUTBOUND_MODE=flow");
+    params.set("Url", config.exotel.flowUrl);
+    params.set("TimeOut", String(config.exotel.ringTimeoutSeconds));
+    params.set("TimeLimit", String(config.exotel.timeLimitSeconds));
+    params.set("CustomField", customField);
+  } else {
+    params.set("StreamType", "bidirectional");
+    params.set("StreamUrl", `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot?leadId=${encodeURIComponent(leadId)}&campaignId=${encodeURIComponent(campaignId)}&callId=${encodeURIComponent(callId)}`);
+    params.set("StreamName", "loanconnect_bot");
+  }
   params.set("Record", "true");
-  params.set("StatusCallback", `${config.serverUrl}/webhooks/exotel/status`);
+  params.set("StatusCallback", statusCallback);
   params.append("StatusCallbackEvents[]", "answered");
   params.append("StatusCallbackEvents[]", "terminal");
 
@@ -30,7 +40,10 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   try {
     const json = JSON.parse(text);
     callSid = json?.Call?.Sid || json?.Call?.CallSid || json?.call?.sid || json?.call?.call_sid || callSid;
-  } catch {}
+  } catch {
+    const sidMatch = text.match(/<Sid>([^<]+)<\/Sid>/i);
+    if (sidMatch?.[1]) callSid = sidMatch[1];
+  }
   return { callSid, raw: text };
 }
 
