@@ -29,8 +29,10 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   }
   params.set("Record", "true");
   params.set("StatusCallback", statusCallback);
-  params.append("StatusCallbackEvents[]", "answered");
-  params.append("StatusCallbackEvents[]", "terminal");
+  if (config.exotel.outboundMode !== "flow") {
+    params.append("StatusCallbackEvents[]", "answered");
+    params.append("StatusCallbackEvents[]", "terminal");
+  }
 
   const res = await fetch(endpoint, { method: "POST", headers: { Authorization: authHeader() }, body: params });
   const text = await res.text();
