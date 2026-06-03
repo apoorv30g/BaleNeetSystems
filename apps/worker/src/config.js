@@ -18,6 +18,7 @@ module.exports = {
   maxConcurrentCalls: Number(process.env.MAX_CONCURRENT_CALLS || 20),
   callWindowStart: Number(process.env.CALL_WINDOW_START || 9),
   callWindowEnd: Number(process.env.CALL_WINDOW_END || 20),
+  callWindowTimeZone: process.env.CALL_WINDOW_TIME_ZONE || "Asia/Kolkata",
   maxCallAttempts: Number(process.env.MAX_CALL_ATTEMPTS || 3),
   serverUrl: required("SERVER_URL", isProduction ? railwayUrl() : "http://localhost:4000"),
   exotel: {

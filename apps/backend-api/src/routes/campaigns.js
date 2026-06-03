@@ -48,7 +48,7 @@ async function removeQueuedJobsForLead({ tenantId, campaignId, leadId }) {
   return removedJobs;
 }
 
-async function enqueueLeads({ tenantId, campaignId, leadIds, resetAttempts = false }) {
+async function enqueueLeads({ tenantId, campaignId, leadIds, resetAttempts = false, force = false }) {
   const settings = await getTenantSettings(tenantId);
   const params = [tenantId, campaignId];
   let where = `tenant_id=$1 AND campaign_id=$2 AND status IN ('pending','failed','queued')`;
@@ -77,9 +77,10 @@ async function enqueueLeads({ tenantId, campaignId, leadIds, resetAttempts = fal
 
     jobs.push({
       name: "call-lead",
-      data: { tenantId, campaignId, leadId: lead.id },
+      data: { tenantId, campaignId, leadId: lead.id, force },
       opts: {
-        jobId: `lead-call_${tenantId}_${campaignId}_${lead.id}`,
+        jobId: `lead-call_${tenantId}_${campaignId}_${lead.id}${force ? `_${Date.now()}` : ""}`,
+        priority: force ? 1 : undefined,
         attempts: settings.maxCallAttempts,
         backoff: { type: "fixed", delay: settings.retryDelayMinutes * 60 * 1000 },
         removeOnComplete: 1000,
@@ -267,7 +268,8 @@ router.post("/:campaignId/leads/:leadId/queue-call", async (req, res) => {
     const result = await enqueueLeads({
       tenantId: req.user.tenantId,
       campaignId: req.params.campaignId,
-      leadIds: [req.params.leadId]
+      leadIds: [req.params.leadId],
+      force: true
     });
     if (!result.eligible) return res.status(404).json({ error: "Lead not found or max attempts reached" });
     res.json({ ...result, leadId: req.params.leadId });

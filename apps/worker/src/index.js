@@ -15,15 +15,19 @@ async function tenantSettings(tenantId) {
 }
 
 function insideCallWindow(settings) {
-  const hour = new Date().getHours();
+  const hour = Number(new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    hour12: false,
+    timeZone: config.callWindowTimeZone
+  }).format(new Date()));
   return hour >= settings.callWindowStart && hour < settings.callWindowEnd;
 }
 
 const worker = new Worker("lead-calls", async (job) => {
-  const { tenantId, campaignId, leadId } = job.data;
+  const { tenantId, campaignId, leadId, force = false } = job.data;
   const settings = await tenantSettings(tenantId);
 
-  if (!insideCallWindow(settings)) throw new Error("Outside call window");
+  if (!force && !insideCallWindow(settings)) throw new Error(`Outside call window (${config.callWindowTimeZone})`);
 
   const leadResult = await query(`SELECT * FROM leads WHERE id=$1 AND tenant_id=$2`, [leadId, tenantId]);
   const lead = leadResult.rows[0];
