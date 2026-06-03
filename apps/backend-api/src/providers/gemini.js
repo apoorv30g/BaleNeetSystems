@@ -11,7 +11,17 @@ async function generateReply({ lead, lastUserMessage = "" }) {
   const errors = [];
 
   const body = {
-    contents: [{ parts: [{ text: `${prompt}\nCustomer said: ${lastUserMessage}\nRespond now.` }] }]
+    contents: [{
+      parts: [{
+        text: `${prompt}
+Customer said: ${lastUserMessage}
+Respond now in one natural Hinglish sentence, maximum 18 words. No bullet points.`
+      }]
+    }],
+    generationConfig: {
+      maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 80),
+      temperature: Number(process.env.GEMINI_TEMPERATURE || 0.4)
+    }
   };
 
   for (const model of models) {

@@ -12,7 +12,7 @@ function createDeepgramLive({ language = "multi", onTranscript, onError }) {
     sample_rate: "8000",
     channels: "1",
     interim_results: "true",
-    endpointing: process.env.DEEPGRAM_ENDPOINTING || "800",
+    endpointing: process.env.DEEPGRAM_ENDPOINTING || "350",
     smart_format: "true",
     punctuate: "true",
     language

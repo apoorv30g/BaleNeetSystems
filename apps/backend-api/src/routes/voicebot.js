@@ -9,8 +9,10 @@ const logger = require("../utils/logger");
 const config = require("../config");
 
 const FAST_INTRO_TEXT = "Namaste, LoanConnect AI assistant bol raha hoon.";
+const FAST_ACK_TEXT = process.env.VOICEBOT_FAST_ACK_TEXT || "Ji, samjha.";
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
+const FAST_ACK_ENABLED = process.env.VOICEBOT_FAST_ACK_ENABLED !== "false";
 const VOICEBOT_MEDIA_VERSION = "2026-06-03-first-media-3200-seq-v2";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
 const pcmCache = new Map();
@@ -18,6 +20,7 @@ const pcmCache = new Map();
 function attachVoicebot(server) {
   const wss = new WebSocketServer({ noServer: true });
   prewarmAudio(FAST_INTRO_TEXT).catch(err => logger.warn("voicebot_prewarm_failed", { error: err.message }));
+  prewarmAudio(FAST_ACK_TEXT).catch(err => logger.warn("voicebot_ack_prewarm_failed", { error: err.message }));
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
@@ -360,6 +363,13 @@ async function handleTranscript(ws, session, event) {
   if (!event.isFinal && !event.speechFinal) return;
   const text = event.transcript.trim();
   if (!text || session.speaking) return;
+  const turnStartedAt = Date.now();
+  await logVoicebotEvent(session, "transcript_final", {
+    text,
+    confidence: event.confidence,
+    isFinal: event.isFinal,
+    speechFinal: event.speechFinal
+  });
 
   if (!session.lead) {
     await speakText(ws, session, "Dhanyavaad. Main aapki baat note kar raha hoon. LoanConnect team aapki request process karegi.", "generic_reply_played");
@@ -388,7 +398,16 @@ async function handleTranscript(ws, session, event) {
     return;
   }
 
-  const reply = await safeGenerateReply(session, { lead: session.lead, lastUserMessage: text });
+  const replyPromise = safeGenerateReply(session, { lead: session.lead, lastUserMessage: text });
+  if (FAST_ACK_ENABLED) {
+    await speakText(ws, session, FAST_ACK_TEXT, "ack_played");
+  }
+
+  const reply = await replyPromise;
+  await logVoicebotEvent(session, "reply_ready", {
+    elapsedMs: Date.now() - turnStartedAt,
+    textBytes: Buffer.byteLength(reply)
+  });
   if (session.callId) {
     await addTranscript(session.callId, "assistant", reply);
     const transcript = await getTranscript(session.callId);
