@@ -5,6 +5,7 @@ const { redisClient } = require("../queue");
 const config = require("../config");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { getTenantSettings } = require("../services/settings");
+const { generateReply } = require("../providers/gemini");
 
 const router = express.Router();
 router.use(requireAuth, requireRole("admin"));
@@ -140,6 +141,37 @@ router.get("/voicebot-events", async (req, res) => {
      ORDER BY ve.created_at DESC LIMIT 300`
   );
   res.json(result.rows);
+});
+
+router.get("/gemini-test", async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    const reply = await generateReply({
+      lead: {
+        tenant_id: req.user.tenantId,
+        name: "Test User",
+        phone: "0000000000",
+        playbook_type: "UNAPPROVED_USERS",
+        drop_stage: "UNAPPROVED_USERS",
+        offer_amount: "50000",
+        language: "Hinglish"
+      },
+      lastUserMessage: "Hello"
+    });
+    res.json({
+      ok: true,
+      model: config.ai.geminiModel,
+      elapsedMs: Date.now() - startedAt,
+      reply
+    });
+  } catch (err) {
+    res.status(502).json({
+      ok: false,
+      model: config.ai.geminiModel,
+      elapsedMs: Date.now() - startedAt,
+      error: err.message
+    });
+  }
 });
 
 router.get("/exotel-calls/:callSid", async (req, res) => {
