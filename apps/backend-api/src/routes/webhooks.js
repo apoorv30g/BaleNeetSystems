@@ -104,7 +104,7 @@ router.get("/exotel/voicebot-health", (req, res) => {
     pathTokenFormat: "/webhooks/exotel/voicebot/:token",
     wssUrl: `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`,
     dynamicUrl: `${config.serverUrl}/webhooks/exotel/voicebot-url`,
-    dynamicTextUrl: `${config.serverUrl}/webhooks/exotel/voicebot-url?format=text`,
+    dynamicJsonUrl: `${config.serverUrl}/webhooks/exotel/voicebot-url?format=json`,
     mediaVersion: "2026-06-03-first-media-3200-seq-v2",
     chunkBytes: chunkBytes || 3200,
     introStartMode: process.env.VOICEBOT_INTRO_START_MODE || "first_media",
@@ -129,7 +129,6 @@ router.all("/exotel/voicebot-url", async (req, res) => {
   if (leadId) wssUrl.searchParams.set("leadId", leadId);
   if (campaignId) wssUrl.searchParams.set("campaignId", campaignId);
   if (callId) wssUrl.searchParams.set("callId", callId);
-  if (callSid) wssUrl.searchParams.set("callSid", callSid);
 
   await logVoicebotUrlRequest({
     callSid,
@@ -141,9 +140,9 @@ router.all("/exotel/voicebot-url", async (req, res) => {
     wssUrl: wssUrl.toString()
   });
 
-  const wantsText = String(params.format || "").toLowerCase() === "text";
-  if (wantsText) return res.type("text/plain").send(wssUrl.toString());
-  res.json({ url: wssUrl.toString() });
+  const wantsJson = String(params.format || "").toLowerCase() === "json";
+  if (wantsJson) return res.json({ url: wssUrl.toString() });
+  res.type("text/plain").send(wssUrl.toString());
 });
 
 router.get("/exotel/tts-health", async (req, res) => {

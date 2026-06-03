@@ -5,6 +5,15 @@ function authHeader() {
 }
 
 async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
+  if (config.dryRunCalls) {
+    console.log("[dry-run] call", { to, leadId, campaignId, callId, mode: config.exotel.outboundMode });
+    return { callSid: `dryrun_${Date.now()}`, dryRun: true };
+  }
+
+  if (!config.callDispatchEnabled) {
+    throw new Error("Call dispatch is disabled. Set CALL_DISPATCH_ENABLED=true to place paid Exotel calls.");
+  }
+
   if (!config.exotel.accountSid || !config.exotel.apiKey || !config.exotel.apiToken) {
     console.log("[mock] call", { to, leadId, campaignId });
     return { callSid: `mock_${Date.now()}` };

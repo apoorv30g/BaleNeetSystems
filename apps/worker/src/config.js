@@ -20,6 +20,8 @@ module.exports = {
   callWindowEnd: Number(process.env.CALL_WINDOW_END || 20),
   callWindowTimeZone: process.env.CALL_WINDOW_TIME_ZONE || "Asia/Kolkata",
   maxCallAttempts: Number(process.env.MAX_CALL_ATTEMPTS || 3),
+  callDispatchEnabled: process.env.CALL_DISPATCH_ENABLED === "true",
+  dryRunCalls: process.env.DRY_RUN_CALLS === "true",
   serverUrl: required("SERVER_URL", isProduction ? railwayUrl() : "http://localhost:4000"),
   exotel: {
     accountSid: process.env.EXOTEL_ACCOUNT_SID,
