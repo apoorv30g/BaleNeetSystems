@@ -42,10 +42,20 @@ router.all("/exotel/answer", async (req, res) => {
     const body = bodyOf(req);
     const leadId = req.query.leadId || body.leadId;
     const lead = await findLead(leadId);
+    const callSid = body.CallSid || body.Sid || req.query.CallSid || req.query.Sid || "";
+    const callId = req.query.callId || body.callId || "";
 
     if (!lead) return res.type("text/xml").send(`<Response><Say>Lead not found.</Say></Response>`);
 
     const call = await latestCallForLead(lead.id);
+    await logExomlAnswerRequest({
+      callSid,
+      lead,
+      callId: callId || call?.id,
+      method: req.method,
+      query: req.query,
+      body
+    });
     const text = process.env.EXOML_DYNAMIC_REPLY === "true"
       ? await safeGenerateReply({ lead }, FAST_EXOML_GREETING)
       : FAST_EXOML_GREETING;
@@ -340,6 +350,28 @@ async function logVoicebotUrlRequest({ callSid, leadId, campaignId, callId, meth
           method,
           params,
           wssUrl
+        }
+      ]
+    );
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) throw err;
+  }
+}
+
+async function logExomlAnswerRequest({ callSid, lead, callId, method, query: queryParams, body }) {
+  try {
+    await query(
+      `INSERT INTO voicebot_events (call_sid, lead_id, campaign_id, event_type, details)
+       VALUES ($1,$2,$3,'exoml_answer_requested',$4)`,
+      [
+        callSid || null,
+        lead?.id || null,
+        lead?.campaign_id || null,
+        {
+          callId: callId || null,
+          method,
+          query: queryParams,
+          body
         }
       ]
     );
