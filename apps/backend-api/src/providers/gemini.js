@@ -7,23 +7,35 @@ async function generateReply({ lead, lastUserMessage = "" }) {
   }
 
   const prompt = await buildPrompt(lead);
+  const models = uniqueModels([config.ai.geminiModel, ...(config.ai.geminiFallbackModels || [])]);
+  const errors = [];
 
-  const model = config.ai.geminiModel || "gemini-2.0-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${config.ai.geminiApiKey}`;
   const body = {
     contents: [{ parts: [{ text: `${prompt}\nCustomer said: ${lastUserMessage}\nRespond now.` }] }]
   };
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${config.ai.geminiApiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
 
-  if (!res.ok) throw new Error(`Gemini failed: ${await res.text()}`);
+    if (!res.ok) {
+      errors.push(`${model}: ${await res.text()}`);
+      continue;
+    }
 
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || fallbackReply(lead);
+    const data = await res.json();
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text || fallbackReply(lead);
+  }
+
+  throw new Error(`Gemini failed for all configured models: ${errors.join(" | ")}`);
+}
+
+function uniqueModels(models) {
+  return [...new Set(models.map(model => String(model || "").trim()).filter(Boolean))];
 }
 
 function fallbackReply(lead) {
