@@ -532,7 +532,7 @@ function sendMediaFrame(ws, session, payload, timestamp) {
     sequence_number: String(session.outboundSequence++),
     stream_sid: session.streamSid || undefined,
     media: {
-      chunk: session.outboundChunk++,
+      chunk: String(session.outboundChunk++),
       timestamp: String(timestamp),
       payload
     }
