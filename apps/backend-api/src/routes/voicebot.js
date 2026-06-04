@@ -689,13 +689,18 @@ function buildScriptedReply(session, text) {
   const lead = session.lead;
   const normalized = normalizeVoiceIntent(text);
   const amount = lead.offer_amount || lead.loan_amount || "";
-  const amountText = amount ? `₹${amount}` : "eligible amount";
+  const amountText = amount ? formatLoanAmount(amount) : "eligible amount";
   const english = isEnglishSession(session);
 
   if (mentionsMissingLink(normalized)) {
     queueLeadLink(session, "missing_link");
     if (english) return "Sure, I am sending the secure link again. Please open it and check your final offer in two minutes.";
     return "ठीक है, मैं सुरक्षित link दोबारा भेज रहा हूँ। कृपया उसे खोलकर दो मिनट में final offer check कर लीजिए।";
+  }
+
+  if (mentionsWrongAnswer(normalized)) {
+    if (english) return "Sorry, I misunderstood. Tell me the exact point: interest rate, EMI, amount, fees, or link?";
+    return "माफ़ कीजिए, मैं गलत समझा। आप क्या जानना चाहते हैं: ब्याज दर, ई एम आई, amount, fees या link?";
   }
 
   if (mentionsLinkReceived(normalized)) {
@@ -715,6 +720,31 @@ function buildScriptedReply(session, text) {
     }
     if (english) return "Sure, I am sending the secure link. Please open it and complete the next step.";
     return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। कृपया उसे खोलकर आगे का step पूरा कर लीजिए।";
+  }
+
+  if (asksInterestRate(normalized)) {
+    if (english) return "The exact interest rate appears on the final offer screen after eligibility. You can reject it if it does not suit you.";
+    return "ब्याज दर फ़ाइनल ऑफर स्क्रीन पर एलिजिबिलिटी के बाद दिखेगी। पसंद न हो तो आप मना कर सकते हैं।";
+  }
+
+  if (asksFeesOrCharges(normalized)) {
+    if (english) return "Any fee or charge is shown clearly in the app before acceptance. Please never share OTP or card details.";
+    return "कोई भी fee या charge ऐप में साफ दिखेगा, स्वीकार करने से पहले। ओ टी पी या card details मत बताइए।";
+  }
+
+  if (asksEmiOrTenure(normalized)) {
+    if (english) return "EMI and tenure options are shown with the final offer in the app. Open the secure link, and I will stay on the line.";
+    return "ई एम आई और tenure options ऐप में final offer के साथ दिखेंगे। सुरक्षित link खोलिए, मैं line पर हूँ।";
+  }
+
+  if (asksDocuments(normalized)) {
+    if (english) return "The app will show the exact documents needed. Usually it is basic KYC and income details, if required.";
+    return "ऐप exact documents दिखाएगा। आम तौर पर basic KYC और income details लग सकती हैं।";
+  }
+
+  if (asksSafety(normalized)) {
+    if (english) return "Yes, use only the secure app link. I will never ask for OTP, PIN, password, or card details on this call.";
+    return "हाँ, सिर्फ सुरक्षित ऐप link use कीजिए। मैं call पर ओ टी पी, PIN, password या card details नहीं पूछूँगा।";
   }
 
   if (asksAmount(normalized)) {
@@ -811,8 +841,18 @@ function normalizeVoiceIntent(value) {
     .trim();
 }
 
+function formatLoanAmount(value) {
+  const number = Number(String(value || "").replace(/,/g, ""));
+  if (!Number.isFinite(number) || number <= 0) return `₹${value}`;
+  return `₹${Math.round(number).toLocaleString("en-IN")}`;
+}
+
 function mentionsMissingLink(text) {
   return /(link nahi|link nahin|link नहीं|लिंक नहीं|लिंक नही|लिंक नहीं है|लिंक नही है|नहीं है मेरे पास|नही है मेरे पास|mere paas nahi|mere paas nahin)/.test(text);
+}
+
+function mentionsWrongAnswer(text) {
+  return /(ye nahi|ye nahin|यह नहीं|ये नहीं|यह नही|ये नही|not asked|did not ask|wrong answer|गलत जवाब|गलत समझ|nahi pucha|nahin pucha|नहीं पूछा|नही पूछा)/.test(text);
 }
 
 function mentionsLinkReceived(text) {
@@ -826,6 +866,26 @@ function isPositiveAgreement(text) {
 
 function asksAmount(text) {
   return /(kitna|amount|limit|offer amount|कितना|अमाउंट|राशि|लिमिट|कितनी eligibility|कितनी एलिजिबिलिटी)/.test(text);
+}
+
+function asksInterestRate(text) {
+  return /(rate of interest|interest rate|\broi\b|\binterest\b|ब्याज|ब्याज दर|इंटरेस्ट|इंट्रेस्ट|रेट ऑफ|रेट क्या|दर क्या|कितना ब्याज|कितनी ब्याज)/.test(text);
+}
+
+function asksFeesOrCharges(text) {
+  return /(processing fee|process fee|fees|fee|charge|charges|hidden charge|penalty|late fee|प्रोसेसिंग|फीस|चार्ज|शुल्क|पेनल्टी|जुर्माना|लेट fee|लेट फीस)/.test(text);
+}
+
+function asksEmiOrTenure(text) {
+  return /(emi|e m i|installment|instalment|tenure|month|months|किस्त|किश्त|ई एम आई|ईएमआई|महीने|कितने महीने|टेन्योर)/.test(text);
+}
+
+function asksDocuments(text) {
+  return /(document|documents|doc|docs|kyc|aadhaar|aadhar|pan|salary slip|bank statement|डॉक्यूमेंट|डाक्यूमेंट|कागज|कागज़|के वाई सी|आधार|पैन|सैलरी|बैंक statement|बैंक स्टेटमेंट)/.test(text);
+}
+
+function asksSafety(text) {
+  return /(safe|secure|genuine|real|fraud|scam|trust|सुरक्षित|सेफ|सच में|असली|फ्रॉड|धोखा|भरोसा)/.test(text);
 }
 
 function asksReason(text) {
@@ -1280,4 +1340,10 @@ async function getTranscript(callId) {
   return result.rows;
 }
 
-module.exports = { attachVoicebot };
+module.exports = {
+  attachVoicebot,
+  _test: {
+    buildScriptedReply,
+    normalizeVoiceIntent
+  }
+};
