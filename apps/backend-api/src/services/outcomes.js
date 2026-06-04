@@ -11,14 +11,15 @@ const OUTCOMES = [
 ];
 
 function inferOutcome(message) {
-  const text = String(message || "").toLowerCase();
-  if (/(paid|payment done|already paid|kar diya|ho gaya)/.test(text)) return "PAID";
-  if (/(promise|will pay|kal pay|tomorrow|pay later|date|agle hafte)/.test(text)) return "PROMISE_TO_PAY";
-  if (/(call back|callback|later|busy|baad mein)/.test(text)) return "CALLBACK";
-  if (/(wrong number|galat number|not my number)/.test(text)) return "WRONG_NUMBER";
-  if (/(dispute|issue|problem|wrong amount|not correct)/.test(text)) return "DISPUTE";
-  if (/(yes|haan|interested|bhej|send|continue|pay|payment)/.test(text)) return "INTERESTED";
-  if (/(no|nahi|not interested)/.test(text)) return "NOT_INTERESTED";
+  const text = normalizeForIntent(message);
+  if (isOptOut(message)) return "OPTED_OUT";
+  if (/(paid|payment done|already paid|kar diya|ho gaya|भुगतान हो गया|पेमेंट कर दिया|पेमेंट हो गया)/.test(text)) return "PAID";
+  if (/(promise|will pay|kal pay|tomorrow|pay later|date|agle hafte|कल पे|कल कर दूंगा|कल कर दूंगी|बाद में पे|अगले हफ्ते)/.test(text)) return "PROMISE_TO_PAY";
+  if (/(call back|callback|later|busy|baad mein|बाद में|व्यस्त|बिजी|अभी नहीं)/.test(text)) return "CALLBACK";
+  if (/(wrong number|galat number|not my number|गलत नंबर|मेरा नंबर नहीं)/.test(text)) return "WRONG_NUMBER";
+  if (/(dispute|issue|problem|wrong amount|not correct|समस्या|दिक्कत|गलत अमाउंट|गलत राशि)/.test(text)) return "DISPUTE";
+  if (isDecline(message) || isGoodbye(message)) return "NOT_INTERESTED";
+  if (/(yes|haan|han|interested|bhej|send|continue|pay|payment|हाँ|हा|ठीक|भेज|जारी|कर दीजिए|कर दीजिये)/.test(text)) return "INTERESTED";
   return "IN_PROGRESS";
 }
 
@@ -51,7 +52,50 @@ function summarizeOutcome({ outcome, userMessage, allUserText, playbookType }) {
 }
 
 function isOptOut(message) {
-  return /\b(stop|unsubscribe|remove|do not call|dont call|mat call|dobara call nahi|nahi chahiye)\b/i.test(String(message || ""));
+  const text = normalizeForIntent(message);
+  return /\b(stop|unsubscribe|remove|do not call|dont call|don't call|mat call|dobara call nahi|dobara phone nahi)\b/.test(text)
+    || /(दोबारा कॉल मत|दोबारा फोन मत|फिर कॉल मत|मत कॉल|कॉल मत करना|फोन मत करना)/.test(text);
 }
 
-module.exports = { OUTCOMES, inferOutcome, classifyConversation, isOptOut };
+function isTerminalIntent(message) {
+  return isOptOut(message) || isGoodbye(message) || isDecline(message) || inferOutcome(message) === "CALLBACK";
+}
+
+function terminalOutcome(message) {
+  if (isOptOut(message)) return "OPTED_OUT";
+  const outcome = inferOutcome(message);
+  if (["CALLBACK", "WRONG_NUMBER", "NOT_INTERESTED"].includes(outcome)) return outcome;
+  if (isGoodbye(message) || isDecline(message)) return "NOT_INTERESTED";
+  return "IN_PROGRESS";
+}
+
+function isGoodbye(message) {
+  const text = normalizeForIntent(message);
+  return /\b(bye|goodbye|end call|disconnect|hang up|cut the call|phone rakho|rakh do|band karo|bas)\b/.test(text)
+    || /(बाय|अलविदा|कॉल काट|फोन रख|रख दीजिए|बंद करो|बस अब|बस रहने)/.test(text);
+}
+
+function isDecline(message) {
+  const raw = String(message || "").trim();
+  const text = normalizeForIntent(raw);
+  if (/^(no|na|nahi|nahin|nope|नहीं|नही|ना|न)$/.test(text)) return true;
+  return /\b(not interested|dont want|don't want|do not want|not needed|not required|nahi karna|nahi chahiye|loan nahi chahiye|mujhe nahi karna|mujhe nahi chahiye)\b/.test(text)
+    || /(नहीं करना|नही करना|नहीं चाहिए|नही चाहिए|लोन नहीं चाहिए|मुझे नहीं करना|मुझे नही करना|मुझे नहीं चाहिए|इंटरेस्टेड नहीं|दिलचस्पी नहीं|नहीं लेना|नही लेना|रहने दीजिए|रहने दो)/.test(raw);
+}
+
+function normalizeForIntent(message) {
+  return String(message || "")
+    .toLowerCase()
+    .replace(/[।,.!?;:()[\]{}"'`*_>-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+module.exports = {
+  OUTCOMES,
+  inferOutcome,
+  classifyConversation,
+  isOptOut,
+  isTerminalIntent,
+  terminalOutcome
+};

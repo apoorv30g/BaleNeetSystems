@@ -16,7 +16,7 @@ async function generateSarvamReply({ lead, lastUserMessage = "", transcript = []
       },
       {
         role: "user",
-        content: "Respond now in one natural Hinglish phone-call sentence, maximum 22 words. No bullet points."
+        content: "Respond now as spoken Hindi for TTS: one or two short Devanagari sentences, maximum 24 words. No bullet points."
       }
     ],
     max_tokens: Number(process.env.SARVAM_CHAT_MAX_TOKENS || 80),
@@ -63,7 +63,7 @@ function parseMaybeJson(text) {
 }
 
 function cleanReply(value) {
-  const maxWords = Number(process.env.SARVAM_REPLY_MAX_WORDS || process.env.GEMINI_REPLY_MAX_WORDS || 24);
+  const maxWords = Number(process.env.SARVAM_REPLY_MAX_WORDS || process.env.GEMINI_REPLY_MAX_WORDS || 28);
   const text = String(value || "")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/^[\s"'`*_>-]+/g, "")
@@ -81,18 +81,18 @@ function fallbackReply(lead) {
   const name = firstName(lead?.name);
   const prefix = name ? `${name} ji, ` : "";
   if (lead?.playbook_type === "SOFT_PAYMENT_REMINDER") {
-    return `${prefix}aapki payment due date paas hai. Kya main payment link abhi share kar doon?`;
+    return `${prefix}आपकी पेमेंट की तारीख पास है। क्या मैं सुरक्षित पेमेंट लिंक अभी भेज दूँ?`;
   }
   if (lead?.playbook_type === "HARD_PAYMENT_REMINDER") {
-    return `${prefix}payment overdue dikh rahi hai. Kya aap bata sakte hain payment kab tak kar payenge?`;
+    return `${prefix}आपकी पेमेंट overdue दिख रही है। आप कब तक पेमेंट कर पाएँगे?`;
   }
   if (lead?.playbook_type === "APPROVED_USERS") {
-    return `${prefix}aapka loan offer ready hai. Kya aap ise aaj continue karna chahenge?`;
+    return `${prefix}आपका loan offer ready है। क्या आप इसे आज आगे बढ़ाना चाहेंगे?`;
   }
   if (lead?.playbook_type === "FRESH_LEAD") {
-    return `${prefix}main loan eligibility ke liye call kar raha hoon. Aapko kitna loan chahiye?`;
+    return `${prefix}मैं loan eligibility के लिए call कर रहा हूँ। आपको कितना loan चाहिए?`;
   }
-  return `${prefix}aapki loan eligibility pending hai. Kya main aapko final offer check karne mein guide karun?`;
+  return `${prefix}आपकी loan eligibility pending है। क्या मैं final offer check करने में मदद करूँ?`;
 }
 
 function firstName(name) {

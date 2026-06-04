@@ -4,9 +4,10 @@ const { generateReply } = require("../providers/llm");
 const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
 const { createLiveStt } = require("../providers/sttLive");
-const { classifyConversation, isOptOut } = require("../services/outcomes");
+const { classifyConversation, isOptOut, isTerminalIntent, terminalOutcome } = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
+const { sendLeadLink } = require("../providers/notifications");
 
 const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, LoanConnect se AI assistant. Kya aap mujhe sun paa rahe hain?";
 const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Okay.|Got it.|Sure.|Haan ji.|Theek hai.|Samjha.");
@@ -94,6 +95,7 @@ function attachVoicebot(server) {
       interimCount: 0,
       pendingTranscript: null,
       lastProcessedTranscript: null,
+      ending: false,
       introTimer: null,
       noSpeechPromptTimer: null,
       noSpeechEndTimer: null,
@@ -532,6 +534,7 @@ function clearInterimTimer(session) {
 async function processUserTranscript(ws, session, event) {
   const text = event.transcript.trim();
   if (!text) return;
+  if (session.ending) return;
   if (isRecentlyProcessedTranscript(session, text)) return;
   const sttProvider = liveSttEventProvider(event);
   session.interimStartedAt = 0;
@@ -584,20 +587,51 @@ async function processUserTranscript(ws, session, event) {
   session.userTurns++;
 
   if (isOptOut(text)) {
+    session.ending = true;
     await query(
       `INSERT INTO dnc_list (tenant_id, phone, reason)
        VALUES ($1,$2,'call_opt_out')
        ON CONFLICT (tenant_id, phone) DO UPDATE SET reason='call_opt_out'`,
       [session.tenantId, session.lead.phone]
     );
-    if (session.callId) await query(`UPDATE calls SET outcome='OPTED_OUT', status='completed', updated_at=NOW() WHERE id=$1`, [session.callId]);
-    await speakText(ws, session, "Samajh gaya. Hum aapko dobara call nahi karenge. Dhanyavaad.", "opt_out");
-    ws.close();
+    const closingText = "समझ गया। हम आपको दोबारा call नहीं करेंगे। धन्यवाद।";
+    if (session.callId) {
+      await addTranscript(session.callId, "assistant", closingText);
+      await finalizeCall(session, {
+        outcome: "OPTED_OUT",
+        summary: `Latest user response: "${text.slice(0, 180)}". User opted out of future calls.`
+      });
+    }
+    await speakAndClose(ws, session, closingText, "opt_out");
+    return;
+  }
+
+  if (isTerminalIntent(text)) {
+    session.ending = true;
+    const outcome = terminalOutcome(text);
+    const closingText = terminalClosingText(outcome);
+    if (session.callId) {
+      await addTranscript(session.callId, "assistant", closingText);
+      const classification = classifyConversation({
+        userMessage: text,
+        transcript: await getTranscript(session.callId),
+        playbookType: session.lead.playbook_type
+      });
+      await finalizeCall(session, {
+        outcome: outcome === "IN_PROGRESS" ? classification.outcome : outcome,
+        summary: classification.summary
+      });
+    }
+    await logVoicebotEvent(session, "terminal_intent", { text, outcome });
+    await speakAndClose(ws, session, closingText, "terminal_close");
     return;
   }
 
   const promptTranscript = session.callId ? await getTranscript(session.callId) : [];
-  const replyPromise = safeGenerateReply(session, { lead: session.lead, lastUserMessage: text, transcript: promptTranscript });
+  const scriptedReply = buildScriptedReply(session, text);
+  const replyPromise = scriptedReply
+    ? Promise.resolve(scriptedReply)
+    : safeGenerateReply(session, { lead: session.lead, lastUserMessage: text, transcript: promptTranscript });
   const ackText = pickAckText(session);
   if (FAST_ACK_ENABLED && ackText) {
     await speakText(ws, session, ackText, "ack_played");
@@ -606,7 +640,8 @@ async function processUserTranscript(ws, session, event) {
   const reply = await replyPromise;
   await logVoicebotEvent(session, "reply_ready", {
     elapsedMs: Date.now() - turnStartedAt,
-    textBytes: Buffer.byteLength(reply)
+    textBytes: Buffer.byteLength(reply),
+    source: scriptedReply ? "scripted" : "llm"
   });
   if (session.callId) {
     await addTranscript(session.callId, "assistant", reply);
@@ -632,6 +667,74 @@ function isRecentlyProcessedTranscript(session, text) {
   return false;
 }
 
+function buildScriptedReply(session, text) {
+  const lead = session.lead;
+  const normalized = normalizeVoiceIntent(text);
+  const amount = lead.offer_amount || lead.loan_amount || "";
+  const amountText = amount ? `₹${amount}` : "eligible amount";
+
+  if (mentionsMissingLink(normalized)) {
+    queueLeadLink(session, "missing_link");
+    return "ठीक है, मैं सुरक्षित link दोबारा भेज रहा हूँ। कृपया उसे खोलकर दो मिनट में final offer check कर लीजिए।";
+  }
+
+  if (mentionsLinkReceived(normalized)) {
+    return "बहुत अच्छा। अब उसी link को खोलकर final offer check कर लीजिए। मैं line पर हूँ।";
+  }
+
+  if (isPositiveAgreement(normalized)) {
+    queueLeadLink(session, "user_agreed");
+    if (lead.playbook_type === "UNAPPROVED_USERS") {
+      return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर documents और final eligibility दो मिनट में check कर लीजिए।";
+    }
+    if (lead.playbook_type === "APPROVED_USERS") {
+      return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। आपका offer आगे बढ़ाने के लिए उसे खोल लीजिए।";
+    }
+    return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। कृपया उसे खोलकर आगे का step पूरा कर लीजिए।";
+  }
+
+  if (asksAmount(normalized)) {
+    return `आपकी eligibility ${amountText} तक दिख रही है। Final amount app में details check करने के बाद confirm होगा।`;
+  }
+
+  if (asksReason(normalized)) {
+    return "आपकी loan eligibility अधूरी दिख रही है, इसलिए यह call है। मैं सिर्फ final offer check करने में मदद कर रहा हूँ।";
+  }
+
+  if (asksQuestion(normalized)) {
+    return "हाँ, पूछिए। मैं आपकी बात समझकर छोटा सा जवाब दूँगा, फिर final offer check करवा दूँगा।";
+  }
+
+  return "";
+}
+
+function queueLeadLink(session, reason) {
+  if (!session.tenantId || !session.lead) return;
+  sendLeadLink({
+    tenantId: session.tenantId,
+    lead: session.lead,
+    channel: "sms",
+    link: config.loanAppUrl
+  })
+    .then(event => logVoicebotEvent(session, "lead_link_queued", { reason, status: event.status, channel: event.channel }).catch(() => {}))
+    .catch(err => logVoicebotEvent(session, "lead_link_failed", { reason, error: err.message }).catch(() => {}));
+}
+
+function terminalClosingText(outcome) {
+  if (outcome === "CALLBACK") return "ठीक है, हम बाद में संपर्क करेंगे। धन्यवाद।";
+  if (outcome === "WRONG_NUMBER") return "माफ कीजिए, मैं इस number को wrong number mark कर रहा हूँ। धन्यवाद।";
+  if (outcome === "OPTED_OUT") return "समझ गया। हम आपको दोबारा call नहीं करेंगे। धन्यवाद।";
+  return "ठीक है, मैं call यहीं close कर रहा हूँ। धन्यवाद।";
+}
+
+async function speakAndClose(ws, session, text, markName) {
+  clearNoSpeechTimers(session);
+  clearInterimTimer(session);
+  await speakText(ws, session, text, markName);
+  await sleep(Number(process.env.VOICEBOT_END_CLOSE_GRACE_MS || 900));
+  if (!session.closed && ws.readyState === ws.OPEN) ws.close();
+}
+
 async function safeGenerateReply(session, args) {
   try {
     return await generateReply(args);
@@ -639,6 +742,39 @@ async function safeGenerateReply(session, args) {
     await logVoicebotEvent(session, "llm_failed", { error: err.message });
     return "Samajh gaya. Main LoanConnect ka AI assistant hoon. Kya aap loan eligibility aur offer details ke liye ek minute de sakte hain?";
   }
+}
+
+function normalizeVoiceIntent(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[।,.!?;:()[\]{}"'`*_>-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mentionsMissingLink(text) {
+  return /(link nahi|link nahin|link नहीं|लिंक नहीं|लिंक नही|लिंक नहीं है|लिंक नही है|नहीं है मेरे पास|नही है मेरे पास|mere paas nahi|mere paas nahin)/.test(text);
+}
+
+function mentionsLinkReceived(text) {
+  return /(aa gaya|aagaya|mil gaya|मिल गया|आ गया|आगया|link मिला|लिंक मिला)/.test(text);
+}
+
+function isPositiveAgreement(text) {
+  return /^(haan|han|haa|yes|ok|okay|sure|ठीक|हाँ|हां|हा|ओके)$/.test(text)
+    || /(kar dijiye|kar do|bhej do|bhej dijiye|send kar|continue|कर दीजिए|कर दीजिये|कर दो|भेज दो|भेज दीजिए|भेज दीजिये|आगे बढ़)/.test(text);
+}
+
+function asksAmount(text) {
+  return /(kitna|amount|limit|offer amount|कितना|अमाउंट|राशि|लिमिट|कितनी eligibility|कितनी एलिजिबिलिटी)/.test(text);
+}
+
+function asksReason(text) {
+  return /(kyun|why|kisliye|क्यों|किसलिए|किस लिये|call kyu|कॉल क्यों)/.test(text);
+}
+
+function asksQuestion(text) {
+  return /(question|poochna|puchna|पूछना|सवाल|जानना|doubt|डाउट|दिक्कत|problem|issue|समस्या)/.test(text);
 }
 
 function firstGreeting(lead) {
@@ -778,10 +914,11 @@ async function speakText(ws, session, text, markName) {
 async function getPcmBase64(text, session = {}) {
   const sampleRate = session.mediaSampleRate || 8000;
   const volume = Number(process.env.VOICEBOT_TTS_VOLUME || 1.6);
-  const cacheKey = `${sampleRate}:${volume}:${text}`;
+  const speechText = prepareTextForSpeech(text);
+  const cacheKey = `${sampleRate}:${volume}:${speechText}`;
   if (pcmCache.has(cacheKey)) return pcmCache.get(cacheKey);
 
-  const speech = await synthesizeSpeech(text);
+  const speech = await synthesizeSpeech(speechText);
   if (speech.mode !== "audio") return null;
 
   const pcmBase64 = await toExotelPcmBase64(speech.audioBase64, { sampleRate, volume });
@@ -789,6 +926,40 @@ async function getPcmBase64(text, session = {}) {
     pcmCache.set(cacheKey, pcmBase64);
   }
   return pcmBase64;
+}
+
+function prepareTextForSpeech(text) {
+  return String(text || "")
+    .replace(/Namaste,\s*LoanConnect se AI assistant\.?\s*Kya aap mujhe sun paa rahe hain\?/i, "नमस्ते, लोन कनेक्ट से ए आई असिस्टेंट। क्या आप मुझे सुन पा रहे हैं?")
+    .replace(/\bNamaste\b/gi, "नमस्ते")
+    .replace(/\bAI assistant\b/gi, "ए आई असिस्टेंट")
+    .replace(/\bLoanConnect\b/gi, "लोन कनेक्ट")
+    .replace(/\bCIBIL\b/gi, "सिबिल")
+    .replace(/\bEMI\b/gi, "ई एम आई")
+    .replace(/\bKYC\b/gi, "के वाई सी")
+    .replace(/\bOTP\b/gi, "ओ टी पी")
+    .replace(/\bSMS\b/gi, "एस एम एस")
+    .replace(/\bWhatsApp\b/gi, "व्हाट्सऐप")
+    .replace(/\bapp\b/gi, "ऐप")
+    .replace(/\blink\b/gi, "लिंक")
+    .replace(/\boffer\b/gi, "ऑफर")
+    .replace(/\bfinal\b/gi, "फाइनल")
+    .replace(/\bcheck\b/gi, "चेक")
+    .replace(/\bpayment\b/gi, "पेमेंट")
+    .replace(/\boverdue\b/gi, "ओवरड्यू")
+    .replace(/\bcall\b/gi, "कॉल")
+    .replace(/\bline\b/gi, "लाइन")
+    .replace(/\bclose\b/gi, "क्लोज़")
+    .replace(/\bOK\b/gi, "ओके")
+    .replace(/\bOkay\b/gi, "ओके")
+    .replace(/\bGot it\b/gi, "समझ गया")
+    .replace(/\bSure\b/gi, "ठीक है")
+    .replace(/\bHaan ji\b/gi, "हाँ जी")
+    .replace(/\bTheek hai\b/gi, "ठीक है")
+    .replace(/\bSamjha\b/gi, "समझ गया")
+    .replace(/\baap\b/gi, "आप")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function prewarmAudio(text) {
@@ -987,6 +1158,24 @@ async function markCallCompleted(session) {
          updated_at=NOW()
      WHERE id=$1 AND status='streaming'`,
     [session.callId, durationSeconds]
+  );
+}
+
+async function finalizeCall(session, { outcome, summary }) {
+  if (!session.callId) return;
+  const durationSeconds = Math.max(0, Math.round((Date.now() - session.startedAt) / 1000));
+  await query(
+    `UPDATE calls
+     SET status='completed',
+         outcome=COALESCE($2,outcome),
+         summary=COALESCE($3,summary),
+         duration_seconds=CASE
+           WHEN duration_seconds IS NULL OR duration_seconds=0 THEN $4
+           ELSE duration_seconds
+         END,
+         updated_at=NOW()
+     WHERE id=$1`,
+    [session.callId, outcome || null, summary || null, durationSeconds]
   );
 }
 
