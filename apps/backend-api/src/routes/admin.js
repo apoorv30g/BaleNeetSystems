@@ -7,6 +7,11 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const { getTenantSettings } = require("../services/settings");
 const { generateReply, llmProviderStatus } = require("../providers/llm");
 const { liveSttProviderStatus } = require("../providers/sttLive");
+const {
+  cleanupTestData,
+  DEFAULT_TEST_CAMPAIGN_PATTERNS,
+  DEFAULT_TEST_PHONES
+} = require("../services/testDataCleanup");
 
 const router = express.Router();
 router.use(requireAuth, requireRole("admin"));
@@ -146,6 +151,37 @@ router.get("/voicebot-events", async (req, res) => {
   res.json(result.rows);
 });
 
+router.get("/test-data-cleanup", async (req, res) => {
+  const result = await cleanupTestData({
+    tenantId: req.user.tenantId,
+    confirm: false,
+    campaignNamePatterns: listFromQuery(req.query.campaignNamePatterns) || DEFAULT_TEST_CAMPAIGN_PATTERNS,
+    phones: listFromQuery(req.query.phones) || DEFAULT_TEST_PHONES
+  });
+  res.json(result);
+});
+
+router.post("/test-data-cleanup", async (req, res) => {
+  const confirm = req.body?.confirm === true;
+  const result = await cleanupTestData({
+    tenantId: req.user.tenantId,
+    confirm,
+    campaignNamePatterns: Array.isArray(req.body?.campaignNamePatterns)
+      ? req.body.campaignNamePatterns
+      : DEFAULT_TEST_CAMPAIGN_PATTERNS,
+    phones: Array.isArray(req.body?.phones) ? req.body.phones : DEFAULT_TEST_PHONES
+  });
+
+  await audit(req, confirm ? "test_data_cleanup" : "test_data_cleanup_preview", {
+    matchedCampaigns: result.matchedCampaigns,
+    matchedLeads: result.matchedLeads,
+    matchedCalls: result.matchedCalls,
+    counts: result.counts,
+    deleted: result.deleted || null
+  });
+  res.json(result);
+});
+
 router.get("/gemini-test", async (req, res) => {
   const startedAt = Date.now();
   const providerStatus = llmProviderStatus();
@@ -254,6 +290,13 @@ function parseMaybeJson(text) {
   } catch {
     return text;
   }
+}
+
+function listFromQuery(value) {
+  if (!value) return null;
+  const raw = Array.isArray(value) ? value : String(value).split(",");
+  const list = raw.map(item => String(item || "").trim()).filter(Boolean);
+  return list.length ? list : null;
 }
 
 module.exports = router;
