@@ -275,7 +275,7 @@ async function fetchJsonWithTimeout(url, options, timeoutMs) {
 
 function sarvamSttParams() {
   return new URLSearchParams({
-    language_code: process.env.SARVAM_STT_LANGUAGE_CODE || "hi-IN",
+    "language-code": process.env.SARVAM_STT_LANGUAGE_CODE || "hi-IN",
     model: process.env.SARVAM_STT_MODEL || "saaras:v3",
     mode: process.env.SARVAM_STT_MODE || "codemix",
     sample_rate: String(process.env.SARVAM_STT_SAMPLE_RATE || 8000),

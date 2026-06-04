@@ -204,7 +204,7 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
 
 function sarvamParams({ languageCode, sampleRate, audioEncoding }) {
   const params = new URLSearchParams({
-    language_code: languageCode,
+    "language-code": languageCode,
     model: process.env.SARVAM_STT_MODEL || "saaras:v3",
     mode: process.env.SARVAM_STT_MODE || "codemix",
     sample_rate: String(sampleRate),
