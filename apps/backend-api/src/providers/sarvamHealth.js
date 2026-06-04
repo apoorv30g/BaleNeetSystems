@@ -95,6 +95,9 @@ function checkStt() {
   return new Promise(resolve => {
     let done = false;
     const startedAt = Date.now();
+    let openResult = null;
+    let audioProbeSent = false;
+    let sawError = false;
     let probeTimer = null;
     const ws = new WebSocket(`wss://api.sarvam.ai/speech-to-text/ws?${params.toString()}`, {
       headers: { "Api-Subscription-Key": config.ai.sarvamApiKey }
@@ -103,7 +106,7 @@ function checkStt() {
     const timer = setTimeout(() => finish({ ok: false, error: `timeout_${timeoutMs}ms` }), timeoutMs);
 
     ws.on("open", () => {
-      const result = {
+      openResult = {
         ok: true,
         model: process.env.SARVAM_STT_MODEL || "saaras:v3",
         mode: process.env.SARVAM_STT_MODE || "codemix",
@@ -113,10 +116,11 @@ function checkStt() {
       };
 
       if (!audioProbeEnabled) {
-        finish(result);
+        finish(openResult);
         return;
       }
 
+      audioProbeSent = true;
       ws.send(JSON.stringify({
         audio: {
           data: makePcmProbe(sampleRate).toString("base64"),
@@ -125,7 +129,7 @@ function checkStt() {
         }
       }));
 
-      probeTimer = setTimeout(() => finish({ ...result, elapsedMs: Date.now() - startedAt }), audioProbeHoldMs);
+      probeTimer = setTimeout(() => finish({ ...openResult, elapsedMs: Date.now() - startedAt }), audioProbeHoldMs);
     });
 
     ws.on("unexpected-response", (req, res) => {
@@ -138,8 +142,20 @@ function checkStt() {
       }));
     });
 
-    ws.on("error", err => finish({ ok: false, error: err.message }));
+    ws.on("error", err => {
+      sawError = true;
+      finish({ ok: false, error: err.message });
+    });
     ws.on("close", (code, reason) => {
+      if (!done && Number(code) === 1000 && openResult && audioProbeSent && !sawError) {
+        finish({
+          ...openResult,
+          cleanCloseAfterProbe: true,
+          closeCode: code,
+          elapsedMs: Date.now() - startedAt
+        });
+        return;
+      }
       if (!done) finish({ ok: false, code, error: reason?.toString() || `closed_${code}` });
     });
 
