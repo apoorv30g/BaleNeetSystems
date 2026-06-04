@@ -66,6 +66,12 @@ router.get("/clients", async (req, res) => {
   res.json(await listClients());
 });
 
+router.get("/costs", async (req, res) => {
+  if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Platform admin access required" });
+  const days = normalizeCostDays(req.query.days);
+  res.json(await platformCostOverview(days));
+});
+
 router.post("/clients", async (req, res) => {
   if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Platform admin access required" });
 
@@ -404,6 +410,255 @@ async function listClients() {
     ORDER BY t.created_at DESC
   `);
   return result.rows;
+}
+
+async function platformCostOverview(days) {
+  const params = [];
+  const callWhere = dateWhere("c.created_at", days, params);
+  const sttWhere = dateWhere("e.created_at", days, params);
+  const transcriptWhere = dateWhere("tr.created_at", days, params);
+  const eventWhere = dateWhere("ve.created_at", days, params);
+
+  const [calls, stt, tts, llm, clients] = await Promise.all([
+    query(`
+      SELECT
+        COUNT(*)::int AS calls,
+        COUNT(CASE WHEN c.status='completed' THEN 1 END)::int AS completed_calls,
+        COALESCE(SUM(GREATEST(c.duration_seconds,0)),0)::float AS duration_seconds,
+        COALESCE(SUM(CEIL(GREATEST(c.duration_seconds,0) / 60.0)),0)::float AS billable_minutes,
+        COALESCE(SUM(c.cost_estimate),0)::float AS stored_cost
+      FROM calls c
+      ${callWhere.sql}
+    `, callWhere.params),
+    query(`
+      WITH provider_calls AS (
+        SELECT
+          CASE
+            WHEN LOWER(e.provider) LIKE '%sarvam%' THEN 'sarvam'
+            WHEN LOWER(e.provider) LIKE '%deepgram%' THEN 'deepgram'
+            ELSE LOWER(e.provider)
+          END AS provider,
+          e.call_id,
+          COUNT(*)::int AS events,
+          MAX(GREATEST(c.duration_seconds,0))::float AS duration_seconds
+        FROM call_stt_events e
+        LEFT JOIN calls c ON c.id=e.call_id
+        ${sttWhere.sql}
+        GROUP BY provider, e.call_id
+      )
+      SELECT
+        provider,
+        COALESCE(SUM(events),0)::int AS events,
+        COUNT(call_id)::int AS calls,
+        COALESCE(SUM(duration_seconds),0)::float AS duration_seconds,
+        COALESCE(SUM(CEIL(duration_seconds / 60.0)),0)::float AS billable_minutes
+      FROM provider_calls
+      GROUP BY provider
+      ORDER BY provider
+    `, sttWhere.params),
+    query(`
+      SELECT
+        COUNT(*)::int AS messages,
+        COALESCE(SUM(LENGTH(tr.text)),0)::float AS chars
+      FROM transcripts tr
+      LEFT JOIN calls c ON c.id=tr.call_id
+      WHERE tr.speaker='assistant'
+      ${transcriptWhere.andSql}
+    `, transcriptWhere.params),
+    query(`
+      SELECT
+        CASE
+          WHEN LOWER(COALESCE(ve.details->>'provider','')) LIKE '%gemini%' THEN 'gemini'
+          ELSE 'sarvam'
+        END AS provider,
+        COUNT(*)::int AS replies,
+        COALESCE(SUM(NULLIF(ve.details->>'textBytes','')::numeric),0)::float AS text_bytes
+      FROM voicebot_events ve
+      LEFT JOIN campaigns c ON c.id=ve.campaign_id
+      WHERE ve.event_type='reply_ready'
+        AND COALESCE(ve.details->>'source','')='llm'
+      ${eventWhere.andSql}
+      GROUP BY provider
+      ORDER BY provider
+    `, eventWhere.params),
+    query(`
+      SELECT
+        t.id,
+        t.name,
+        COUNT(c.id)::int AS calls,
+        COALESCE(SUM(GREATEST(c.duration_seconds,0)),0)::float AS duration_seconds,
+        COALESCE(SUM(CEIL(GREATEST(c.duration_seconds,0) / 60.0)),0)::float AS billable_minutes
+      FROM tenants t
+      LEFT JOIN calls c ON c.tenant_id=t.id ${days ? "AND c.created_at >= NOW() - ($1::text || ' days')::interval" : ""}
+      GROUP BY t.id
+      ORDER BY billable_minutes DESC, t.created_at DESC
+    `, days ? [days] : [])
+  ]);
+
+  const rates = costRates();
+  const callStats = calls.rows[0] || {};
+  const sarvamStt = stt.rows.find(row => row.provider === "sarvam") || {};
+  const deepgramStt = stt.rows.find(row => row.provider === "deepgram") || {};
+  const ttsStats = tts.rows[0] || {};
+  const sarvamLlm = llm.rows.find(row => row.provider === "sarvam") || {};
+  const geminiLlm = llm.rows.find(row => row.provider === "gemini") || {};
+
+  const components = [
+    component({
+      key: "exotel_voice",
+      vendor: "Exotel",
+      label: "Outbound voice calls",
+      unit: "billable minute",
+      quantity: number(callStats.billable_minutes),
+      rawUsage: `${formatNumber(callStats.duration_seconds)} seconds across ${callStats.calls || 0} calls`,
+      rate: rates.exotelCostPerMinuteInr
+    }),
+    component({
+      key: "sarvam_stt",
+      vendor: "Sarvam",
+      label: "Saaras live STT",
+      unit: "audio hour",
+      quantity: number(sarvamStt.duration_seconds) / 3600,
+      rawUsage: `${formatNumber(sarvamStt.duration_seconds)} seconds, ${sarvamStt.events || 0} transcript events`,
+      rate: rates.sarvamSttCostPerHourInr
+    }),
+    component({
+      key: "sarvam_tts",
+      vendor: "Sarvam",
+      label: "Bulbul TTS",
+      unit: "1K characters",
+      quantity: number(ttsStats.chars) / 1000,
+      rawUsage: `${formatNumber(ttsStats.chars)} assistant characters, ${ttsStats.messages || 0} messages`,
+      rate: rates.sarvamTtsCostPer1kCharsInr
+    }),
+    component({
+      key: "sarvam_llm",
+      vendor: "Sarvam",
+      label: "Sarvam chat / LLM",
+      unit: "1K estimated output tokens",
+      quantity: estimatedTokens(sarvamLlm.text_bytes) / 1000,
+      rawUsage: `${formatNumber(estimatedTokens(sarvamLlm.text_bytes))} estimated output tokens, ${sarvamLlm.replies || 0} LLM replies`,
+      rate: rates.sarvamLlmCostPer1kTokensInr
+    }),
+    component({
+      key: "deepgram_stt",
+      vendor: "Deepgram",
+      label: "Fallback STT",
+      unit: "billable minute",
+      quantity: number(deepgramStt.billable_minutes),
+      rawUsage: `${formatNumber(deepgramStt.duration_seconds)} seconds, ${deepgramStt.events || 0} transcript events`,
+      rate: rates.deepgramCostPerMinuteInr
+    }),
+    component({
+      key: "gemini_llm",
+      vendor: "Gemini",
+      label: "Fallback LLM",
+      unit: "1K estimated output tokens",
+      quantity: estimatedTokens(geminiLlm.text_bytes) / 1000,
+      rawUsage: `${formatNumber(estimatedTokens(geminiLlm.text_bytes))} estimated output tokens, ${geminiLlm.replies || 0} LLM replies`,
+      rate: rates.geminiCostPer1kTokensInr
+    })
+  ];
+
+  const totalEstimatedInr = roundMoney(components.reduce((sum, item) => sum + item.estimatedCostInr, 0));
+  const missingRates = components.filter(item => item.quantity > 0 && item.rateInr === 0).map(item => item.key);
+
+  return {
+    period: {
+      days,
+      label: days ? `Last ${days} days` : "All time"
+    },
+    summary: {
+      totalEstimatedInr,
+      storedCallCostInr: roundMoney(callStats.stored_cost),
+      calls: callStats.calls || 0,
+      completedCalls: callStats.completed_calls || 0,
+      billableMinutes: number(callStats.billable_minutes)
+    },
+    rates,
+    missingRates,
+    components,
+    clients: clients.rows.map(client => ({
+      id: client.id,
+      name: client.name,
+      calls: client.calls || 0,
+      durationSeconds: number(client.duration_seconds),
+      billableMinutes: number(client.billable_minutes),
+      estimatedExotelCostInr: roundMoney(number(client.billable_minutes) * rates.exotelCostPerMinuteInr)
+    })),
+    notes: [
+      "These are operational estimates from app usage, not vendor invoices.",
+      "Exotel uses rounded-up per-call billable minutes.",
+      "Sarvam LLM tokens are estimated from reply bytes because vendors bill by token internally.",
+      "Set Railway rate variables to make totals match your actual plans."
+    ]
+  };
+}
+
+function costRates() {
+  return {
+    exotelCostPerMinuteInr: moneyEnv("EXOTEL_COST_PER_MINUTE_INR"),
+    sarvamSttCostPerHourInr: moneyEnv("SARVAM_STT_COST_PER_HOUR_INR"),
+    sarvamTtsCostPer1kCharsInr: moneyEnv("SARVAM_TTS_COST_PER_1K_CHARS_INR"),
+    sarvamLlmCostPer1kTokensInr: moneyEnv("SARVAM_LLM_COST_PER_1K_TOKENS_INR"),
+    deepgramCostPerMinuteInr: moneyEnv("DEEPGRAM_COST_PER_MINUTE_INR"),
+    geminiCostPer1kTokensInr: moneyEnv("GEMINI_COST_PER_1K_TOKENS_INR")
+  };
+}
+
+function component({ key, vendor, label, unit, quantity, rawUsage, rate }) {
+  const usage = number(quantity);
+  return {
+    key,
+    vendor,
+    label,
+    unit,
+    quantity: roundUsage(usage),
+    rawUsage,
+    rateInr: rate,
+    estimatedCostInr: roundMoney(usage * rate),
+    configured: rate > 0
+  };
+}
+
+function dateWhere(column, days, baseParams = []) {
+  if (!days) return { sql: "", andSql: "", params: baseParams };
+  const params = [...baseParams, days];
+  const condition = `${column} >= NOW() - ($${params.length}::text || ' days')::interval`;
+  return { sql: `WHERE ${condition}`, andSql: `AND ${condition}`, params };
+}
+
+function normalizeCostDays(value) {
+  if (!value || value === "all") return null;
+  const days = Number(value);
+  if (!Number.isFinite(days) || days <= 0) return 30;
+  return Math.min(Math.round(days), 3650);
+}
+
+function moneyEnv(name) {
+  const value = Number(process.env[name] || 0);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function number(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function roundMoney(value) {
+  return Math.round(number(value) * 100) / 100;
+}
+
+function roundUsage(value) {
+  return Math.round(number(value) * 1000) / 1000;
+}
+
+function estimatedTokens(bytes) {
+  return Math.ceil(number(bytes) / 4);
+}
+
+function formatNumber(value) {
+  return Math.round(number(value)).toLocaleString("en-IN");
 }
 
 function rowsToCountMap(rows) {

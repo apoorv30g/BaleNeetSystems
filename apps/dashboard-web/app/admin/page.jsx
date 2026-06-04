@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Building2, CheckCircle2, KeyRound, LogOut, Plus, ShieldCheck, Sparkles, UserPlus, XCircle } from "lucide-react";
 import { apiFetch, clearSession, getUser } from "../../lib/api";
 
@@ -117,6 +118,10 @@ export default function AdminPage() {
           </div>
           <button className="btn-secondary px-4 py-2" onClick={logout}><LogOut size={16} /> Logout</button>
         </div>
+        <nav className="mx-auto mt-4 flex max-w-7xl gap-2">
+          <Link className="btn px-4 py-2" href="/admin">Overview</Link>
+          <Link className="btn-secondary px-4 py-2" href="/admin/costs">Costs</Link>
+        </nav>
       </header>
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
