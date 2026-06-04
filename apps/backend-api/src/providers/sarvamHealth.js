@@ -87,10 +87,10 @@ async function runSarvamHealth() {
 function checkStt() {
   const timeoutMs = Number(process.env.SARVAM_PREFLIGHT_STT_TIMEOUT_MS || process.env.SARVAM_PREFLIGHT_TIMEOUT_MS || 2500);
   const params = sarvamSttParams();
-  const sampleRate = Number(process.env.SARVAM_STT_SAMPLE_RATE || 8000);
+  const sampleRate = Number(process.env.SARVAM_STT_SAMPLE_RATE || 16000);
   const audioEncoding = process.env.SARVAM_STT_AUDIO_ENCODING || "pcm_s16le";
-  const messageSampleRate = Number(process.env.SARVAM_STT_MESSAGE_SAMPLE_RATE || sampleRate);
-  const messageEncoding = process.env.SARVAM_STT_MESSAGE_ENCODING || audioEncoding;
+  const messageSampleRate = String(process.env.SARVAM_STT_MESSAGE_SAMPLE_RATE || sampleRate);
+  const messageEncoding = process.env.SARVAM_STT_MESSAGE_ENCODING || "audio/wav";
   const audioProbeEnabled = envEnabled("SARVAM_PREFLIGHT_STT_AUDIO_PROBE", true);
   const audioProbeHoldMs = Number(process.env.SARVAM_PREFLIGHT_STT_AUDIO_PROBE_HOLD_MS || 650);
 
@@ -158,7 +158,7 @@ function checkStt() {
         && openResult
         && audioProbeSent
         && !sawError
-        && envEnabled("SARVAM_PREFLIGHT_STT_ACCEPT_CLEAN_CLOSE", false)
+        && envEnabled("SARVAM_PREFLIGHT_STT_ACCEPT_CLEAN_CLOSE", true)
       ) {
         finish({
           ...openResult,
@@ -278,7 +278,7 @@ function sarvamSttParams() {
     "language-code": process.env.SARVAM_STT_LANGUAGE_CODE || "hi-IN",
     model: process.env.SARVAM_STT_MODEL || "saaras:v3",
     mode: process.env.SARVAM_STT_MODE || "codemix",
-    sample_rate: String(process.env.SARVAM_STT_SAMPLE_RATE || 8000),
+    sample_rate: String(process.env.SARVAM_STT_SAMPLE_RATE || 16000),
     input_audio_codec: process.env.SARVAM_STT_AUDIO_ENCODING || "pcm_s16le",
     high_vad_sensitivity: process.env.SARVAM_STT_HIGH_VAD_SENSITIVITY || "true",
     vad_signals: process.env.SARVAM_STT_VAD_SIGNALS || "true"

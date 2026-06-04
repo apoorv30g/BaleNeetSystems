@@ -26,7 +26,7 @@ function createDeepgramLive({ language = "multi", onTranscript, onOpen, onClose,
   const audioBuffer = [];
   let bufferedBytes = 0;
   const maxBufferedBytes = Number(process.env.DEEPGRAM_CONNECT_BUFFER_BYTES || 160000);
-  const attempts = deepgramAttempts();
+  const attempts = deepgramAttempts(language);
   let ws = null;
   let activeAttempt = 0;
   let opened = false;
@@ -62,7 +62,8 @@ function createDeepgramLive({ language = "multi", onTranscript, onOpen, onClose,
     activeAttempt = attemptIndex;
     opened = false;
     const attempt = attempts[attemptIndex] || attempts[0];
-    const params = deepgramParams({ model: attempt.model, language, includeKeyterms: attempt.includeKeyterms });
+    const attemptLanguage = attempt.language || language;
+    const params = deepgramParams({ model: attempt.model, language: attemptLanguage, includeKeyterms: attempt.includeKeyterms });
     ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, {
       headers: { Authorization: `Token ${config.ai.deepgramApiKey}` }
     });
@@ -72,7 +73,7 @@ function createDeepgramLive({ language = "multi", onTranscript, onOpen, onClose,
       attempt: attemptIndex + 1,
       model: attempt.model,
       includeKeyterms: attempt.includeKeyterms,
-      language
+      language: attemptLanguage
     });
 
     ws.on("open", () => {
@@ -86,6 +87,7 @@ function createDeepgramLive({ language = "multi", onTranscript, onOpen, onClose,
         model: attempt.model,
         attempt: attemptIndex + 1,
         includeKeyterms: attempt.includeKeyterms,
+        language: attemptLanguage,
         urlParams: params.toString()
       });
     });
@@ -154,6 +156,7 @@ function createDeepgramLive({ language = "multi", onTranscript, onOpen, onClose,
       reason,
       nextAttempt: nextIndex + 1,
       nextModel: attempts[nextIndex].model,
+      nextLanguage: attempts[nextIndex].language,
       includeKeyterms: attempts[nextIndex].includeKeyterms
     });
     setTimeout(() => connect(nextIndex), Number(process.env.DEEPGRAM_RECONNECT_DELAY_MS || 250));
@@ -183,21 +186,41 @@ function deepgramParams({ model, language, includeKeyterms }) {
   return params;
 }
 
-function deepgramAttempts() {
+function deepgramAttempts(language) {
   const preferred = process.env.DEEPGRAM_MODEL || "nova-3";
   const fallbackModels = (process.env.DEEPGRAM_FALLBACK_MODELS || "nova-2")
     .split(",")
     .map(model => model.trim())
     .filter(Boolean);
   const models = [...new Set([preferred, ...fallbackModels])];
-  const attempts = models.map((model, index) => ({
-    model,
-    includeKeyterms: index === 0 && process.env.DEEPGRAM_DISABLE_KEYTERMS !== "true"
-  }));
+  const languages = deepgramLanguageAttempts(language);
+  const attempts = [];
+  for (const model of models) {
+    for (const attemptLanguage of languages) {
+      attempts.push({
+        model,
+        language: attemptLanguage,
+        includeKeyterms: attempts.length === 0 && process.env.DEEPGRAM_ENABLE_KEYTERMS === "true"
+      });
+    }
+  }
   if (attempts.length === 1) {
-    attempts.push({ model: attempts[0].model, includeKeyterms: false });
+    attempts.push({ model: attempts[0].model, language: attempts[0].language, includeKeyterms: false });
   }
   return attempts;
+}
+
+function deepgramLanguageAttempts(language) {
+  const configured = process.env.DEEPGRAM_FALLBACK_LANGUAGES;
+  if (configured) {
+    return uniqueValues(configured.split(",").map(value => value.trim()).filter(Boolean));
+  }
+
+  const requested = String(language || "").trim().toLowerCase();
+  if (!requested || requested === "multi") return ["en", "hi"];
+  if (requested === "hi") return ["hi", "en"];
+  if (requested === "en") return ["en", "hi"];
+  return uniqueValues([requested, "en", "hi"]);
 }
 
 function deepgramKeyterms() {
@@ -208,6 +231,10 @@ function deepgramKeyterms() {
     .map(term => term.trim())
     .filter(Boolean)
     .slice(0, 100);
+}
+
+function uniqueValues(values) {
+  return [...new Set(values.filter(Boolean))];
 }
 
 module.exports = { createDeepgramLive };
