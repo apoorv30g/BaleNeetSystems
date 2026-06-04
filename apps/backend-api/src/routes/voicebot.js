@@ -29,6 +29,7 @@ const INTERIM_TRANSCRIPT_FORCE_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRI
 const INTERIM_TRANSCRIPT_MIN_WORDS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_WORDS || 2);
 const INTERIM_TRANSCRIPT_MIN_CHARS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS || 5);
 const STT_DURING_ASSISTANT_ENABLED = process.env.VOICEBOT_STT_DURING_ASSISTANT_ENABLED === "true";
+const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "false";
 const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
 const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
@@ -91,6 +92,11 @@ function attachVoicebot(server) {
       outboundSequence: 1,
       outboundChunk: 1,
       userTurns: 0,
+      turnSeq: 0,
+      activeTurnSeq: 0,
+      speechSeq: 0,
+      activeSpeechSeq: 0,
+      cancelSpeechSeq: 0,
       interimStartedAt: 0,
       interimTimer: null,
       interimCount: 0,
@@ -436,6 +442,10 @@ function startStt(ws, session) {
     onStatus: status => {
       if (status.type === "SpeechStarted") {
         clearNoSpeechTimers(session);
+        if (session.speaking && STT_DURING_ASSISTANT_ENABLED) {
+          invalidateAssistantTurn(session, "barge_in_speech_started");
+          cancelAssistantSpeech(ws, session, "barge_in_speech_started");
+        }
       }
       if ([
         "ConnectAttempt",
@@ -538,6 +548,7 @@ async function processUserTranscript(ws, session, event) {
   if (!text) return;
   if (session.ending) return;
   if (isRecentlyProcessedTranscript(session, text)) return;
+  const turnSeq = beginUserTurn(session, text, event.source || "final");
   const sttProvider = liveSttEventProvider(event);
   session.interimStartedAt = 0;
   session.interimCount = 0;
@@ -656,6 +667,17 @@ async function processUserTranscript(ws, session, event) {
   }
 
   const reply = await replyPromise;
+  if (!isCurrentTurn(session, turnSeq)) {
+    await logVoicebotEvent(session, "reply_stale_dropped", {
+      text,
+      turnSeq,
+      activeTurnSeq: session.activeTurnSeq,
+      elapsedMs: Date.now() - turnStartedAt,
+      source: scriptedReply ? "scripted" : "llm"
+    });
+    return;
+  }
+
   await logVoicebotEvent(session, "reply_ready", {
     elapsedMs: Date.now() - turnStartedAt,
     textBytes: Buffer.byteLength(reply),
@@ -673,6 +695,25 @@ async function processUserTranscript(ws, session, event) {
 
   await speakText(ws, session, reply, "reply_played");
   scheduleNoSpeechCheck(ws, session, "after_reply");
+}
+
+function beginUserTurn(session, text, source = "") {
+  session.turnSeq = (session.turnSeq || 0) + 1;
+  session.activeTurnSeq = session.turnSeq;
+  session.activeTurnText = text;
+  session.activeTurnSource = source;
+  return session.activeTurnSeq;
+}
+
+function invalidateAssistantTurn(session, reason = "") {
+  session.turnSeq = (session.turnSeq || 0) + 1;
+  session.activeTurnSeq = session.turnSeq;
+  session.lastTurnInvalidation = { reason, at: Date.now() };
+  return session.activeTurnSeq;
+}
+
+function isCurrentTurn(session, turnSeq) {
+  return !session.closed && !session.ending && session.activeTurnSeq === turnSeq;
 }
 
 function isRecentlyProcessedTranscript(session, text) {
@@ -1222,6 +1263,9 @@ function normalizeTranscript(text) {
 
 async function speakText(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
+  const speechSeq = (session.speechSeq || 0) + 1;
+  session.speechSeq = speechSeq;
+  session.activeSpeechSeq = speechSeq;
   session.speaking = true;
   const startedAt = Date.now();
   const stopKeepalive = SILENCE_KEEPALIVE_ENABLED ? startSilenceKeepalive(ws, session, markName) : () => {};
@@ -1230,7 +1274,7 @@ async function speakText(ws, session, text, markName) {
     stopKeepalive();
 
     if (pcmBase64) {
-      const sendResult = await sendMedia(ws, session, pcmBase64);
+      const sendResult = await sendMedia(ws, session, pcmBase64, speechSeq);
       await logVoicebotEvent(session, "media_sent", {
         markName,
         ...sendResult,
@@ -1247,8 +1291,28 @@ async function speakText(ws, session, text, markName) {
     sendMark(ws, session, `${markName}_tts_failed`);
   } finally {
     stopKeepalive();
-    session.speaking = false;
+    if (session.activeSpeechSeq === speechSeq) {
+      session.speaking = false;
+    }
   }
+}
+
+function cancelAssistantSpeech(ws, session, reason = "") {
+  const speechSeq = session.activeSpeechSeq || 0;
+  if (!speechSeq) return;
+  session.cancelSpeechSeq = Math.max(session.cancelSpeechSeq || 0, speechSeq);
+  if (BARGE_IN_CLEAR_ENABLED && ws.readyState === ws.OPEN && session.streamSid) {
+    ws.send(JSON.stringify({
+      event: "clear",
+      stream_sid: session.streamSid
+    }));
+  }
+  logVoicebotEvent(session, "assistant_speech_cancelled", {
+    reason,
+    speechSeq,
+    activeTurnSeq: session.activeTurnSeq,
+    clearSent: Boolean(BARGE_IN_CLEAR_ENABLED && session.streamSid)
+  }).catch(() => {});
 }
 
 async function getPcmBase64(text, session = {}) {
@@ -1344,7 +1408,7 @@ function startSilenceKeepalive(ws, session, markName) {
   };
 }
 
-async function sendMedia(ws, session, audioBase64) {
+async function sendMedia(ws, session, audioBase64, speechSeq = session.activeSpeechSeq || 0) {
   if (ws.readyState !== ws.OPEN) return { chunks: 0, stoppedEarly: true, chunkBytes: outboundChunkBytes(), pcmBytes: 0 };
   const chunkBytes = outboundChunkBytes();
   const rawAudio = prependPreroll(Buffer.from(audioBase64, "base64"), session);
@@ -1353,6 +1417,7 @@ async function sendMedia(ws, session, audioBase64) {
 
   for (let offset = 0; offset < audio.length; offset += chunkBytes) {
     if (ws.readyState !== ws.OPEN || session.closed) break;
+    if (speechSeq && (session.cancelSpeechSeq || 0) >= speechSeq) break;
     const chunk = audio.subarray(offset, offset + chunkBytes);
     const payload = chunk.toString("base64");
     sendMediaFrame(ws, session, payload, pcmTimestampMs(session, offset));
@@ -1564,7 +1629,10 @@ async function getTranscript(callId) {
 module.exports = {
   attachVoicebot,
   _test: {
+    beginUserTurn,
     buildScriptedReply,
+    invalidateAssistantTurn,
+    isCurrentTurn,
     normalizeVoiceIntent
   }
 };

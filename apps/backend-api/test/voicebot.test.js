@@ -125,3 +125,20 @@ test("voicebot handles no human transfer", () => {
   const reply = _test.buildScriptedReply(session("English"), "Connect me to agent");
   assert.match(reply, /no human transfer/i);
 });
+
+test("voicebot drops stale replies after a newer turn starts", () => {
+  const state = {};
+  const firstTurn = _test.beginUserTurn(state, "What is the interest rate?", "final");
+  assert.equal(_test.isCurrentTurn(state, firstTurn), true);
+
+  const secondTurn = _test.beginUserTurn(state, "I did not get the link", "final");
+  assert.equal(_test.isCurrentTurn(state, firstTurn), false);
+  assert.equal(_test.isCurrentTurn(state, secondTurn), true);
+});
+
+test("voicebot invalidates active turn when user barges in", () => {
+  const state = {};
+  const firstTurn = _test.beginUserTurn(state, "Show my offer", "final");
+  _test.invalidateAssistantTurn(state, "barge_in_speech_started");
+  assert.equal(_test.isCurrentTurn(state, firstTurn), false);
+});
