@@ -126,6 +126,35 @@ test("voicebot handles no human transfer", () => {
   assert.match(reply, /no human transfer/i);
 });
 
+test("voicebot captures explicit fresh-lead name and asks loan requirement next", () => {
+  const state = session("English", { playbook_type: "FRESH_LEAD" }, {
+    userTurns: 1,
+    lastSpokenText: "Can I confirm your name?"
+  });
+
+  _test.updateConversationMemory(state, "My name is Apoorv Gupta");
+  const reply = _test.buildScriptedReply(state, "My name is Apoorv Gupta");
+
+  assert.equal(state.confirmedName, true);
+  assert.equal(state.capturedName, "Apoorv Gupta");
+  assert.match(reply, /how much loan/i);
+  assert.doesNotMatch(reply, /name/i);
+});
+
+test("voicebot treats a short answer after name prompt as confirmed", () => {
+  const state = session("Hinglish", { playbook_type: "FRESH_LEAD", name: "" }, {
+    userTurns: 1,
+    lastSpokenText: "आपका नाम confirm कर दीजिए"
+  });
+
+  _test.updateConversationMemory(state, "Apoorv");
+  const reply = _test.buildScriptedReply(state, "Apoorv");
+
+  assert.equal(state.confirmedName, true);
+  assert.equal(state.capturedName, "Apoorv");
+  assert.match(reply, /कितना loan चाहिए/);
+});
+
 test("voicebot drops stale replies after a newer turn starts", () => {
   const state = {};
   const firstTurn = _test.beginUserTurn(state, "What is the interest rate?", "final");

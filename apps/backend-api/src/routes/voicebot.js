@@ -102,6 +102,11 @@ function attachVoicebot(server) {
       interimCount: 0,
       pendingTranscript: null,
       lastProcessedTranscript: null,
+      confirmedName: false,
+      confirmedNameTurn: 0,
+      capturedName: "",
+      lastSpokenText: "",
+      lastSpokenMark: "",
       ending: false,
       introTimer: null,
       noSpeechPromptTimer: null,
@@ -598,6 +603,7 @@ async function processUserTranscript(ws, session, event) {
     );
   }
   session.userTurns++;
+  updateConversationMemory(session, text);
 
   const languageSwitch = detectLanguageSwitch(text);
   if (languageSwitch) {
@@ -660,7 +666,12 @@ async function processUserTranscript(ws, session, event) {
   const scriptedReply = buildScriptedReply(session, text);
   const replyPromise = scriptedReply
     ? Promise.resolve(scriptedReply)
-    : safeGenerateReply(session, { lead: session.lead, lastUserMessage: text, transcript: promptTranscript });
+    : safeGenerateReply(session, {
+      lead: session.lead,
+      lastUserMessage: text,
+      transcript: promptTranscript,
+      conversationState: buildConversationState(session)
+    });
   const ackText = pickAckText(session);
   if (FAST_ACK_ENABLED && ackText) {
     await speakText(ws, session, ackText, "ack_played");
@@ -716,6 +727,94 @@ function isCurrentTurn(session, turnSeq) {
   return !session.closed && !session.ending && session.activeTurnSeq === turnSeq;
 }
 
+function buildConversationState(session = {}) {
+  return {
+    confirmedName: Boolean(session.confirmedName),
+    capturedName: session.capturedName || "",
+    lastSpokenText: session.lastSpokenText || "",
+    userTurns: session.userTurns || 0
+  };
+}
+
+function updateConversationMemory(session, text) {
+  if (!session?.lead) return;
+
+  const askedName = askedForNameRecently(session.lastSpokenText);
+  const extractedName = extractNameAnswer(text);
+  const confirmsKnownName = askedName && Boolean(session.lead.name) && isPositiveAgreement(normalizeVoiceIntent(text));
+  const shortName = askedName ? shortNameAnswer(text) : "";
+
+  if (!session.confirmedName && (extractedName || confirmsKnownName || shortName)) {
+    session.confirmedName = true;
+    session.confirmedNameTurn = session.userTurns || 0;
+    session.capturedName = extractedName || shortName || session.lead.name || "";
+    if (session.capturedName && (!session.lead.name || isGenericLeadName(session.lead.name))) {
+      session.lead = { ...session.lead, name: session.capturedName };
+    }
+  }
+}
+
+function askedForNameRecently(text) {
+  const normalized = normalizeVoiceIntent(text);
+  return /(your name|confirm.*name|name.*confirm|reference detail|naam|नाम|आपका नाम|नाम बत|नाम confirm|नाम कन्फर्म|नाम क्या)/.test(normalized);
+}
+
+function extractNameAnswer(text) {
+  const value = String(text || "").trim();
+  const patterns = [
+    /\bmy name is\s+([a-z][a-z\s.'-]{1,40})/i,
+    /\bi am\s+([a-z][a-z\s.'-]{1,40})/i,
+    /\bthis is\s+([a-z][a-z\s.'-]{1,40})/i,
+    /\bmera naam\s+([a-z][a-z\s.'-]{1,40})/i,
+    /\bमेरा नाम\s+([\p{L}\s.'-]{1,40})/iu,
+    /\bमैं\s+([\p{L}\s.'-]{1,40})/iu
+  ];
+
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    const candidate = cleanNameCandidate(match?.[1]);
+    if (candidate) return candidate;
+  }
+
+  return "";
+}
+
+function shortNameAnswer(text) {
+  let candidate = String(text || "")
+    .replace(/\b(yes|yeah|haan|han|ji|okay|ok|correct|right)\b/gi, " ")
+    .replace(/\b(my name is|i am|this is|mera naam|main|mein)\b/gi, " ")
+    .replace(/\b(मेरा नाम|मैं|जी|हाँ|ठीक है)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  candidate = cleanNameCandidate(candidate);
+  if (!candidate) return "";
+
+  const normalized = normalizeVoiceIntent(candidate);
+  if (/(loan|amount|rate|interest|emi|fee|charge|link|offer|payment|due|callback|busy|not interested|लोन|पेमेंट|ब्याज|लिंक|ऑफर)/.test(normalized)) {
+    return "";
+  }
+
+  const wordCount = candidate.split(/\s+/).filter(Boolean).length;
+  return wordCount >= 1 && wordCount <= 4 ? candidate : "";
+}
+
+function cleanNameCandidate(value) {
+  const candidate = String(value || "")
+    .replace(/[0-9]/g, " ")
+    .replace(/\b(age|old|years|saal|sal|loan|amount|please|sir|madam)\b.*$/i, " ")
+    .replace(/[।,.!?;:()[\]{}"'`*_>]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!candidate || candidate.length < 2 || candidate.length > 50) return "";
+  return candidate;
+}
+
+function isGenericLeadName(name) {
+  return /^(customer|test user|user|lead)$/i.test(String(name || "").trim());
+}
+
 function isRecentlyProcessedTranscript(session, text) {
   const key = normalizeTranscript(text);
   const now = Date.now();
@@ -732,6 +831,11 @@ function buildScriptedReply(session, text) {
   const amount = lead.offer_amount || lead.loan_amount || "";
   const amountText = amount ? formatLoanAmount(amount) : "eligible amount";
   const english = isEnglishSession(session);
+
+  if (lead.playbook_type === "FRESH_LEAD" && session.confirmedNameTurn === session.userTurns && isNameConfirmationTurn(normalized)) {
+    if (english) return "Thanks. How much loan are you looking for right now?";
+    return "धन्यवाद। अभी आपको कितना loan चाहिए?";
+  }
 
   if (mentionsMissingLink(normalized)) {
     queueLeadLink(session, "missing_link");
@@ -1158,6 +1262,14 @@ function asksQuestion(text) {
   return /(question|poochna|puchna|पूछना|सवाल|जानना|doubt|डाउट|दिक्कत|problem|issue|समस्या)/.test(text);
 }
 
+function isNameConfirmationTurn(text) {
+  if (asksQuestion(text)) return false;
+  if (/(loan|amount|rate|interest|emi|fee|charge|link|offer|payment|due|callback|busy|not interested|लोन|पेमेंट|ब्याज|लिंक|ऑफर)/.test(text)) {
+    return false;
+  }
+  return true;
+}
+
 function firstGreeting(lead) {
   return FAST_INTRO_TEXT;
 }
@@ -1263,6 +1375,8 @@ function normalizeTranscript(text) {
 
 async function speakText(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
+  session.lastSpokenText = text;
+  session.lastSpokenMark = markName;
   const speechSeq = (session.speechSeq || 0) + 1;
   session.speechSeq = speechSeq;
   session.activeSpeechSeq = speechSeq;
@@ -1630,9 +1744,12 @@ module.exports = {
   attachVoicebot,
   _test: {
     beginUserTurn,
+    buildConversationState,
     buildScriptedReply,
+    extractNameAnswer,
     invalidateAssistantTurn,
     isCurrentTurn,
-    normalizeVoiceIntent
+    normalizeVoiceIntent,
+    updateConversationMemory
   }
 };

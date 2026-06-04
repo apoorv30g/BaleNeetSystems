@@ -171,17 +171,18 @@ async function seedDefaultPlaybooks(tenantId) {
   }
 }
 
-async function buildPrompt(lead, { transcript = [], lastUserMessage = "" } = {}) {
+async function buildPrompt(lead, { transcript = [], lastUserMessage = "", conversationState = {} } = {}) {
   const playbook = await getPlaybook(lead.tenant_id, lead.playbook_type);
   const amount = lead.offer_amount || lead.loan_amount || "eligible";
   const transcriptUserTurns = transcript.filter(item => item.speaker === "user").length;
   const userTurns = (transcriptUserTurns || lastUserMessage) ? Math.max(transcriptUserTurns, 1) : 0;
   const openingAlreadySpoken = transcript.some(item => item.speaker === "assistant");
-  const stepIndex = Math.min(Math.max(userTurns + (openingAlreadySpoken ? 0 : -1), 0), Math.max(playbook.steps.length - 1, 0));
+  const stepIndex = resolveStepIndex(playbook, lead, userTurns, openingAlreadySpoken, conversationState, lastUserMessage);
   const currentStep = playbook.steps[stepIndex] || playbook.goal || "Continue the playbook conversation";
   const upcomingStep = playbook.steps[stepIndex + 1] || "";
   const recentTranscript = formatTranscript(transcript);
   const languageInstruction = responseLanguageInstruction(lead.language);
+  const stateNotes = conversationStateNotes(lead, conversationState, lastUserMessage);
 
   return `
 You are a warm Hindi-English AI loan assistant for a phone call.
@@ -204,6 +205,9 @@ Offer amount: ${lead.offer_amount || "not provided"}
 Due date: ${lead.due_date || "not provided"}
 Language: ${lead.language || "Hinglish"}
 
+Known call memory:
+${stateNotes}
+
 Conversation steps:
 ${playbook.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")}
 
@@ -216,6 +220,7 @@ ${lastUserMessage || "No clear customer message captured yet."}
 Rules:
 - Treat the selected playbook as the source of truth for what to do next.
 - Follow the current required playbook action. Do not restart from the beginning unless the user asks.
+- If the known call memory says the name is already confirmed, never ask the name or reference details again.
 - If the customer answers a question, progress to the next relevant action.
 - If the customer asks a question, answer briefly and then return to the playbook path.
 - If asked about interest rate, fees, EMI, tenure, or exact final amount, do not invent numbers. Say the exact value is shown on the final offer/payment screen after eligibility checks, then guide them to open the secure link.
@@ -271,6 +276,49 @@ function responseLanguageInstruction(language) {
     return "Speak in simple Indian English. Do not use Hindi unless the customer asks for Hindi.";
   }
   return "Speak in natural Indian phone-call Hindi unless language says otherwise.";
+}
+
+function resolveStepIndex(playbook, lead, userTurns, openingAlreadySpoken, conversationState, lastUserMessage) {
+  const maxIndex = Math.max(playbook.steps.length - 1, 0);
+  let stepIndex = Math.min(Math.max(userTurns + (openingAlreadySpoken ? 0 : -1), 0), maxIndex);
+
+  const nameAlreadyConfirmed = Boolean(conversationState?.confirmedName) || freshLeadNameProvided(lead, lastUserMessage);
+  if (lead.playbook_type === "FRESH_LEAD" && nameAlreadyConfirmed && asksForReferenceDetails(playbook.steps[stepIndex])) {
+    stepIndex = Math.min(stepIndex + 1, maxIndex);
+  }
+
+  return stepIndex;
+}
+
+function conversationStateNotes(lead, conversationState = {}, lastUserMessage = "") {
+  const notes = [];
+  const capturedName = conversationState.capturedName || "";
+  const nameConfirmed = Boolean(conversationState.confirmedName) || freshLeadNameProvided(lead, lastUserMessage);
+
+  if (nameConfirmed) {
+    notes.push(`- Name/reference confirmation is already done${capturedName ? `: ${capturedName}` : ""}. Do not ask for the name again.`);
+    if (lead.playbook_type === "FRESH_LEAD") {
+      notes.push("- Continue with the loan requirement or final eligibility guidance.");
+    }
+  } else {
+    notes.push("- No explicit name confirmation captured yet.");
+  }
+
+  if (conversationState.lastSpokenText) {
+    notes.push(`- Last assistant prompt: ${conversationState.lastSpokenText}`);
+  }
+
+  return notes.join("\n");
+}
+
+function asksForReferenceDetails(step) {
+  return /(name|reference detail|नाम|reference)/i.test(String(step || ""));
+}
+
+function freshLeadNameProvided(lead, lastUserMessage) {
+  if (lead.playbook_type !== "FRESH_LEAD") return false;
+  return /\b(my name is|i am|this is|mera naam)\b/i.test(String(lastUserMessage || "")) ||
+    /\b(मेरा नाम|मैं)\b/u.test(String(lastUserMessage || ""));
 }
 
 function formatTranscript(transcript) {
