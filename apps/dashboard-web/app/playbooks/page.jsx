@@ -79,16 +79,16 @@ export default function Playbooks() {
 
   return (
     <Shell>
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      <div className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-4xl font-black">Playbooks</h1>
-          <p className="mt-2 text-zinc-400">Create and tune conversation flows for each lending workflow.</p>
+          <h1 className="text-3xl font-black text-slate-950 sm:text-4xl">Playbooks</h1>
+          <p className="mt-2 text-sm text-slate-500">Create and tune conversation flows for each lending workflow.</p>
         </div>
         <button onClick={() => { setFormOpen(!formOpen); setEditingKey(""); setForm(blankForm); }} className="btn">New Playbook</button>
       </div>
 
-      {error && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
-      {message && <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
+      {error && <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      {message && <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
 
       {formOpen && (
         <form onSubmit={savePlaybook} className="card mt-8 grid grid-cols-1 gap-4 p-6 lg:grid-cols-2">
@@ -110,29 +110,29 @@ export default function Playbooks() {
           <div className="card p-6" key={key}>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-xs uppercase tracking-widest text-blue-400">{playbook.category}</div>
-                <h2 className="mt-3 text-xl font-bold">{playbook.title}</h2>
-                <p className="mt-1 text-xs text-zinc-500">{key}</p>
+                <div className="text-xs font-bold uppercase tracking-widest text-sky-600">{playbook.category}</div>
+                <h2 className="mt-3 text-xl font-black text-slate-950">{playbook.title}</h2>
+                <p className="mt-1 text-xs text-slate-500">{key}</p>
               </div>
               <div className="flex gap-2">
                 <button onClick={() => editPlaybook(key, playbook)} className="btn-secondary">Edit</button>
                 <button onClick={() => deletePlaybook(key)} className="btn-secondary">Delete</button>
               </div>
             </div>
-            <p className="mt-4 text-sm text-zinc-400">{playbook.goal}</p>
+            <p className="mt-4 text-sm text-slate-500">{playbook.goal}</p>
             <div className="mt-5 grid gap-2 text-sm">
-              <div className="rounded-xl bg-white/[0.04] p-3"><span className="text-zinc-500">Task: </span>{playbook.task}</div>
-              <div className="rounded-xl bg-white/[0.04] p-3"><span className="text-zinc-500">Trigger: </span>{playbook.trigger}</div>
-              <div className="rounded-xl bg-white/[0.04] p-3"><span className="text-zinc-500">Cadence: </span>{playbook.cadence}</div>
+              <div className="rounded-lg bg-slate-50 p-3"><span className="font-semibold text-slate-500">Task: </span>{playbook.task}</div>
+              <div className="rounded-lg bg-slate-50 p-3"><span className="font-semibold text-slate-500">Trigger: </span>{playbook.trigger}</div>
+              <div className="rounded-lg bg-slate-50 p-3"><span className="font-semibold text-slate-500">Cadence: </span>{playbook.cadence}</div>
             </div>
             <div className="mt-5 space-y-2">
               {(playbook.steps || []).map((step, index) => (
-                <div key={`${key}-${index}`} className="rounded-xl bg-white/[0.04] p-3 text-sm text-zinc-300">{index + 1}. {step}</div>
+                <div key={`${key}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">{index + 1}. {step}</div>
               ))}
             </div>
           </div>
         ))}
-        {!Object.keys(playbooks).length && <div className="card p-6 text-sm text-zinc-500">No playbooks loaded.</div>}
+        {!Object.keys(playbooks).length && <div className="card p-6 text-sm text-slate-500">No playbooks loaded.</div>}
       </div>
     </Shell>
   );

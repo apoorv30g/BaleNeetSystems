@@ -71,53 +71,57 @@ export default function Compliance() {
 
   return (
     <Shell>
-      <h1 className="text-4xl font-black">Compliance</h1>
-      <p className="mt-2 text-zinc-400">Operational guardrails, DNC controls and compliance events.</p>
+      <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <h1 className="text-3xl font-black text-slate-950 sm:text-4xl">Compliance</h1>
+        <p className="mt-2 text-sm text-slate-500">Operational guardrails, DNC controls and compliance events.</p>
+      </div>
 
-      {error && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
-      {message && <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
+      {error && <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      {message && <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
 
-      <section className="mt-8 grid grid-cols-4 gap-4">
-        <div className="card p-5"><p className="text-sm text-zinc-500">Call Window</p><p className="mt-3 text-3xl font-black">{settings?.callWindowStart || 9}:00-{settings?.callWindowEnd || 20}:00</p></div>
-        <div className="card p-5"><p className="text-sm text-zinc-500">Max Attempts</p><p className="mt-3 text-3xl font-black">{settings?.maxCallAttempts || 3}</p></div>
-        <div className="card p-5"><p className="text-sm text-zinc-500">Retry Delay</p><p className="mt-3 text-3xl font-black">{settings?.retryDelayMinutes || 360}m</p></div>
-        <div className="card p-5"><p className="text-sm text-zinc-500">DNC Entries</p><p className="mt-3 text-3xl font-black">{dnc.length}</p></div>
+      <section className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="stat-card"><p className="text-sm font-semibold text-slate-500">Call Window</p><p className="mt-3 text-3xl font-black text-slate-950">{settings?.callWindowStart || 9}:00-{settings?.callWindowEnd || 20}:00</p></div>
+        <div className="stat-card"><p className="text-sm font-semibold text-slate-500">Max Attempts</p><p className="mt-3 text-3xl font-black text-slate-950">{settings?.maxCallAttempts || 3}</p></div>
+        <div className="stat-card"><p className="text-sm font-semibold text-slate-500">Retry Delay</p><p className="mt-3 text-3xl font-black text-slate-950">{settings?.retryDelayMinutes || 360}m</p></div>
+        <div className="stat-card"><p className="text-sm font-semibold text-slate-500">DNC Entries</p><p className="mt-3 text-3xl font-black text-slate-950">{dnc.length}</p></div>
       </section>
 
-      <section className="mt-8 grid grid-cols-[360px_1fr] gap-4">
+      <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
         <form onSubmit={addDnc} className="card p-6">
-          <h2 className="text-lg font-bold">Add DNC</h2>
+          <h2 className="text-lg font-black text-slate-950">Add DNC</h2>
           <input className="input mt-5" placeholder="Phone number" value={phone} onChange={e => setPhone(e.target.value)} />
           <input className="input mt-3" placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)} />
           <button className="btn mt-4 w-full">Save</button>
         </form>
 
         <div className="card overflow-hidden">
-          <div className="border-b border-white/10 p-5">
-            <h2 className="text-lg font-bold">DNC List</h2>
+          <div className="border-b border-slate-200 p-5">
+            <h2 className="text-lg font-black text-slate-950">DNC List</h2>
           </div>
-          <table className="w-full text-sm">
-            <thead className="bg-white/[0.04] text-left text-zinc-400">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead className="bg-slate-50 text-left text-slate-500">
               <tr><th className="p-4">Phone</th><th>Reason</th><th>Created</th><th></th></tr>
             </thead>
             <tbody>
               {dnc.map(item => (
-                <tr key={item.id} className="border-t border-white/10">
+                <tr key={item.id} className="border-t border-slate-200">
                   <td className="p-4">{item.phone}</td>
                   <td>{item.reason}</td>
                   <td>{new Date(item.created_at).toLocaleString()}</td>
                   <td className="pr-4 text-right"><button onClick={() => removeDnc(item.phone)} className="btn-secondary">Remove</button></td>
                 </tr>
               ))}
-              {!dnc.length && <tr><td className="p-4 text-zinc-500" colSpan="4">No DNC entries.</td></tr>}
+              {!dnc.length && <tr><td className="p-4 text-slate-500" colSpan="4">No DNC entries.</td></tr>}
             </tbody>
           </table>
+          </div>
         </div>
       </section>
 
-      <section className="mt-8 grid grid-cols-2 gap-4">
+      <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <form onSubmit={saveSettings} className="card p-6">
-          <h2 className="text-lg font-bold">Settings</h2>
+          <h2 className="text-lg font-black text-slate-950">Settings</h2>
           <div className="mt-4 grid grid-cols-2 gap-3">
             <input className="input" type="number" min="0" max="23" value={settingsForm?.callWindowStart || 9} onChange={e => setSettingsForm({ ...settingsForm, callWindowStart: Number(e.target.value) })} />
             <input className="input" type="number" min="1" max="24" value={settingsForm?.callWindowEnd || 20} onChange={e => setSettingsForm({ ...settingsForm, callWindowEnd: Number(e.target.value) })} />
@@ -131,26 +135,26 @@ export default function Compliance() {
         </form>
 
         <div className="card p-6">
-          <h2 className="text-lg font-bold">Rules</h2>
+          <h2 className="text-lg font-black text-slate-950">Rules</h2>
           <div className="mt-4 space-y-2">
-            {(settings?.rules || []).map(rule => <div key={rule} className="rounded-xl bg-white/[0.04] p-3 text-sm">{rule}</div>)}
+            {(settings?.rules || []).map(rule => <div key={rule} className="rounded-lg bg-slate-50 p-3 text-sm text-slate-700">{rule}</div>)}
           </div>
         </div>
 
         <div className="card overflow-hidden">
-          <div className="border-b border-white/10 p-5">
-            <h2 className="text-lg font-bold">Compliance Logs</h2>
+          <div className="border-b border-slate-200 p-5">
+            <h2 className="text-lg font-black text-slate-950">Compliance Logs</h2>
           </div>
           <div className="max-h-[360px] overflow-auto">
             {logs.map(log => (
-              <div key={log.id} className="border-b border-white/10 p-4 text-sm">
+              <div key={log.id} className="border-b border-slate-200 p-4 text-sm">
                 <div className="flex justify-between gap-4">
                   <span className="font-semibold">{log.rule}: {log.result}</span>
-                  <span className="text-zinc-500">{log.phone || log.lead_name || "-"}</span>
+                  <span className="text-slate-500">{log.phone || log.lead_name || "-"}</span>
                 </div>
               </div>
             ))}
-            {!logs.length && <div className="p-4 text-sm text-zinc-500">No compliance events yet.</div>}
+            {!logs.length && <div className="p-4 text-sm text-slate-500">No compliance events yet.</div>}
           </div>
         </div>
       </section>

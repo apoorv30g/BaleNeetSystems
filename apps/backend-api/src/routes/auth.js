@@ -4,6 +4,7 @@ const { query } = require("../db/pool");
 const { signToken } = require("../middleware/auth");
 
 const router = express.Router();
+const PLATFORM_ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "admin@loanconnect.ai").toLowerCase();
 
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
@@ -12,6 +13,10 @@ router.post("/login", async (req, res) => {
 
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  if (user.role === "platform_admin" || user.email.toLowerCase() === PLATFORM_ADMIN_EMAIL) {
+    return res.status(403).json({ error: "Use admin login for platform admin access" });
   }
 
   res.json({
@@ -29,13 +34,20 @@ router.post("/admin-login", async (req, res) => {
     return res.status(401).json({ error: "Invalid credentials" });
   }
 
-  if (user.role !== "admin") {
+  if (!["platform_admin", "admin"].includes(user.role)) {
     return res.status(403).json({ error: "Admin access required" });
   }
 
+  const authUser = {
+    ...user,
+    role: user.role === "platform_admin" || user.email.toLowerCase() === PLATFORM_ADMIN_EMAIL
+      ? "platform_admin"
+      : user.role
+  };
+
   res.json({
-    token: signToken(user),
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, tenantId: user.tenant_id }
+    token: signToken(authUser),
+    user: { id: authUser.id, name: authUser.name, email: authUser.email, role: authUser.role, tenantId: authUser.tenant_id }
   });
 });
 

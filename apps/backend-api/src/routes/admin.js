@@ -14,9 +14,11 @@ const {
 } = require("../services/testDataCleanup");
 
 const router = express.Router();
-router.use(requireAuth, requireRole("admin"));
+router.use(requireAuth, requireRole("platform_admin", "admin"));
 
 router.get("/overview", async (req, res) => {
+  if (isPlatformAdmin(req)) return res.json(await platformOverview());
+
   const [tenant, users, campaigns, leads, calls, auditLogs, settings] = await Promise.all([
     query(`SELECT id, name, plan_type, created_at FROM tenants WHERE id=$1`, [req.user.tenantId]),
     query(`SELECT id, name, email, role, created_at FROM users WHERE tenant_id=$1 ORDER BY created_at DESC`, [req.user.tenantId]),
@@ -57,6 +59,88 @@ router.get("/overview", async (req, res) => {
     settings,
     auditLogs: auditLogs.rows
   });
+});
+
+router.get("/clients", async (req, res) => {
+  if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Platform admin access required" });
+  res.json(await listClients());
+});
+
+router.post("/clients", async (req, res) => {
+  if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Platform admin access required" });
+
+  const {
+    clientName,
+    planType = "starter",
+    adminName,
+    adminEmail,
+    adminPassword
+  } = req.body || {};
+
+  if (!clientName || !adminEmail || !adminPassword) {
+    return res.status(400).json({ error: "Client name, login email and password are required" });
+  }
+
+  const existing = await query(`SELECT id FROM users WHERE email=$1`, [adminEmail.toLowerCase()]);
+  if (existing.rows[0]) return res.status(409).json({ error: "A user with this email already exists" });
+
+  const tenant = await query(
+    `INSERT INTO tenants (name, plan_type) VALUES ($1,$2) RETURNING id, name, plan_type, created_at`,
+    [clientName.trim(), planType || "starter"]
+  );
+
+  await query(
+    `INSERT INTO tenant_settings (tenant_id)
+     VALUES ($1)
+     ON CONFLICT (tenant_id) DO NOTHING`,
+    [tenant.rows[0].id]
+  );
+
+  const hash = bcrypt.hashSync(adminPassword, 10);
+  const user = await query(
+    `INSERT INTO users (tenant_id, name, email, password_hash, role)
+     VALUES ($1,$2,$3,$4,'operator')
+     RETURNING id, name, email, role, created_at`,
+    [tenant.rows[0].id, adminName || clientName.trim(), adminEmail.toLowerCase(), hash]
+  );
+
+  await audit(req, "client_onboard", {
+    tenantId: tenant.rows[0].id,
+    clientName: tenant.rows[0].name,
+    email: adminEmail.toLowerCase()
+  });
+
+  res.status(201).json({ tenant: tenant.rows[0], user: user.rows[0] });
+});
+
+router.get("/clients/:tenantId/users", async (req, res) => {
+  if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Platform admin access required" });
+  const result = await query(
+    `SELECT id, name, email, role, created_at FROM users WHERE tenant_id=$1 ORDER BY created_at DESC`,
+    [req.params.tenantId]
+  );
+  res.json(result.rows);
+});
+
+router.post("/clients/:tenantId/users", async (req, res) => {
+  if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Platform admin access required" });
+  const { name, email, password, role = "operator" } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
+  if (!["operator", "viewer"].includes(role)) return res.status(400).json({ error: "Invalid client role" });
+
+  const tenant = await query(`SELECT id FROM tenants WHERE id=$1`, [req.params.tenantId]);
+  if (!tenant.rows[0]) return res.status(404).json({ error: "Client not found" });
+
+  const hash = bcrypt.hashSync(password, 10);
+  const result = await query(
+    `INSERT INTO users (tenant_id, name, email, password_hash, role)
+     VALUES ($1,$2,$3,$4,$5)
+     RETURNING id, name, email, role, created_at`,
+    [req.params.tenantId, name || "", email.toLowerCase(), hash, role]
+  );
+
+  await audit(req, "client_user_create", { tenantId: req.params.tenantId, email: email.toLowerCase(), role });
+  res.status(201).json(result.rows[0]);
 });
 
 router.get("/users", async (req, res) => {
@@ -245,6 +329,81 @@ async function audit(req, action, details) {
      VALUES ($1,$2,$3,$4)`,
     [req.user.tenantId, req.user.userId, action, details]
   );
+}
+
+function isPlatformAdmin(req) {
+  return req.user?.role === "platform_admin";
+}
+
+async function platformOverview() {
+  const [clients, counts, auditLogs] = await Promise.all([
+    listClients(),
+    query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM tenants) AS tenants,
+        (SELECT COUNT(*)::int FROM users WHERE role <> 'platform_admin') AS client_users,
+        (SELECT COUNT(*)::int FROM campaigns) AS campaigns,
+        (SELECT COUNT(*)::int FROM leads) AS leads,
+        (SELECT COUNT(*)::int FROM calls) AS calls
+    `),
+    query(`
+      SELECT al.*, u.email as user_email, t.name as tenant_name
+      FROM audit_logs al
+      LEFT JOIN users u ON u.id=al.user_id
+      LEFT JOIN tenants t ON t.id=al.tenant_id
+      ORDER BY al.created_at DESC
+      LIMIT 100
+    `)
+  ]);
+
+  let redis = "ok";
+  try {
+    await redisClient.ping();
+  } catch (err) {
+    redis = err.message;
+  }
+
+  return {
+    scope: "platform",
+    clients,
+    counts: counts.rows[0] || {},
+    providerStatus: {
+      database: "ok",
+      redis,
+      exotel: Boolean(config.exotel.accountSid && config.exotel.apiKey && config.exotel.apiToken && config.exotel.fromNumber),
+      gemini: Boolean(config.ai.geminiApiKey),
+      deepgram: Boolean(config.ai.deepgramApiKey),
+      sarvam: Boolean(config.ai.sarvamApiKey),
+      stt: liveSttProviderStatus(),
+      llm: llmProviderStatus(),
+      serverUrl: Boolean(config.serverUrl),
+      frontendUrl: Boolean(config.frontendUrl)
+    },
+    auditLogs: auditLogs.rows
+  };
+}
+
+async function listClients() {
+  const result = await query(`
+    SELECT
+      t.id,
+      t.name,
+      t.plan_type,
+      t.created_at,
+      COUNT(DISTINCT u.id)::int AS users,
+      COUNT(DISTINCT c.id)::int AS campaigns,
+      COUNT(DISTINCT l.id)::int AS leads,
+      COUNT(DISTINCT ca.id)::int AS calls,
+      MIN(u.email) FILTER (WHERE u.role <> 'platform_admin') AS primary_email
+    FROM tenants t
+    LEFT JOIN users u ON u.tenant_id=t.id
+    LEFT JOIN campaigns c ON c.tenant_id=t.id
+    LEFT JOIN leads l ON l.tenant_id=t.id
+    LEFT JOIN calls ca ON ca.tenant_id=t.id
+    GROUP BY t.id
+    ORDER BY t.created_at DESC
+  `);
+  return result.rows;
 }
 
 function rowsToCountMap(rows) {

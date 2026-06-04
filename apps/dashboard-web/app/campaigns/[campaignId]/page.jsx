@@ -171,11 +171,11 @@ export default function CampaignDetail() {
 
   return (
     <Shell>
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+      <div className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm xl:flex-row xl:items-start xl:justify-between">
         <div>
-          <Link href="/campaigns" className="text-sm text-zinc-500 hover:text-white">Campaigns</Link>
-          <h1 className="mt-2 text-3xl font-black sm:text-4xl">{campaign?.name || "Campaign"}</h1>
-          <p className="mt-2 max-w-3xl text-sm text-zinc-400 sm:text-base">{campaign?.description || "Upload leads, queue calls and inspect outcomes."}</p>
+          <Link href="/campaigns" className="text-sm font-semibold text-sky-700 hover:text-sky-900">Campaigns</Link>
+          <h1 className="mt-2 text-3xl font-black text-slate-950 sm:text-4xl">{campaign?.name || "Campaign"}</h1>
+          <p className="mt-2 max-w-3xl text-sm text-slate-500 sm:text-base">{campaign?.description || "Upload leads, queue calls and inspect outcomes."}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setEditOpen(!editOpen)} className="btn-secondary">Edit</button>
@@ -185,8 +185,8 @@ export default function CampaignDetail() {
         </div>
       </div>
 
-      {error && <div className="mt-6 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
-      {message && <div className="mt-6 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
+      {error && <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      {message && <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
 
       {editOpen && (
         <form onSubmit={saveCampaign} className="card mt-8 grid grid-cols-1 gap-4 p-5 md:grid-cols-2 md:p-6">
@@ -213,22 +213,22 @@ export default function CampaignDetail() {
 
       <section className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {stats.map(([label, value]) => (
-          <div className="card p-4" key={label}>
-            <p className="text-xs text-zinc-500">{label}</p>
-            <p className="mt-2 text-2xl font-black">{value}</p>
+          <div className="stat-card p-4" key={label}>
+            <p className="text-xs font-semibold text-slate-500">{label}</p>
+            <p className="mt-2 text-2xl font-black text-slate-950">{value}</p>
           </div>
         ))}
-        <div className="card col-span-2 p-4 md:col-span-3 xl:col-span-1">
-          <p className="text-xs text-zinc-500">Queue</p>
-          <p className="mt-2 text-2xl font-black">{queueStatus?.campaignQueued || 0}</p>
-          <p className="mt-1 text-xs text-zinc-500">{queueStatus?.workerHint || "Queue status unavailable"}</p>
+        <div className="stat-card col-span-2 p-4 md:col-span-3 xl:col-span-1">
+          <p className="text-xs font-semibold text-slate-500">Queue</p>
+          <p className="mt-2 text-2xl font-black text-slate-950">{queueStatus?.campaignQueued || 0}</p>
+          <p className="mt-1 text-xs text-slate-500">{queueStatus?.workerHint || "Queue status unavailable"}</p>
         </div>
       </section>
 
       <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
         <form onSubmit={upload} className="card p-5">
-          <h2 className="text-lg font-bold">Upload Leads</h2>
-          <p className="mt-2 text-sm text-zinc-400">CSV columns: name, phone, playbookType, dueDate, loanAmount, offerAmount, language.</p>
+          <h2 className="text-lg font-black text-slate-950">Upload Leads</h2>
+          <p className="mt-2 text-sm text-slate-500">CSV columns: name, phone, playbookType, dueDate, loanAmount, offerAmount, language.</p>
           <input className="input mt-5" type="file" accept=".csv,text/csv" onChange={e => setFile(e.target.files?.[0] || null)} />
           <button className="btn mt-4 w-full" disabled={loading}>{loading ? "Working..." : "Upload CSV"}</button>
         </form>
@@ -257,7 +257,7 @@ export default function CampaignDetail() {
 
       <section className="card mt-8 overflow-x-auto">
         <table className="w-full min-w-[920px] text-sm">
-          <thead className="bg-white/[0.04] text-left text-zinc-400">
+          <thead className="bg-slate-50 text-left text-slate-500">
             <tr>
               <th className="p-4"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisible} /></th>
               <th>Name</th><th>Phone</th><th>Playbook</th><th>Status</th><th>Attempts</th><th></th>
@@ -265,12 +265,12 @@ export default function CampaignDetail() {
           </thead>
           <tbody>
             {filteredLeads.map(lead => (
-              <tr key={lead.id} className="border-t border-white/10">
+              <tr key={lead.id} className="border-t border-slate-200">
                 <td className="p-4"><input type="checkbox" checked={selected.includes(lead.id)} onChange={() => setSelected(current => current.includes(lead.id) ? current.filter(id => id !== lead.id) : [...current, lead.id])} /></td>
-                <td className="font-semibold text-white">{lead.name || "Unknown"}</td>
+                <td className="font-semibold text-slate-950">{lead.name || "Unknown"}</td>
                 <td>{lead.phone}</td>
                 <td>{playbooks[lead.playbook_type]?.title || lead.playbook_type}</td>
-                <td>{lead.status}</td>
+                <td><span className="status-pill">{lead.status}</span></td>
                 <td>{lead.attempt_count}</td>
                 <td className="pr-4 text-right">
                   <div className="flex flex-wrap justify-end gap-2">
@@ -281,46 +281,46 @@ export default function CampaignDetail() {
                 </td>
               </tr>
             ))}
-            {!filteredLeads.length && <tr><td className="p-4 text-zinc-500" colSpan="7">No leads match the current view.</td></tr>}
+            {!filteredLeads.length && <tr><td className="p-4 text-slate-500" colSpan="7">No leads match the current view.</td></tr>}
           </tbody>
         </table>
       </section>
 
       <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div className="card overflow-x-auto">
-          <div className="border-b border-white/10 p-5"><h2 className="text-lg font-bold">Calls</h2></div>
+          <div className="border-b border-slate-200 p-5"><h2 className="text-lg font-black text-slate-950">Calls</h2></div>
           <table className="w-full min-w-[760px] text-sm">
-            <thead className="bg-white/[0.04] text-left text-zinc-400">
+            <thead className="bg-slate-50 text-left text-slate-500">
               <tr><th className="p-4">Lead</th><th>Status</th><th>Outcome</th><th>Summary</th><th>Duration</th></tr>
             </thead>
             <tbody>
               {calls.map(call => (
-                <tr key={call.id} className="border-t border-white/10">
+                <tr key={call.id} className="border-t border-slate-200">
                   <td className="p-4">{call.lead_name || call.phone || "Unknown"}</td>
-                  <td>{call.status}</td>
+                  <td><span className="status-pill">{call.status}</span></td>
                   <td><select className="input max-w-44 py-2" value={call.outcome || "IN_PROGRESS"} onChange={e => runAction(() => apiFetch(`/campaigns/${campaignId}/calls/${call.id}/outcome`, { method: "PATCH", body: JSON.stringify({ outcome: e.target.value }) }), () => "Outcome updated.")}>{outcomes.map(outcome => <option key={outcome} value={outcome}>{outcome}</option>)}</select></td>
-                  <td className="max-w-80 pr-4 text-zinc-400">{call.summary || "-"}</td>
+                  <td className="max-w-80 pr-4 text-slate-500">{call.summary || "-"}</td>
                   <td>{call.duration_seconds || 0}s</td>
                 </tr>
               ))}
-              {!calls.length && <tr><td className="p-4 text-zinc-500" colSpan="5">No calls yet.</td></tr>}
+              {!calls.length && <tr><td className="p-4 text-slate-500" colSpan="5">No calls yet.</td></tr>}
             </tbody>
           </table>
         </div>
 
         <div className="card overflow-hidden">
-          <div className="border-b border-white/10 p-5"><h2 className="text-lg font-bold">Transcripts</h2></div>
+          <div className="border-b border-slate-200 p-5"><h2 className="text-lg font-black text-slate-950">Transcripts</h2></div>
           <div className="max-h-[420px] overflow-auto">
             {transcripts.map(item => (
-              <div key={item.id} className="border-b border-white/10 p-4 text-sm">
+              <div key={item.id} className="border-b border-slate-200 p-4 text-sm">
                 <div className="flex justify-between gap-4">
-                  <span className="font-semibold text-white">{item.lead_name || item.phone || "Unknown"}</span>
-                  <span className="text-zinc-500">{item.speaker}</span>
+                  <span className="font-semibold text-slate-950">{item.lead_name || item.phone || "Unknown"}</span>
+                  <span className="text-slate-500">{item.speaker}</span>
                 </div>
-                <p className="mt-2 text-zinc-300">{item.text}</p>
+                <p className="mt-2 text-slate-600">{item.text}</p>
               </div>
             ))}
-            {!transcripts.length && <div className="p-4 text-sm text-zinc-500">No transcripts yet.</div>}
+            {!transcripts.length && <div className="p-4 text-sm text-slate-500">No transcripts yet.</div>}
           </div>
         </div>
       </section>

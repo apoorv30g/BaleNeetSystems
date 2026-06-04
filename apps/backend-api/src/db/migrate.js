@@ -247,6 +247,13 @@ async function migrate() {
     );
   `);
 
+  await query(
+    `UPDATE users
+     SET role='platform_admin'
+     WHERE email=LOWER($1) AND role='admin'`,
+    [process.env.ADMIN_EMAIL || "admin@loanconnect.ai"]
+  );
+
   await query(`
     INSERT INTO tenant_settings (tenant_id)
     SELECT id FROM tenants

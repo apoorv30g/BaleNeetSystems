@@ -22,7 +22,7 @@ async function seed() {
   await query(
     `INSERT INTO users (tenant_id, name, email, password_hash, role)
      VALUES ($1,$2,$3,$4,$5)`,
-    [tenant.rows[0].id, "Platform Admin", email, hash, "admin"]
+    [tenant.rows[0].id, "Platform Admin", email, hash, "platform_admin"]
   );
 
   await query(

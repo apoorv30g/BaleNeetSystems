@@ -3,6 +3,7 @@
 import Shell from "../../components/Shell";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { Megaphone, Plus, RadioTower } from "lucide-react";
 import { apiFetch } from "../../lib/api";
 
 export default function Campaigns() {
@@ -51,16 +52,17 @@ export default function Campaigns() {
 
   return (
     <Shell>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-4xl font-black">Campaigns</h1>
-          <p className="mt-2 text-zinc-400">Create use-case specific voice campaigns.</p>
+          <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700"><RadioTower size={14} /> Call launchpad</div>
+          <h1 className="mt-3 text-3xl font-black text-slate-950 sm:text-4xl">Campaigns</h1>
+          <p className="mt-2 text-sm text-slate-500">Create use-case specific voice campaigns.</p>
         </div>
-        <button onClick={() => setFormOpen(!formOpen)} className="btn">New Campaign</button>
+        <button onClick={() => setFormOpen(!formOpen)} className="btn"><Plus size={16} /> New Campaign</button>
       </div>
 
-      {error && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
-      {message && <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{message}</div>}
+      {error && <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      {message && <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
 
       {formOpen && (
         <form onSubmit={createCampaign} className="card mt-8 grid grid-cols-1 gap-4 p-5 md:grid-cols-2 md:p-6">
@@ -77,13 +79,13 @@ export default function Campaigns() {
           <input className="input" type="number" min="1" value={form.dailyLimit} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
           <input className="input" type="number" min="1" value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
           <input className="input" value={form.language} onChange={e => setForm({ ...form, language: e.target.value })} />
-          <button className="btn">Create</button>
+          <button className="btn"><Megaphone size={16} /> Create</button>
         </form>
       )}
 
       <div className="card mt-8 overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-white/[0.04] text-left text-zinc-400">
+        <table className="w-full min-w-[820px] text-sm">
+          <thead className="bg-slate-50 text-left text-slate-500">
             <tr>
               <th className="p-4">Campaign</th>
               <th>Type</th>
@@ -95,13 +97,13 @@ export default function Campaigns() {
           </thead>
           <tbody>
             {campaigns.map(campaign => (
-              <tr key={campaign.id} className="border-t border-white/10">
+              <tr key={campaign.id} className="border-t border-slate-200">
                 <td className="p-4">
-                  <Link className="font-semibold text-white hover:text-blue-300" href={`/campaigns/${campaign.id}`}>{campaign.name}</Link>
+                  <Link className="font-bold text-slate-950 hover:text-sky-700" href={`/campaigns/${campaign.id}`}>{campaign.name}</Link>
                 </td>
                 <td>{campaign.campaign_type}</td>
                 <td>{campaign.playbook_type}</td>
-                <td>{campaign.status}</td>
+                <td><span className="status-pill">{campaign.status}</span></td>
                 <td>{campaign.lead_count || 0}</td>
                 <td className="pr-4 text-right">
                   <div className="flex justify-end gap-2">
@@ -112,7 +114,7 @@ export default function Campaigns() {
               </tr>
             ))}
             {!campaigns.length && (
-              <tr><td className="p-4 text-zinc-500" colSpan="6">No campaigns yet.</td></tr>
+              <tr><td className="p-4 text-slate-500" colSpan="6">No campaigns yet.</td></tr>
             )}
           </tbody>
         </table>

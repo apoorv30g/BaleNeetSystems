@@ -3,6 +3,7 @@
 import Shell from "../components/Shell";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { ArrowUpRight, Bot, PhoneCall, TrendingUp } from "lucide-react";
 import { apiFetch } from "../lib/api";
 
 export default function Dashboard() {
@@ -38,32 +39,34 @@ export default function Dashboard() {
 
   return (
     <Shell>
-      <div className="flex items-end justify-between">
+      <div className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-4xl font-black">Operations Dashboard</h1>
-          <p className="mt-2 text-zinc-400">Cold calling, collections and retargeting workflows in one place.</p>
+          <div className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700"><PhoneCall size={14} /> Voicebot operations</div>
+          <h1 className="mt-3 text-3xl font-black text-slate-950 sm:text-4xl">Operations Dashboard</h1>
+          <p className="mt-2 max-w-2xl text-sm text-slate-500">Cold calling, collections and retargeting workflows in one place.</p>
         </div>
-        <Link className="btn" href="/campaigns">Create Campaign</Link>
+        <Link className="btn" href="/campaigns">Create Campaign <ArrowUpRight size={16} /></Link>
       </div>
 
-      {error && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+      {error && <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
-      <section className="mt-8 grid grid-cols-4 gap-4">
+      <section className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {cards.map(([a,b,c]) => (
-          <div className="card p-5" key={a}>
-            <p className="text-sm text-zinc-500">{a}</p>
-            <p className="mt-3 text-4xl font-black">{b}</p>
-            <p className="mt-2 text-xs text-zinc-500">{c}</p>
+          <div className="stat-card" key={a}>
+            <p className="text-sm font-semibold text-slate-500">{a}</p>
+            <p className="mt-3 text-4xl font-black text-slate-950">{b}</p>
+            <p className="mt-2 text-xs text-slate-500">{c}</p>
           </div>
         ))}
       </section>
 
       <section className="card mt-8 overflow-hidden">
-        <div className="border-b border-white/10 p-5">
-          <h2 className="text-lg font-bold">Recent Calls</h2>
+        <div className="border-b border-slate-200 p-5">
+          <h2 className="text-lg font-black text-slate-950">Recent Calls</h2>
         </div>
-        <table className="w-full text-sm">
-          <thead className="bg-white/[0.04] text-left text-zinc-400">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-sm">
+          <thead className="bg-slate-50 text-left text-slate-500">
             <tr>
               <th className="p-4">Lead</th>
               <th>Phone</th>
@@ -74,41 +77,42 @@ export default function Dashboard() {
           </thead>
           <tbody>
             {(analytics?.recentCalls || []).map(call => (
-              <tr key={call.id} className="border-t border-white/10">
+              <tr key={call.id} className="border-t border-slate-200">
                 <td className="p-4">{call.lead_name || "Unknown"}</td>
                 <td>{call.phone || "-"}</td>
                 <td>{call.playbook_type || "-"}</td>
-                <td>{call.status}</td>
+                <td><span className="status-pill">{call.status}</span></td>
                 <td>{call.duration_seconds || 0}s</td>
               </tr>
             ))}
             {!analytics?.recentCalls?.length && (
-              <tr><td className="p-4 text-zinc-500" colSpan="5">No calls yet.</td></tr>
+              <tr><td className="p-4 text-slate-500" colSpan="5">No calls yet.</td></tr>
             )}
           </tbody>
         </table>
+        </div>
       </section>
 
-      <section className="mt-8 grid grid-cols-3 gap-4">
+      <section className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="card p-6">
-          <h2 className="text-lg font-bold">Targeting</h2>
-          <p className="mt-2 text-sm text-zinc-400">Cold calling fresh leads from database or campaign uploads.</p>
-          <div className="mt-5 rounded-xl bg-blue-500/10 p-4 text-sm text-blue-200">Fresh Lead Playbook</div>
+          <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><TrendingUp size={18} className="text-sky-600" /> Targeting</h2>
+          <p className="mt-2 text-sm text-slate-500">Cold calling fresh leads from database or campaign uploads.</p>
+          <div className="mt-5 rounded-lg bg-sky-50 p-4 text-sm font-semibold text-sky-800">Fresh Lead Playbook</div>
         </div>
         <div className="card p-6">
-          <h2 className="text-lg font-bold">Collection</h2>
-          <p className="mt-2 text-sm text-zinc-400">Payment reminders before due date and defaulter follow-up after due date.</p>
+          <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><PhoneCall size={18} className="text-emerald-600" /> Collection</h2>
+          <p className="mt-2 text-sm text-slate-500">Payment reminders before due date and defaulter follow-up after due date.</p>
           <div className="mt-5 space-y-2">
-            <div className="rounded-xl bg-emerald-500/10 p-3 text-sm text-emerald-200">Soft Reminder</div>
-            <div className="rounded-xl bg-red-500/10 p-3 text-sm text-red-200">Hard Reminder</div>
+            <div className="rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">Soft Reminder</div>
+            <div className="rounded-lg bg-rose-50 p-3 text-sm font-semibold text-rose-800">Hard Reminder</div>
           </div>
         </div>
         <div className="card p-6">
-          <h2 className="text-lg font-bold">Retargeting</h2>
-          <p className="mt-2 text-sm text-zinc-400">Warm calling existing users who dropped before or after loan approval.</p>
+          <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Bot size={18} className="text-violet-600" /> Retargeting</h2>
+          <p className="mt-2 text-sm text-slate-500">Warm calling existing users who dropped before or after loan approval.</p>
           <div className="mt-5 space-y-2">
-            <div className="rounded-xl bg-purple-500/10 p-3 text-sm text-purple-200">Unapproved Users</div>
-            <div className="rounded-xl bg-amber-500/10 p-3 text-sm text-amber-200">Approved Users</div>
+            <div className="rounded-lg bg-violet-50 p-3 text-sm font-semibold text-violet-800">Unapproved Users</div>
+            <div className="rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-800">Approved Users</div>
           </div>
         </div>
       </section>
