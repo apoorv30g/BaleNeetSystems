@@ -2,6 +2,7 @@ const express = require("express");
 const { query } = require("../db/pool");
 const { generateReply, llmProviderStatus } = require("../providers/llm");
 const { liveSttProviderStatus } = require("../providers/sttLive");
+const { getSarvamHealth } = require("../providers/sarvamHealth");
 const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
 const { transcribeAudioUrl } = require("../providers/deepgram");
@@ -115,14 +116,19 @@ router.get("/audio/:token", (req, res) => {
   serveAudio(req, res).catch(() => res.sendStatus(404));
 });
 
-router.get("/exotel/voicebot-health", (req, res) => {
+router.get("/exotel/voicebot-health", async (req, res) => {
   const configuredChunkBytes = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
   const chunkBytes = Number.isFinite(configuredChunkBytes)
     ? Math.floor(Math.min(Math.max(configuredChunkBytes, 320), 100000) / 320) * 320
     : 3200;
 
-  res.json({
-    ok: true,
+  const includeLive = String(req.query.live || "").toLowerCase() === "true";
+  const sarvamLive = includeLive
+    ? await getSarvamHealth({ force: String(req.query.force || "").toLowerCase() === "true" })
+    : null;
+
+  res.status(sarvamLive && !sarvamLive.ok ? 503 : 200).json({
+    ok: !sarvamLive || sarvamLive.ok,
     path: "/webhooks/exotel/voicebot",
     pathTokenFormat: "/webhooks/exotel/voicebot/:token",
     wssUrl: `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`,
@@ -139,8 +145,15 @@ router.get("/exotel/voicebot-health", (req, res) => {
     deepgramConfigured: Boolean(config.ai.deepgramApiKey),
     geminiConfigured: Boolean(config.ai.geminiApiKey),
     sarvamConfigured: Boolean(config.ai.sarvamApiKey),
+    sarvamLive,
     tokenRequired: Boolean(config.voicebotToken)
   });
+});
+
+router.get("/exotel/voicebot-preflight", async (req, res) => {
+  const force = String(req.query.force || "").toLowerCase() === "true";
+  const health = await getSarvamHealth({ force });
+  res.status(health.ok ? 200 : 503).json(health);
 });
 
 router.all("/exotel/voicebot-url", async (req, res) => {

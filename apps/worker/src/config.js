@@ -23,6 +23,9 @@ module.exports = {
   callDispatchEnabled: process.env.CALL_DISPATCH_ENABLED === "true",
   dryRunCalls: process.env.DRY_RUN_CALLS === "true",
   serverUrl: required("SERVER_URL", isProduction ? railwayUrl() : "http://localhost:4000"),
+  requireSarvamHealth: process.env.CALL_REQUIRE_SARVAM_HEALTH !== "false",
+  sarvamPreflightUrl: process.env.SARVAM_PREFLIGHT_URL || `${required("SERVER_URL", isProduction ? railwayUrl() : "http://localhost:4000")}/webhooks/exotel/voicebot-preflight`,
+  sarvamPreflightTimeoutMs: Number(process.env.SARVAM_PREFLIGHT_TIMEOUT_MS || 4000),
   exotel: {
     accountSid: process.env.EXOTEL_ACCOUNT_SID,
     apiKey: process.env.EXOTEL_API_KEY,

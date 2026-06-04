@@ -8,6 +8,7 @@ const { isDnc, logCompliance } = require("../services/compliance");
 const { getTenantSettings } = require("../services/settings");
 const { OUTCOMES } = require("../services/outcomes");
 const { sendLeadLink } = require("../providers/notifications");
+const { assertSarvamHealthyForCall } = require("../providers/sarvamHealth");
 const { listPlaybooks } = require("../services/playbooks");
 const config = require("../config");
 
@@ -49,6 +50,7 @@ async function removeQueuedJobsForLead({ tenantId, campaignId, leadId }) {
 }
 
 async function enqueueLeads({ tenantId, campaignId, leadIds, resetAttempts = false, force = false }) {
+  const providerHealth = await assertSarvamHealthyForCall();
   const settings = await getTenantSettings(tenantId);
   const params = [tenantId, campaignId];
   let where = `tenant_id=$1 AND campaign_id=$2 AND status IN ('pending','failed','queued')`;
@@ -100,7 +102,7 @@ async function enqueueLeads({ tenantId, campaignId, leadIds, resetAttempts = fal
     queued = jobs.length;
   }
 
-  return { queued, blocked, eligible: leads.rows.length };
+  return { queued, blocked, eligible: leads.rows.length, providerHealth };
 }
 
 router.get("/playbooks", async (req, res) => {

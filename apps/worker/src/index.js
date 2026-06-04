@@ -3,6 +3,7 @@ const { Worker } = require("bullmq");
 const config = require("./config");
 const { query } = require("./db");
 const { triggerOutboundCall } = require("./exotel");
+const { assertSarvamReadyForCall } = require("./health");
 
 async function tenantSettings(tenantId) {
   const result = await query(`SELECT * FROM tenant_settings WHERE tenant_id=$1`, [tenantId]);
@@ -36,6 +37,17 @@ const worker = new Worker("lead-calls", async (job) => {
   if (lead.attempt_count >= settings.maxCallAttempts) {
     await query(`UPDATE leads SET status='max_attempts' WHERE id=$1`, [leadId]);
     return;
+  }
+
+  const providerHealth = await assertSarvamReadyForCall();
+  if (!providerHealth.skipped) {
+    console.log("sarvam preflight ok", {
+      leadId,
+      campaignId,
+      cached: providerHealth.cached,
+      elapsedMs: providerHealth.elapsedMs,
+      ageMs: providerHealth.ageMs
+    });
   }
 
   const callRow = await query(
