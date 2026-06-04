@@ -389,14 +389,17 @@ function startStt(ws, session) {
     onOpen: details => logVoicebotEvent(session, "stt_open", details).catch(() => {}),
     onClose: details => logVoicebotEvent(session, "stt_closed", details).catch(() => {}),
     onStatus: status => {
-      if (["SpeechStarted", "UtteranceEnd"].includes(status.type)) {
-        logVoicebotEvent(session, "stt_status", { type: status.type }).catch(() => {});
+      if (["ConnectAttempt", "ReconnectAttempt", "UnexpectedResponse", "SpeechStarted", "UtteranceEnd"].includes(status.type)) {
+        logVoicebotEvent(session, "stt_status", status).catch(() => {});
       }
     },
     onTranscript: event => handleTranscript(ws, session, event).catch(err => {
       logger.error("voicebot_transcript_failed", { error: err.message, callId: session.callId });
     }),
-    onError: err => logger.warn("voicebot_stt_failed", { error: err.message, callId: session.callId })
+    onError: err => {
+      logger.warn("voicebot_stt_failed", { error: err.message, callId: session.callId });
+      logVoicebotEvent(session, "stt_error", { error: err.message }).catch(() => {});
+    }
   });
 }
 
