@@ -9,10 +9,8 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
   const sampleRate = Number(process.env.SARVAM_STT_SAMPLE_RATE || 8000);
   const sourceSampleRate = Number(process.env.SARVAM_STT_SOURCE_SAMPLE_RATE || process.env.EXOTEL_AUDIO_SAMPLE_RATE || 8000);
   const audioEncoding = process.env.SARVAM_STT_AUDIO_ENCODING || "pcm_s16le";
-  // Sarvam validates these legacy message fields separately from the actual
-  // connection-level telephony PCM config.
-  const messageSampleRate = String(process.env.SARVAM_STT_MESSAGE_SAMPLE_RATE || 16000);
-  const messageEncoding = process.env.SARVAM_STT_MESSAGE_ENCODING || "audio/wav";
+  const messageSampleRate = Number(process.env.SARVAM_STT_MESSAGE_SAMPLE_RATE || sampleRate);
+  const messageEncoding = process.env.SARVAM_STT_MESSAGE_ENCODING || audioEncoding;
   const targetChunkBytes = normalizeChunkBytes(
     process.env.SARVAM_STT_CHUNK_BYTES || pcmBytesForDuration(sampleRate, Number(process.env.SARVAM_STT_CHUNK_MS || 100))
   );
@@ -206,7 +204,7 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
 
 function sarvamParams({ languageCode, sampleRate, audioEncoding }) {
   const params = new URLSearchParams({
-    "language-code": languageCode,
+    language_code: languageCode,
     model: process.env.SARVAM_STT_MODEL || "saaras:v3",
     mode: process.env.SARVAM_STT_MODE || "codemix",
     sample_rate: String(sampleRate),

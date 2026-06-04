@@ -88,8 +88,9 @@ function checkStt() {
   const timeoutMs = Number(process.env.SARVAM_PREFLIGHT_STT_TIMEOUT_MS || process.env.SARVAM_PREFLIGHT_TIMEOUT_MS || 2500);
   const params = sarvamSttParams();
   const sampleRate = Number(process.env.SARVAM_STT_SAMPLE_RATE || 8000);
-  const messageSampleRate = String(process.env.SARVAM_STT_MESSAGE_SAMPLE_RATE || 16000);
-  const messageEncoding = process.env.SARVAM_STT_MESSAGE_ENCODING || "audio/wav";
+  const audioEncoding = process.env.SARVAM_STT_AUDIO_ENCODING || "pcm_s16le";
+  const messageSampleRate = Number(process.env.SARVAM_STT_MESSAGE_SAMPLE_RATE || sampleRate);
+  const messageEncoding = process.env.SARVAM_STT_MESSAGE_ENCODING || audioEncoding;
   const audioProbeEnabled = envEnabled("SARVAM_PREFLIGHT_STT_AUDIO_PROBE", true);
   const audioProbeHoldMs = Number(process.env.SARVAM_PREFLIGHT_STT_AUDIO_PROBE_HOLD_MS || 650);
 
@@ -274,7 +275,7 @@ async function fetchJsonWithTimeout(url, options, timeoutMs) {
 
 function sarvamSttParams() {
   return new URLSearchParams({
-    "language-code": process.env.SARVAM_STT_LANGUAGE_CODE || "hi-IN",
+    language_code: process.env.SARVAM_STT_LANGUAGE_CODE || "hi-IN",
     model: process.env.SARVAM_STT_MODEL || "saaras:v3",
     mode: process.env.SARVAM_STT_MODE || "codemix",
     sample_rate: String(process.env.SARVAM_STT_SAMPLE_RATE || 8000),
