@@ -22,6 +22,11 @@ const NO_SPEECH_PROMPT_MS = Number(process.env.VOICEBOT_NO_SPEECH_PROMPT_MS || 9
 const NO_SPEECH_END_MS = Number(process.env.VOICEBOT_NO_SPEECH_END_MS || 22000);
 const MIN_TRANSCRIPT_CONFIDENCE = Number(process.env.VOICEBOT_MIN_TRANSCRIPT_CONFIDENCE || 0.62);
 const LOW_CONFIDENCE_MAX_WORDS = Number(process.env.VOICEBOT_LOW_CONFIDENCE_MAX_WORDS || 3);
+const INTERIM_TRANSCRIPT_ENABLED = process.env.VOICEBOT_INTERIM_TRANSCRIPT_ENABLED !== "false";
+const INTERIM_TRANSCRIPT_DELAY_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_DELAY_MS || 1200);
+const INTERIM_TRANSCRIPT_FORCE_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_FORCE_MS || 2600);
+const INTERIM_TRANSCRIPT_MIN_WORDS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_WORDS || 2);
+const INTERIM_TRANSCRIPT_MIN_CHARS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS || 5);
 const VOICEBOT_MEDIA_VERSION = "2026-06-03-first-media-3200-seq-v2";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
 const pcmCache = new Map();
@@ -77,6 +82,11 @@ function attachVoicebot(server) {
       outboundSequence: 1,
       outboundChunk: 1,
       userTurns: 0,
+      interimStartedAt: 0,
+      interimTimer: null,
+      interimCount: 0,
+      pendingTranscript: null,
+      lastProcessedTranscript: null,
       introTimer: null,
       noSpeechPromptTimer: null,
       noSpeechEndTimer: null,
@@ -95,8 +105,13 @@ function attachVoicebot(server) {
     ws.on("close", (code, reason) => {
       session.closed = true;
       if (session.introTimer) clearTimeout(session.introTimer);
+      clearInterimTimer(session);
       clearNoSpeechTimers(session);
       session.stt?.close();
+      markCallCompleted(session).catch(err => logger.warn("voicebot_close_status_update_failed", {
+        error: err.message,
+        callId: session.callId
+      }));
       logger.info("voicebot_closed", {
         leadId: session.leadId,
         callId: session.callId,
@@ -371,6 +386,13 @@ function startStt(ws, session) {
 
   session.stt = createDeepgramLive({
     language: deepgramLanguage(session.lead?.language),
+    onOpen: details => logVoicebotEvent(session, "stt_open", details).catch(() => {}),
+    onClose: details => logVoicebotEvent(session, "stt_closed", details).catch(() => {}),
+    onStatus: status => {
+      if (["SpeechStarted", "UtteranceEnd"].includes(status.type)) {
+        logVoicebotEvent(session, "stt_status", { type: status.type }).catch(() => {});
+      }
+    },
     onTranscript: event => handleTranscript(ws, session, event).catch(err => {
       logger.error("voicebot_transcript_failed", { error: err.message, callId: session.callId });
     }),
@@ -379,10 +401,83 @@ function startStt(ws, session) {
 }
 
 async function handleTranscript(ws, session, event) {
-  if (!event.isFinal && !event.speechFinal) return;
   const text = event.transcript.trim();
   if (!text) return;
   clearNoSpeechTimers(session);
+
+  if (!event.isFinal && !event.speechFinal) {
+    trackInterimTranscript(ws, session, event);
+    return;
+  }
+
+  clearInterimTimer(session);
+  if (session.speaking) {
+    schedulePendingTranscript(ws, session, { ...event, transcript: text, source: "final_during_speech" }, 250);
+    return;
+  }
+
+  await processUserTranscript(ws, session, { ...event, transcript: text, source: "final" });
+}
+
+function trackInterimTranscript(ws, session, event) {
+  if (!INTERIM_TRANSCRIPT_ENABLED) return;
+  const text = event.transcript.trim();
+  const wordCount = transcriptWordCount(text);
+  if (text.length < INTERIM_TRANSCRIPT_MIN_CHARS || wordCount < INTERIM_TRANSCRIPT_MIN_WORDS) return;
+
+  const now = Date.now();
+  session.interimStartedAt = session.interimStartedAt || now;
+  session.interimCount++;
+  if (session.interimCount === 1 || session.interimCount % 10 === 0) {
+    logVoicebotEvent(session, "transcript_interim_seen", {
+      text,
+      confidence: event.confidence,
+      wordCount,
+      interimCount: session.interimCount
+    }).catch(() => {});
+  }
+
+  const forceReady = now - session.interimStartedAt >= INTERIM_TRANSCRIPT_FORCE_MS;
+  schedulePendingTranscript(
+    ws,
+    session,
+    { ...event, transcript: text, isFinal: false, speechFinal: false, source: forceReady ? "interim_forced" : "interim_timeout" },
+    forceReady ? 0 : INTERIM_TRANSCRIPT_DELAY_MS
+  );
+}
+
+function schedulePendingTranscript(ws, session, event, delayMs) {
+  clearInterimTimer(session);
+  session.pendingTranscript = event;
+  session.interimTimer = setTimeout(() => {
+    session.interimTimer = null;
+    const pending = session.pendingTranscript;
+    session.pendingTranscript = null;
+    if (!pending || session.closed || ws.readyState !== ws.OPEN) return;
+    if (session.speaking) {
+      schedulePendingTranscript(ws, session, pending, 250);
+      return;
+    }
+    processUserTranscript(ws, session, pending).catch(err => {
+      logger.error("voicebot_pending_transcript_failed", { error: err.message, callId: session.callId });
+    });
+  }, Math.max(0, delayMs));
+}
+
+function clearInterimTimer(session) {
+  if (session.interimTimer) {
+    clearTimeout(session.interimTimer);
+    session.interimTimer = null;
+  }
+  session.pendingTranscript = null;
+}
+
+async function processUserTranscript(ws, session, event) {
+  const text = event.transcript.trim();
+  if (!text) return;
+  if (isRecentlyProcessedTranscript(session, text)) return;
+  session.interimStartedAt = 0;
+  session.interimCount = 0;
   if (session.speaking) return;
   const turnStartedAt = Date.now();
   await logVoicebotEvent(session, "transcript_final", {
@@ -391,7 +486,8 @@ async function handleTranscript(ws, session, event) {
     words: event.words,
     languages: event.languages,
     isFinal: event.isFinal,
-    speechFinal: event.speechFinal
+    speechFinal: event.speechFinal,
+    source: event.source || "final"
   });
 
   if (isLikelyMisheardTranscript(text, event)) {
@@ -466,6 +562,16 @@ async function handleTranscript(ws, session, event) {
 
   await speakText(ws, session, reply, "reply_played");
   scheduleNoSpeechCheck(ws, session, "after_reply");
+}
+
+function isRecentlyProcessedTranscript(session, text) {
+  const key = normalizeTranscript(text);
+  const now = Date.now();
+  if (session.lastProcessedTranscript?.key === key && now - session.lastProcessedTranscript.at < 8000) {
+    return true;
+  }
+  session.lastProcessedTranscript = { key, at: now };
+  return false;
 }
 
 async function safeGenerateReply(session, args) {
@@ -783,6 +889,22 @@ async function logVoicebotEvent(session, eventType, details = {}) {
   } catch (err) {
     if (!["42P01", "42703"].includes(err.code)) throw err;
   }
+}
+
+async function markCallCompleted(session) {
+  if (!session.callId) return;
+  const durationSeconds = Math.max(0, Math.round((Date.now() - session.startedAt) / 1000));
+  await query(
+    `UPDATE calls
+     SET status='completed',
+         duration_seconds=CASE
+           WHEN duration_seconds IS NULL OR duration_seconds=0 THEN $2
+           ELSE duration_seconds
+         END,
+         updated_at=NOW()
+     WHERE id=$1 AND status='streaming'`,
+    [session.callId, durationSeconds]
+  );
 }
 
 function sendMark(ws, session, name) {

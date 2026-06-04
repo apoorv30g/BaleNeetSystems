@@ -18,7 +18,7 @@ const DEFAULT_KEYTERMS = [
   "not interested"
 ];
 
-function createDeepgramLive({ language = "multi", onTranscript, onError }) {
+function createDeepgramLive({ language = "multi", onTranscript, onOpen, onClose, onStatus, onError }) {
   if (!config.ai.deepgramApiKey) {
     return { ready: false, sendAudio() {}, close() {} };
   }
@@ -31,6 +31,7 @@ function createDeepgramLive({ language = "multi", onTranscript, onError }) {
     interim_results: "true",
     endpointing: process.env.DEEPGRAM_ENDPOINTING || "350",
     utterance_end_ms: process.env.DEEPGRAM_UTTERANCE_END_MS || "900",
+    vad_events: process.env.DEEPGRAM_VAD_EVENTS || "true",
     smart_format: "true",
     punctuate: "true",
     language
@@ -42,11 +43,24 @@ function createDeepgramLive({ language = "multi", onTranscript, onError }) {
   const ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, {
     headers: { Authorization: `Token ${config.ai.deepgramApiKey}` }
   });
+  const audioBuffer = [];
+  let bufferedBytes = 0;
+  const maxBufferedBytes = Number(process.env.DEEPGRAM_CONNECT_BUFFER_BYTES || 160000);
 
   const client = {
     ready: false,
     sendAudio(buffer) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(buffer);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(buffer);
+        return;
+      }
+      if (ws.readyState === WebSocket.CONNECTING && maxBufferedBytes > 0) {
+        audioBuffer.push(buffer);
+        bufferedBytes += buffer.length;
+        while (bufferedBytes > maxBufferedBytes && audioBuffer.length) {
+          bufferedBytes -= audioBuffer.shift().length;
+        }
+      }
     },
     close() {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "CloseStream" }));
@@ -54,10 +68,20 @@ function createDeepgramLive({ language = "multi", onTranscript, onError }) {
     }
   };
 
-  ws.on("open", () => { client.ready = true; });
+  ws.on("open", () => {
+    client.ready = true;
+    for (const buffer of audioBuffer.splice(0)) ws.send(buffer);
+    const flushedBytes = bufferedBytes;
+    bufferedBytes = 0;
+    onOpen?.({ flushedBytes, urlParams: params.toString() });
+  });
   ws.on("message", data => {
     try {
       const payload = JSON.parse(data.toString());
+      if (payload.type && payload.type !== "Results") {
+        onStatus?.({ type: payload.type, payload });
+        return;
+      }
       const alternative = payload?.channel?.alternatives?.[0];
       const transcript = alternative?.transcript || "";
       if (!transcript) return;
@@ -75,6 +99,10 @@ function createDeepgramLive({ language = "multi", onTranscript, onError }) {
     }
   });
   ws.on("error", err => onError?.(err));
+  ws.on("close", (code, reason) => {
+    client.ready = false;
+    onClose?.({ code, reason: reason?.toString() || "" });
+  });
 
   return client;
 }
