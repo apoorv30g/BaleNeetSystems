@@ -181,6 +181,7 @@ async function buildPrompt(lead, { transcript = [], lastUserMessage = "" } = {})
   const currentStep = playbook.steps[stepIndex] || playbook.goal || "Continue the playbook conversation";
   const upcomingStep = playbook.steps[stepIndex + 1] || "";
   const recentTranscript = formatTranscript(transcript);
+  const languageInstruction = responseLanguageInstruction(lead.language);
 
   return `
 You are a warm Hindi-English AI loan assistant for a phone call.
@@ -217,8 +218,9 @@ Rules:
 - Follow the current required playbook action. Do not restart from the beginning unless the user asks.
 - If the customer answers a question, progress to the next relevant action.
 - If the customer asks a question, answer briefly and then return to the playbook path.
-- Speak in natural Indian phone-call Hindi unless language says otherwise.
-- Write Hindi words in Devanagari, not Romanized Hindi. Use "हाँ जी", "आप", "ठीक है", "कर दूँ" instead of "haan ji", "aap", "theek hai", "kar doon".
+- ${languageInstruction}
+- If the customer asks to switch language, obey immediately and continue in that language.
+- For Hindi, write Hindi words in Devanagari, not Romanized Hindi. Use "हाँ जी", "आप", "ठीक है", "कर दूँ" instead of "haan ji", "aap", "theek hai", "kar doon".
 - Keep brand and app words easy to pronounce: say "लोन कनेक्ट", "सुरक्षित लिंक", "सिबिल", and "ई एम आई".
 - Use English words only when they sound natural on an Indian phone call, such as "app", "link", or "offer".
 - Sound calm, helpful, and conversational, like a patient assistant on a real call.
@@ -245,6 +247,14 @@ Rules:
 
 Now generate only the next spoken response.
 `;
+}
+
+function responseLanguageInstruction(language) {
+  const value = String(language || "").toLowerCase();
+  if (value.includes("english")) {
+    return "Speak in simple Indian English. Do not use Hindi unless the customer asks for Hindi.";
+  }
+  return "Speak in natural Indian phone-call Hindi unless language says otherwise.";
 }
 
 function formatTranscript(transcript) {

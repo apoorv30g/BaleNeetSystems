@@ -14,7 +14,7 @@ async function generateReply({ lead, lastUserMessage = "", transcript = [] }) {
     contents: [{
       parts: [{
         text: `${prompt}
-Respond now as spoken Hindi for TTS: one or two short Devanagari sentences, maximum 24 words. No bullet points.`
+${responseInstruction(lead)}`
       }]
     }],
     generationConfig: {
@@ -63,6 +63,7 @@ function cleanReply(value) {
 }
 
 function fallbackReply(lead) {
+  if (isEnglishLead(lead)) return englishFallbackReply(lead);
   const name = firstName(lead.name);
   const prefix = name ? `${name} ji, ` : "";
   if (lead.playbook_type === "SOFT_PAYMENT_REMINDER") {
@@ -78,6 +79,35 @@ function fallbackReply(lead) {
     return `${prefix}मैं loan eligibility के लिए call कर रहा हूँ। आपको कितना loan चाहिए?`;
   }
   return `${prefix}आपकी loan eligibility pending है। क्या मैं final offer check करने में मदद करूँ?`;
+}
+
+function responseInstruction(lead) {
+  if (isEnglishLead(lead)) {
+    return "Respond now as spoken Indian English for TTS: one or two short sentences, maximum 24 words. No bullet points.";
+  }
+  return "Respond now as spoken Hindi for TTS: one or two short Devanagari sentences, maximum 24 words. No bullet points.";
+}
+
+function englishFallbackReply(lead = {}) {
+  const name = firstName(lead.name);
+  const prefix = name ? `${name}, ` : "";
+  if (lead.playbook_type === "SOFT_PAYMENT_REMINDER") {
+    return `${prefix}your payment due date is near. Should I share the secure payment link now?`;
+  }
+  if (lead.playbook_type === "HARD_PAYMENT_REMINDER") {
+    return `${prefix}your payment looks overdue. By when can you make the payment?`;
+  }
+  if (lead.playbook_type === "APPROVED_USERS") {
+    return `${prefix}your loan offer is ready. Would you like to continue it today?`;
+  }
+  if (lead.playbook_type === "FRESH_LEAD") {
+    return `${prefix}I am calling for loan eligibility. How much loan do you need?`;
+  }
+  return `${prefix}your loan eligibility is pending. Should I help you check the final offer?`;
+}
+
+function isEnglishLead(lead = {}) {
+  return String(lead.language || "").toLowerCase().includes("english");
 }
 
 function firstName(name) {

@@ -1,9 +1,9 @@
 const config = require("../config");
 
-async function synthesizeSpeech(text) {
+async function synthesizeSpeech(text, options = {}) {
   if (!config.ai.sarvamApiKey) return { mode: "text_only", text };
 
-  const targetLanguageCode = process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
+  const targetLanguageCode = options.languageCode || process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
   const speaker = process.env.SARVAM_TTS_SPEAKER || "shubh";
   const model = process.env.SARVAM_TTS_MODEL || "bulbul:v3";
 

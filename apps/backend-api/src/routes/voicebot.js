@@ -79,6 +79,7 @@ function attachVoicebot(server) {
       mediaSampleRate: 8000,
       callerPhone: "",
       calledPhone: "",
+      preferredLanguage: "",
       stt: null,
       sttAudioChunks: 0,
       sttAudioBytes: 0,
@@ -341,6 +342,7 @@ async function initializeSession(session, message) {
 
   session.tenantId = lead.tenant_id;
   session.lead = lead;
+  session.preferredLanguage = normalizePreferredLanguage(lead.language);
   session.campaignId = session.campaignId || lead.campaign_id;
 
   const callResult = session.requestedCallId
@@ -586,6 +588,22 @@ async function processUserTranscript(ws, session, event) {
   }
   session.userTurns++;
 
+  const languageSwitch = detectLanguageSwitch(text);
+  if (languageSwitch) {
+    session.preferredLanguage = languageSwitch.language;
+    session.lead = { ...session.lead, language: languageSwitch.language };
+    await logVoicebotEvent(session, "language_switched", {
+      text,
+      language: languageSwitch.language,
+      reason: languageSwitch.reason
+    });
+    const reply = languageSwitchReply(languageSwitch.language, session.lead);
+    if (session.callId) await addTranscript(session.callId, "assistant", reply);
+    await speakText(ws, session, reply, "language_switch_played");
+    scheduleNoSpeechCheck(ws, session, "after_language_switch");
+    return;
+  }
+
   if (isOptOut(text)) {
     session.ending = true;
     await query(
@@ -672,39 +690,80 @@ function buildScriptedReply(session, text) {
   const normalized = normalizeVoiceIntent(text);
   const amount = lead.offer_amount || lead.loan_amount || "";
   const amountText = amount ? `₹${amount}` : "eligible amount";
+  const english = isEnglishSession(session);
 
   if (mentionsMissingLink(normalized)) {
     queueLeadLink(session, "missing_link");
+    if (english) return "Sure, I am sending the secure link again. Please open it and check your final offer in two minutes.";
     return "ठीक है, मैं सुरक्षित link दोबारा भेज रहा हूँ। कृपया उसे खोलकर दो मिनट में final offer check कर लीजिए।";
   }
 
   if (mentionsLinkReceived(normalized)) {
+    if (english) return "Great. Please open the same secure link and check your final offer. I am on the line.";
     return "बहुत अच्छा। अब उसी link को खोलकर final offer check कर लीजिए। मैं line पर हूँ।";
   }
 
   if (isPositiveAgreement(normalized)) {
     queueLeadLink(session, "user_agreed");
     if (lead.playbook_type === "UNAPPROVED_USERS") {
+      if (english) return "Sure, I am sending the secure link. Please open it and check your documents and final eligibility.";
       return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर documents और final eligibility दो मिनट में check कर लीजिए।";
     }
     if (lead.playbook_type === "APPROVED_USERS") {
+      if (english) return "Sure, I am sending the secure link. Please open it to continue your loan offer.";
       return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। आपका offer आगे बढ़ाने के लिए उसे खोल लीजिए।";
     }
+    if (english) return "Sure, I am sending the secure link. Please open it and complete the next step.";
     return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। कृपया उसे खोलकर आगे का step पूरा कर लीजिए।";
   }
 
   if (asksAmount(normalized)) {
+    if (english) return `Your eligibility shows up to ${amountText}. The final amount will be confirmed after checking details in the app.`;
     return `आपकी eligibility ${amountText} तक दिख रही है। Final amount app में details check करने के बाद confirm होगा।`;
   }
 
   if (asksReason(normalized)) {
+    if (english) return "Your loan eligibility is still incomplete, so I called to help you check the final offer.";
     return "आपकी loan eligibility अधूरी दिख रही है, इसलिए यह call है। मैं सिर्फ final offer check करने में मदद कर रहा हूँ।";
   }
 
   if (asksQuestion(normalized)) {
+    if (english) return "Sure, please ask. I will answer briefly and then help you check the final offer.";
     return "हाँ, पूछिए। मैं आपकी बात समझकर छोटा सा जवाब दूँगा, फिर final offer check करवा दूँगा।";
   }
 
+  return "";
+}
+
+function detectLanguageSwitch(text) {
+  const normalized = normalizeVoiceIntent(text);
+  if (/(speak|talk|reply|respond|continue|switch).*(english|angrezi|inglish)|english (mein|me|please)|in english|i don t understand|i do not understand|don t understand hindi|don't understand hindi|language samajh|भाषा समझ|हिंदी समझ नहीं|हिन्दी समझ नहीं|english बोल|अंग्रेजी बोल|अंग्रेज़ी बोल|इंग्लिश बोल/.test(normalized)) {
+    return { language: "English", reason: "user_requested_english" };
+  }
+  if (/(hindi mein|hindi me|speak hindi|talk hindi|reply hindi|हिंदी में|हिन्दी में|हिंदी बोल|हिन्दी बोल)/.test(normalized)) {
+    return { language: "Hindi", reason: "user_requested_hindi" };
+  }
+  return null;
+}
+
+function languageSwitchReply(language, lead = {}) {
+  if (language === "English") {
+    if (lead.playbook_type === "UNAPPROVED_USERS") {
+      return "Sure, I will speak in English. I am calling from LoanConnect to help you check your final loan offer. Can you spare two minutes?";
+    }
+    return "Sure, I will speak in English from now on. How can I help you with your loan today?";
+  }
+  return "ठीक है, अब मैं हिंदी में बात करूँगा। क्या आप दो मिनट में अपना final offer check कर सकते हैं?";
+}
+
+function isEnglishSession(session = {}) {
+  return normalizePreferredLanguage(session.preferredLanguage || session.lead?.language) === "English";
+}
+
+function normalizePreferredLanguage(language) {
+  const value = String(language || "").toLowerCase();
+  if (value.includes("english") || value.includes("angrezi") || value.includes("इंग्लिश") || value.includes("अंग्रेज")) return "English";
+  if (value.includes("hindi") || value.includes("hinglish") || value.includes("हिंदी") || value.includes("हिन्दी")) return "Hindi";
   return "";
 }
 
@@ -914,11 +973,12 @@ async function speakText(ws, session, text, markName) {
 async function getPcmBase64(text, session = {}) {
   const sampleRate = session.mediaSampleRate || 8000;
   const volume = Number(process.env.VOICEBOT_TTS_VOLUME || 1.6);
-  const speechText = prepareTextForSpeech(text);
-  const cacheKey = `${sampleRate}:${volume}:${speechText}`;
+  const ttsLanguageCode = ttsLanguageCodeForSession(session);
+  const speechText = prepareTextForSpeech(text, session);
+  const cacheKey = `${sampleRate}:${volume}:${ttsLanguageCode}:${speechText}`;
   if (pcmCache.has(cacheKey)) return pcmCache.get(cacheKey);
 
-  const speech = await synthesizeSpeech(speechText);
+  const speech = await synthesizeSpeech(speechText, { languageCode: ttsLanguageCode });
   if (speech.mode !== "audio") return null;
 
   const pcmBase64 = await toExotelPcmBase64(speech.audioBase64, { sampleRate, volume });
@@ -928,8 +988,20 @@ async function getPcmBase64(text, session = {}) {
   return pcmBase64;
 }
 
-function prepareTextForSpeech(text) {
-  return String(text || "")
+function prepareTextForSpeech(text, session = {}) {
+  const base = String(text || "");
+  if (isEnglishSession(session)) {
+    return base
+      .replace(/\bLoanConnect\b/gi, "Loan Connect")
+      .replace(/\bCIBIL\b/gi, "SIBIL")
+      .replace(/\bEMI\b/gi, "E M I")
+      .replace(/\bKYC\b/gi, "K Y C")
+      .replace(/\bOTP\b/gi, "O T P")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  return base
     .replace(/Namaste,\s*LoanConnect se AI assistant\.?\s*Kya aap mujhe sun paa rahe hain\?/i, "नमस्ते, लोन कनेक्ट से ए आई असिस्टेंट। क्या आप मुझे सुन पा रहे हैं?")
     .replace(/\bNamaste\b/gi, "नमस्ते")
     .replace(/\bAI assistant\b/gi, "ए आई असिस्टेंट")
@@ -960,6 +1032,11 @@ function prepareTextForSpeech(text) {
     .replace(/\baap\b/gi, "आप")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function ttsLanguageCodeForSession(session = {}) {
+  if (isEnglishSession(session)) return process.env.SARVAM_TTS_ENGLISH_LANGUAGE || "en-IN";
+  return process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
 }
 
 async function prewarmAudio(text) {
