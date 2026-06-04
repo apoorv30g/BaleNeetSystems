@@ -88,7 +88,8 @@ function checkStt() {
   const timeoutMs = Number(process.env.SARVAM_PREFLIGHT_STT_TIMEOUT_MS || process.env.SARVAM_PREFLIGHT_TIMEOUT_MS || 2500);
   const params = sarvamSttParams();
   const sampleRate = Number(process.env.SARVAM_STT_SAMPLE_RATE || 8000);
-  const audioEncoding = process.env.SARVAM_STT_AUDIO_ENCODING || "pcm_s16le";
+  const messageSampleRate = String(process.env.SARVAM_STT_MESSAGE_SAMPLE_RATE || 16000);
+  const messageEncoding = process.env.SARVAM_STT_MESSAGE_ENCODING || "audio/wav";
   const audioProbeEnabled = envEnabled("SARVAM_PREFLIGHT_STT_AUDIO_PROBE", true);
   const audioProbeHoldMs = Number(process.env.SARVAM_PREFLIGHT_STT_AUDIO_PROBE_HOLD_MS || 650);
 
@@ -111,6 +112,8 @@ function checkStt() {
         model: process.env.SARVAM_STT_MODEL || "saaras:v3",
         mode: process.env.SARVAM_STT_MODE || "codemix",
         sampleRate,
+        messageSampleRate,
+        messageEncoding,
         audioProbe: audioProbeEnabled,
         elapsedMs: Date.now() - startedAt
       };
@@ -124,8 +127,8 @@ function checkStt() {
       ws.send(JSON.stringify({
         audio: {
           data: makePcmProbe(sampleRate).toString("base64"),
-          sample_rate: String(sampleRate),
-          encoding: audioEncoding
+          sample_rate: messageSampleRate,
+          encoding: messageEncoding
         }
       }));
 
@@ -147,16 +150,24 @@ function checkStt() {
       finish({ ok: false, error: err.message });
     });
     ws.on("close", (code, reason) => {
-      if (!done && Number(code) === 1000 && openResult && audioProbeSent && !sawError) {
+      const elapsedMs = Date.now() - startedAt;
+      if (
+        !done
+        && Number(code) === 1000
+        && openResult
+        && audioProbeSent
+        && !sawError
+        && envEnabled("SARVAM_PREFLIGHT_STT_ACCEPT_CLEAN_CLOSE", false)
+      ) {
         finish({
           ...openResult,
           cleanCloseAfterProbe: true,
           closeCode: code,
-          elapsedMs: Date.now() - startedAt
+          elapsedMs
         });
         return;
       }
-      if (!done) finish({ ok: false, code, error: reason?.toString() || `closed_${code}` });
+      if (!done) finish({ ok: false, code, error: reason?.toString() || `closed_${code}`, elapsedMs });
     });
 
     function finish(result) {

@@ -79,6 +79,9 @@ function attachVoicebot(server) {
       callerPhone: "",
       calledPhone: "",
       stt: null,
+      sttAudioChunks: 0,
+      sttAudioBytes: 0,
+      sttAudioSkippedChunks: 0,
       speaking: false,
       closed: false,
       mediaChunks: 0,
@@ -174,8 +177,30 @@ async function handleMessage(ws, session, data) {
       if (INTRO_START_MODE === "first_media" && !session.introStarted) {
         startIntro(ws, session, "first_media");
       }
-      if (STT_DURING_ASSISTANT_ENABLED || !session.speaking) {
+      const shouldForwardToStt = STT_DURING_ASSISTANT_ENABLED || !session.speaking;
+      if (shouldForwardToStt) {
+        session.sttAudioChunks++;
+        session.sttAudioBytes += audio.length;
+        if (session.sttAudioChunks === 1 || session.sttAudioChunks % 100 === 0) {
+          logVoicebotEvent(session, "stt_audio_forwarded", {
+            payloadBytes: audio.length,
+            sttAudioChunks: session.sttAudioChunks,
+            sttAudioBytes: session.sttAudioBytes,
+            sttProvider: session.stt?.provider || "",
+            sttReady: Boolean(session.stt?.ready),
+            speaking: session.speaking
+          }).catch(() => {});
+        }
         session.stt?.sendAudio(audio);
+      } else {
+        session.sttAudioSkippedChunks++;
+        if (session.sttAudioSkippedChunks === 1 || session.sttAudioSkippedChunks % 100 === 0) {
+          logVoicebotEvent(session, "stt_audio_skipped_during_assistant", {
+            payloadBytes: audio.length,
+            sttAudioSkippedChunks: session.sttAudioSkippedChunks,
+            speaking: session.speaking
+          }).catch(() => {});
+        }
       }
     }
     return;

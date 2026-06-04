@@ -7,10 +7,19 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
   }
 
   const sampleRate = Number(process.env.SARVAM_STT_SAMPLE_RATE || 8000);
+  const sourceSampleRate = Number(process.env.SARVAM_STT_SOURCE_SAMPLE_RATE || process.env.EXOTEL_AUDIO_SAMPLE_RATE || 8000);
   const audioEncoding = process.env.SARVAM_STT_AUDIO_ENCODING || "pcm_s16le";
-  const targetChunkBytes = normalizeChunkBytes(process.env.SARVAM_STT_CHUNK_BYTES || 1600);
+  // Sarvam validates these legacy message fields separately from the actual
+  // connection-level telephony PCM config.
+  const messageSampleRate = String(process.env.SARVAM_STT_MESSAGE_SAMPLE_RATE || 16000);
+  const messageEncoding = process.env.SARVAM_STT_MESSAGE_ENCODING || "audio/wav";
+  const targetChunkBytes = normalizeChunkBytes(
+    process.env.SARVAM_STT_CHUNK_BYTES || pcmBytesForDuration(sampleRate, Number(process.env.SARVAM_STT_CHUNK_MS || 100))
+  );
   const flushMs = Number(process.env.SARVAM_STT_FLUSH_MS || 100);
   const connectBufferLimit = Number(process.env.SARVAM_STT_CONNECT_BUFFER_BYTES || 160000);
+  const logMessages = process.env.SARVAM_STT_LOG_MESSAGES === "true";
+  const resampleAudio = process.env.SARVAM_STT_RESAMPLE_AUDIO !== "false";
   const params = sarvamParams({ languageCode, sampleRate, audioEncoding });
   const ws = new WebSocket(`wss://api.sarvam.ai/speech-to-text/ws?${params.toString()}`, {
     headers: { "Api-Subscription-Key": config.ai.sarvamApiKey }
@@ -23,6 +32,8 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
   let flushTimer = null;
   let opened = false;
   let closedByClient = false;
+  let audioMessagesSent = 0;
+  let audioBytesSent = 0;
 
   const client = {
     provider: "sarvam",
@@ -55,7 +66,11 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
     mode: process.env.SARVAM_STT_MODE || "codemix",
     languageCode,
     sampleRate,
-    inputAudioCodec: audioEncoding
+    sourceSampleRate,
+    messageSampleRate,
+    messageEncoding,
+    inputAudioCodec: audioEncoding,
+    targetChunkBytes
   });
 
   ws.on("open", () => {
@@ -71,6 +86,9 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
       mode: process.env.SARVAM_STT_MODE || "codemix",
       languageCode,
       sampleRate,
+      sourceSampleRate,
+      messageSampleRate,
+      messageEncoding,
       urlParams: params.toString()
     });
   });
@@ -81,6 +99,9 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
       const normalized = normalizeSarvamMessage(payload);
       if (normalized.status) {
         onStatus?.({ provider: "sarvam", ...normalized.status, payload });
+      }
+      if (logMessages && !normalized.status && !normalized.transcript) {
+        onStatus?.({ provider: "sarvam", type: "Message", payload });
       }
       if (!normalized.transcript) return;
 
@@ -123,15 +144,23 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
       code,
       reason: reason?.toString() || "",
       opened,
-      closedByClient
+      closedByClient,
+      audioMessagesSent,
+      audioBytesSent,
+      sampleRate,
+      sourceSampleRate,
+      messageSampleRate,
+      messageEncoding
     });
   });
 
   return client;
 
   function enqueueAudio(buffer) {
-    pendingAudio.push(buffer);
-    pendingBytes += buffer.length;
+    const audio = normalizeIncomingAudio(buffer);
+    if (!audio.length) return;
+    pendingAudio.push(audio);
+    pendingBytes += audio.length;
     if (pendingBytes >= targetChunkBytes) {
       flushAudio();
       return;
@@ -155,16 +184,23 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
     ws.send(JSON.stringify({
       audio: {
         data: audio.toString("base64"),
-        sample_rate: String(sampleRate),
-        encoding: audioEncoding
+        sample_rate: messageSampleRate,
+        encoding: messageEncoding
       }
     }));
+    audioMessagesSent++;
+    audioBytesSent += audio.length;
   }
 
   function clearFlushTimer() {
     if (!flushTimer) return;
     clearTimeout(flushTimer);
     flushTimer = null;
+  }
+
+  function normalizeIncomingAudio(buffer) {
+    if (!resampleAudio || audioEncoding !== "pcm_s16le" || sourceSampleRate === sampleRate) return buffer;
+    return resamplePcm16Le(buffer, sourceSampleRate, sampleRate);
   }
 }
 
@@ -201,7 +237,7 @@ function sarvamParams({ languageCode, sampleRate, audioEncoding }) {
 function normalizeSarvamMessage(payload) {
   const type = String(payload?.type || "").toLowerCase();
   const data = payload?.data || {};
-  const transcript = data.transcript || payload?.transcript || "";
+  const transcript = data.transcript || data.text || payload?.transcript || payload?.text || "";
   const signalType = data.signal_type || payload?.signal_type || "";
 
   if (type === "events" || signalType || type === "speech_start" || type === "speech_end") {
@@ -232,6 +268,37 @@ function normalizeChunkBytes(value) {
   const configured = Number(value);
   if (!Number.isFinite(configured) || configured <= 0) return 1600;
   return Math.max(320, Math.floor(configured / 320) * 320);
+}
+
+function pcmBytesForDuration(sampleRate, durationMs) {
+  const rate = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : 8000;
+  const ms = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 100;
+  return Math.max(320, Math.round(rate * 2 * ms / 1000));
+}
+
+function resamplePcm16Le(buffer, sourceRate, targetRate) {
+  if (!buffer?.length || sourceRate <= 0 || targetRate <= 0 || sourceRate === targetRate) return buffer || Buffer.alloc(0);
+
+  const inputSamples = Math.floor(buffer.length / 2);
+  if (!inputSamples) return Buffer.alloc(0);
+
+  const outputSamples = Math.max(1, Math.round(inputSamples * targetRate / sourceRate));
+  const output = Buffer.alloc(outputSamples * 2);
+  for (let index = 0; index < outputSamples; index++) {
+    const sourceIndex = index * sourceRate / targetRate;
+    const lowerIndex = Math.min(inputSamples - 1, Math.floor(sourceIndex));
+    const upperIndex = Math.min(inputSamples - 1, lowerIndex + 1);
+    const ratio = sourceIndex - lowerIndex;
+    const lower = buffer.readInt16LE(lowerIndex * 2);
+    const upper = buffer.readInt16LE(upperIndex * 2);
+    const sample = Math.round(lower + (upper - lower) * ratio);
+    output.writeInt16LE(clampPcm16(sample), index * 2);
+  }
+  return output;
+}
+
+function clampPcm16(value) {
+  return Math.max(-32768, Math.min(32767, value));
 }
 
 module.exports = { createSarvamLive };

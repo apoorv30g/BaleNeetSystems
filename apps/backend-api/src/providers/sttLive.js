@@ -10,7 +10,7 @@ function createLiveStt({ leadLanguage, onTranscript, onOpen, onClose, onStatus, 
   const fallbackProvider = normalizeProvider(process.env.STT_FALLBACK_PROVIDER || DEFAULT_FALLBACK);
   const replayLimitBytes = Number(process.env.STT_FALLBACK_REPLAY_BYTES || 96000);
   const primaryOpenTimeoutMs = Number(process.env.STT_PRIMARY_OPEN_TIMEOUT_MS || 3500);
-  const primaryNormalCloseReconnects = Number(process.env.STT_PRIMARY_NORMAL_CLOSE_RECONNECTS || 20);
+  const primaryNormalCloseReconnects = Number(process.env.STT_PRIMARY_NORMAL_CLOSE_RECONNECTS || 3);
   const primaryReconnectDelayMs = Number(process.env.STT_PRIMARY_RECONNECT_DELAY_MS || 250);
   const recentAudio = [];
   let recentBytes = 0;
@@ -195,7 +195,8 @@ function sttLanguageForProvider(provider, language) {
   const value = String(language || "").toLowerCase();
   if (provider === "deepgram") {
     if (value.includes("english")) return "en";
-    if (value.includes("hindi") || value.includes("hinglish")) return "hi";
+    if (value.includes("hinglish")) return process.env.DEEPGRAM_LANGUAGE || "multi";
+    if (value.includes("hindi")) return "hi";
     return process.env.DEEPGRAM_LANGUAGE || "multi";
   }
 
