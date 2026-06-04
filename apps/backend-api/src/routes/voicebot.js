@@ -12,9 +12,14 @@ const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, main L
 const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Okay.|Got it.|Sure.|Haan ji.|Theek hai.|Samjha.");
 const FAST_ACK_TEXT = FAST_ACK_TEXTS[0] || "Haan ji.";
 const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?";
+const NO_SPEECH_PROMPT_TEXT = process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXT || "Hello, are you able to hear me? Main line par hoon.";
+const NO_SPEECH_GOODBYE_TEXT = process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT || "I could not hear you, so I am ending this call. Thank you.";
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
 const FAST_ACK_ENABLED = process.env.VOICEBOT_FAST_ACK_ENABLED !== "false";
+const NO_SPEECH_TIMEOUT_ENABLED = process.env.VOICEBOT_NO_SPEECH_TIMEOUT_ENABLED !== "false";
+const NO_SPEECH_PROMPT_MS = Number(process.env.VOICEBOT_NO_SPEECH_PROMPT_MS || 9000);
+const NO_SPEECH_END_MS = Number(process.env.VOICEBOT_NO_SPEECH_END_MS || 22000);
 const MIN_TRANSCRIPT_CONFIDENCE = Number(process.env.VOICEBOT_MIN_TRANSCRIPT_CONFIDENCE || 0.62);
 const LOW_CONFIDENCE_MAX_WORDS = Number(process.env.VOICEBOT_LOW_CONFIDENCE_MAX_WORDS || 3);
 const VOICEBOT_MEDIA_VERSION = "2026-06-03-first-media-3200-seq-v2";
@@ -28,6 +33,8 @@ function attachVoicebot(server) {
     prewarmAudio(ackText).catch(err => logger.warn("voicebot_ack_prewarm_failed", { error: err.message, ackText }));
   }
   prewarmAudio(FAST_CLARIFY_TEXT).catch(err => logger.warn("voicebot_clarify_prewarm_failed", { error: err.message }));
+  prewarmAudio(NO_SPEECH_PROMPT_TEXT).catch(err => logger.warn("voicebot_no_speech_prompt_prewarm_failed", { error: err.message }));
+  prewarmAudio(NO_SPEECH_GOODBYE_TEXT).catch(err => logger.warn("voicebot_no_speech_goodbye_prewarm_failed", { error: err.message }));
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
@@ -71,6 +78,8 @@ function attachVoicebot(server) {
       outboundChunk: 1,
       userTurns: 0,
       introTimer: null,
+      noSpeechPromptTimer: null,
+      noSpeechEndTimer: null,
       introStarted: false,
       startedAt: Date.now()
     };
@@ -86,6 +95,7 @@ function attachVoicebot(server) {
     ws.on("close", (code, reason) => {
       session.closed = true;
       if (session.introTimer) clearTimeout(session.introTimer);
+      clearNoSpeechTimers(session);
       session.stt?.close();
       logger.info("voicebot_closed", {
         leadId: session.leadId,
@@ -353,6 +363,7 @@ async function speakIntro(ws, session) {
   if (session.callId) await addTranscript(session.callId, "assistant", text);
 
   await speakText(ws, session, text, "intro_played");
+  scheduleNoSpeechCheck(ws, session, "after_intro");
 }
 
 function startStt(ws, session) {
@@ -370,7 +381,9 @@ function startStt(ws, session) {
 async function handleTranscript(ws, session, event) {
   if (!event.isFinal && !event.speechFinal) return;
   const text = event.transcript.trim();
-  if (!text || session.speaking) return;
+  if (!text) return;
+  clearNoSpeechTimers(session);
+  if (session.speaking) return;
   const turnStartedAt = Date.now();
   await logVoicebotEvent(session, "transcript_final", {
     text,
@@ -397,6 +410,7 @@ async function handleTranscript(ws, session, event) {
       );
     }
     await speakText(ws, session, FAST_CLARIFY_TEXT, "clarify_low_confidence");
+    scheduleNoSpeechCheck(ws, session, "after_clarify");
     return;
   }
 
@@ -451,6 +465,7 @@ async function handleTranscript(ws, session, event) {
   }
 
   await speakText(ws, session, reply, "reply_played");
+  scheduleNoSpeechCheck(ws, session, "after_reply");
 }
 
 async function safeGenerateReply(session, args) {
@@ -478,6 +493,42 @@ function pickAckText(session) {
   if (!FAST_ACK_TEXTS.length) return "";
   const index = Math.max((session.userTurns || 1) - 1, 0) % FAST_ACK_TEXTS.length;
   return FAST_ACK_TEXTS[index];
+}
+
+function scheduleNoSpeechCheck(ws, session, stage) {
+  clearNoSpeechTimers(session);
+  if (!NO_SPEECH_TIMEOUT_ENABLED || session.closed || ws.readyState !== ws.OPEN) return;
+
+  session.noSpeechPromptTimer = setTimeout(() => {
+    session.noSpeechPromptTimer = null;
+    if (session.closed || ws.readyState !== ws.OPEN || session.speaking) return;
+    logVoicebotEvent(session, "no_speech_prompt_started", { stage, delayMs: NO_SPEECH_PROMPT_MS }).catch(() => {});
+    speakText(ws, session, NO_SPEECH_PROMPT_TEXT, "no_speech_prompt").catch(err => {
+      logger.warn("voicebot_no_speech_prompt_failed", { error: err.message, callId: session.callId });
+    });
+  }, NO_SPEECH_PROMPT_MS);
+
+  session.noSpeechEndTimer = setTimeout(() => {
+    session.noSpeechEndTimer = null;
+    if (session.closed || ws.readyState !== ws.OPEN) return;
+    logVoicebotEvent(session, "no_speech_timeout", { stage, delayMs: NO_SPEECH_END_MS }).catch(() => {});
+    speakText(ws, session, NO_SPEECH_GOODBYE_TEXT, "no_speech_goodbye")
+      .catch(err => logger.warn("voicebot_no_speech_goodbye_failed", { error: err.message, callId: session.callId }))
+      .finally(() => {
+        if (!session.closed && ws.readyState === ws.OPEN) ws.close();
+      });
+  }, NO_SPEECH_END_MS);
+}
+
+function clearNoSpeechTimers(session) {
+  if (session.noSpeechPromptTimer) {
+    clearTimeout(session.noSpeechPromptTimer);
+    session.noSpeechPromptTimer = null;
+  }
+  if (session.noSpeechEndTimer) {
+    clearTimeout(session.noSpeechEndTimer);
+    session.noSpeechEndTimer = null;
+  }
 }
 
 function isLikelyMisheardTranscript(text, event) {
