@@ -13,10 +13,10 @@ const OUTCOMES = [
 function inferOutcome(message) {
   const text = normalizeForIntent(message);
   if (isOptOut(message)) return "OPTED_OUT";
+  if (/(wrong number|galat number|not my number|not my phone|गलत नंबर|मेरा नंबर नहीं|मेरा नंबर नही|मेरे लिए नहीं|मेरे लिए नही)/.test(text)) return "WRONG_NUMBER";
   if (/(paid|payment done|already paid|kar diya|ho gaya|भुगतान हो गया|पेमेंट कर दिया|पेमेंट हो गया)/.test(text)) return "PAID";
-  if (/(promise|will pay|kal pay|tomorrow|pay later|date|agle hafte|कल पे|कल कर दूंगा|कल कर दूंगी|बाद में पे|अगले हफ्ते)/.test(text)) return "PROMISE_TO_PAY";
-  if (/(call back|callback|later|busy|baad mein|बाद में|व्यस्त|बिजी|अभी नहीं)/.test(text)) return "CALLBACK";
-  if (/(wrong number|galat number|not my number|गलत नंबर|मेरा नंबर नहीं)/.test(text)) return "WRONG_NUMBER";
+  if (/(call back|callback|call me|call later|phone later|busy|driving|in a meeting|meeting mein|baad mein call|kal call|tomorrow call|बाद में कॉल|कल कॉल|व्यस्त|बिजी|अभी नहीं|ड्राइव|गाड़ी चला|मीटिंग)/.test(text)) return "CALLBACK";
+  if (/(promise|will pay|pay tomorrow|tomorrow pay|kal pay|pay later|pay on|pay by|payment tomorrow|agle hafte pay|कल पे|कल pay|कल payment|कल कर दूंगा|कल कर दूंगी|बाद में पे|अगले हफ्ते pay|अगले हफ्ते पे)/.test(text)) return "PROMISE_TO_PAY";
   if (/(dispute|issue|problem|wrong amount|not correct|समस्या|दिक्कत|गलत अमाउंट|गलत राशि)/.test(text)) return "DISPUTE";
   if (isDecline(message) || isGoodbye(message)) return "NOT_INTERESTED";
   if (/(yes|haan|han|interested|bhej|send|continue|pay|payment|हाँ|हा|ठीक|भेज|जारी|कर दीजिए|कर दीजिये)/.test(text)) return "INTERESTED";
@@ -58,13 +58,16 @@ function isOptOut(message) {
 }
 
 function isTerminalIntent(message) {
-  return isOptOut(message) || isGoodbye(message) || isDecline(message) || inferOutcome(message) === "CALLBACK";
+  return isOptOut(message)
+    || isGoodbye(message)
+    || isDecline(message)
+    || ["CALLBACK", "WRONG_NUMBER", "PAID", "PROMISE_TO_PAY"].includes(inferOutcome(message));
 }
 
 function terminalOutcome(message) {
   if (isOptOut(message)) return "OPTED_OUT";
   const outcome = inferOutcome(message);
-  if (["CALLBACK", "WRONG_NUMBER", "NOT_INTERESTED"].includes(outcome)) return outcome;
+  if (["CALLBACK", "WRONG_NUMBER", "PAID", "PROMISE_TO_PAY", "NOT_INTERESTED"].includes(outcome)) return outcome;
   if (isGoodbye(message) || isDecline(message)) return "NOT_INTERESTED";
   return "IN_PROGRESS";
 }

@@ -32,6 +32,26 @@ test("Hindi link missing is not terminal", () => {
   assert.equal(isTerminalIntent(message), false);
 });
 
+test("due-date question is not treated as promise to pay", () => {
+  const message = "When is my due date?";
+  assert.equal(inferOutcome(message), "IN_PROGRESS");
+  assert.equal(isTerminalIntent(message), false);
+});
+
+test("callback and wrong-number requests are terminal", () => {
+  assert.equal(inferOutcome("I am driving, call me tomorrow"), "CALLBACK");
+  assert.equal(isTerminalIntent("I am driving, call me tomorrow"), true);
+  assert.equal(terminalOutcome("wrong number"), "WRONG_NUMBER");
+  assert.equal(isTerminalIntent("wrong number"), true);
+});
+
+test("paid and promise-to-pay responses are terminal", () => {
+  assert.equal(terminalOutcome("I already paid"), "PAID");
+  assert.equal(isTerminalIntent("I already paid"), true);
+  assert.equal(terminalOutcome("I will pay tomorrow"), "PROMISE_TO_PAY");
+  assert.equal(isTerminalIntent("I will pay tomorrow"), true);
+});
+
 test("classifyConversation summarizes the outcome", () => {
   const result = classifyConversation({
     userMessage: "I will pay tomorrow",

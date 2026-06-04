@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { _test } = require("../src/routes/voicebot");
 
-function session(language = "Hinglish", overrides = {}) {
+function session(language = "Hinglish", overrides = {}, sessionOverrides = {}) {
   return {
     preferredLanguage: language,
     tenantId: "tenant",
@@ -14,7 +14,8 @@ function session(language = "Hinglish", overrides = {}) {
       loan_amount: null,
       language,
       ...overrides
-    }
+    },
+    ...sessionOverrides
   };
 }
 
@@ -40,4 +41,87 @@ test("voicebot answers fee and charge questions safely", () => {
   const reply = _test.buildScriptedReply(session("English"), "Any processing fee or hidden charges?");
   assert.match(reply, /shown clearly/i);
   assert.match(reply, /never share OTP/i);
+});
+
+test("voicebot explains identity without asking sensitive details", () => {
+  const reply = _test.buildScriptedReply(session(), "कौन बोल रहा है?");
+  assert.match(reply, /लोन कनेक्ट/);
+  assert.match(reply, /ओ टी पी/);
+});
+
+test("voicebot explains where the number came from", () => {
+  const reply = _test.buildScriptedReply(session("English"), "Where did you get my number?");
+  assert.match(reply, /loan enquiry|app registration/i);
+});
+
+test("voicebot handles link not opening", () => {
+  const reply = _test.buildScriptedReply(session("English", {}, { tenantId: null }), "The link is not opening");
+  assert.match(reply, /sending the secure link again/i);
+  assert.match(reply, /app support/i);
+});
+
+test("voicebot sends details without implying whatsapp support", () => {
+  const reply = _test.buildScriptedReply(session("English", {}, { tenantId: null }), "Send details on WhatsApp");
+  assert.match(reply, /SMS/i);
+  assert.match(reply, /before accepting/i);
+});
+
+test("voicebot answers pending approval questions", () => {
+  const reply = _test.buildScriptedReply(session("English"), "Why am I not approved?");
+  assert.match(reply, /incomplete|pending/i);
+});
+
+test("voicebot handles forgot login safely", () => {
+  const reply = _test.buildScriptedReply(session(), "मुझे login password भूल गया");
+  assert.match(reply, /mobile number/);
+  assert.match(reply, /ओ टी पी/);
+});
+
+test("voicebot answers disbursal timing without overpromising", () => {
+  const reply = _test.buildScriptedReply(session("English"), "Money kab account mein aayega?");
+  assert.match(reply, /depends on final approval/i);
+});
+
+test("voicebot explains CIBIL impact", () => {
+  const reply = _test.buildScriptedReply(session(), "Will this affect my CIBIL?");
+  assert.match(reply, /सिबिल/);
+});
+
+test("voicebot allows review and rejection", () => {
+  const reply = _test.buildScriptedReply(session("English"), "Can I reject after seeing offer?");
+  assert.match(reply, /does not force/i);
+});
+
+test("voicebot answers due date from lead data", () => {
+  const reply = _test.buildScriptedReply(session("English", {
+    playbook_type: "SOFT_PAYMENT_REMINDER",
+    due_date: "2026-06-10"
+  }), "When is my due date?");
+  assert.match(reply, /2026-06-10/);
+});
+
+test("voicebot handles payment failed", () => {
+  const reply = _test.buildScriptedReply(session("English", {}, { tenantId: null }), "Payment failed but money debited");
+  assert.match(reply, /money was debited/i);
+  assert.match(reply, /app support/i);
+});
+
+test("voicebot handles partial payment questions", () => {
+  const reply = _test.buildScriptedReply(session(), "Can I pay partially?");
+  assert.match(reply, /Partial payment|Partial/i);
+});
+
+test("voicebot handles penalty questions", () => {
+  const reply = _test.buildScriptedReply(session("English"), "How much penalty is added?");
+  assert.match(reply, /late fee|penalty/i);
+});
+
+test("voicebot handles hardship and restructuring", () => {
+  const reply = _test.buildScriptedReply(session(), "मेरी नौकरी चली गई, cannot pay full amount");
+  assert.match(reply, /restructuring|easy EMI/i);
+});
+
+test("voicebot handles no human transfer", () => {
+  const reply = _test.buildScriptedReply(session("English"), "Connect me to agent");
+  assert.match(reply, /no human transfer/i);
 });

@@ -627,7 +627,7 @@ async function processUserTranscript(ws, session, event) {
   if (isTerminalIntent(text)) {
     session.ending = true;
     const outcome = terminalOutcome(text);
-    const closingText = terminalClosingText(outcome);
+    const closingText = terminalClosingText(outcome, session);
     if (session.callId) {
       await addTranscript(session.callId, "assistant", closingText);
       const classification = classifyConversation({
@@ -698,9 +698,36 @@ function buildScriptedReply(session, text) {
     return "ठीक है, मैं सुरक्षित link दोबारा भेज रहा हूँ। कृपया उसे खोलकर दो मिनट में final offer check कर लीजिए।";
   }
 
+  if (mentionsLinkProblem(normalized)) {
+    queueLeadLink(session, "link_problem");
+    if (english) return "I am sending the secure link again. Please open it in mobile data or the app; if it still fails, use app support.";
+    return "मैं सुरक्षित link दोबारा भेज रहा हूँ। उसे mobile data या app में खोलिए; फिर भी दिक्कत हो तो app support use कीजिए।";
+  }
+
+  if (asksSendDetails(normalized)) {
+    queueLeadLink(session, "send_details");
+    if (english) return "Sure, I am sending the secure link by SMS. Please review the details there before accepting anything.";
+    return "ठीक है, मैं सुरक्षित link SMS पर भेज रहा हूँ। कुछ accept करने से पहले details वहीं देख लीजिए।";
+  }
+
   if (mentionsWrongAnswer(normalized)) {
     if (english) return "Sorry, I misunderstood. Tell me the exact point: interest rate, EMI, amount, fees, or link?";
     return "माफ़ कीजिए, मैं गलत समझा। आप क्या जानना चाहते हैं: ब्याज दर, ई एम आई, amount, fees या link?";
+  }
+
+  if (asksIdentity(normalized)) {
+    if (english) return "I am LoanConnect's AI assistant, calling about your loan eligibility or offer. I will not ask for OTP or passwords.";
+    return "मैं लोन कनेक्ट का AI assistant हूँ, आपकी loan eligibility या offer के बारे में call कर रहा हूँ। मैं ओ टी पी या password नहीं पूछूँगा।";
+  }
+
+  if (asksDataSource(normalized)) {
+    if (english) return "This number is linked to a loan enquiry or app registration record. If that is wrong, tell me and I will mark it.";
+    return "यह number loan enquiry या app registration record से जुड़ा दिख रहा है। अगर यह गलत है, बताइए, मैं mark कर दूँगा।";
+  }
+
+  if (asksHumanSupport(normalized)) {
+    if (english) return "There is no human transfer on this call. I can note the issue, and support is available in the app.";
+    return "इस call पर human transfer नहीं है। मैं issue note कर सकता हूँ, और support app में available है।";
   }
 
   if (mentionsLinkReceived(normalized)) {
@@ -722,9 +749,25 @@ function buildScriptedReply(session, text) {
     return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। कृपया उसे खोलकर आगे का step पूरा कर लीजिए।";
   }
 
+  if (asksForgotLogin(normalized)) {
+    queueLeadLink(session, "forgot_login");
+    if (english) return "I am sending the app link again. Login with your mobile number inside the app, but never share the OTP with me.";
+    return "मैं app link फिर भेज रहा हूँ। app में अपने mobile number से login कीजिए, लेकिन ओ टी पी मुझे कभी मत बताइए।";
+  }
+
+  if (asksSafety(normalized) || asksOtpOrSensitiveDetails(normalized)) {
+    if (english) return "Yes, use only the secure app link. I will never ask for OTP, PIN, password, Aadhaar OTP, or card details.";
+    return "हाँ, सिर्फ सुरक्षित app link use कीजिए। मैं ओ टी पी, PIN, password, Aadhaar OTP या card details कभी नहीं पूछूँगा।";
+  }
+
   if (asksInterestRate(normalized)) {
     if (english) return "The exact interest rate appears on the final offer screen after eligibility. You can reject it if it does not suit you.";
     return "ब्याज दर फ़ाइनल ऑफर स्क्रीन पर एलिजिबिलिटी के बाद दिखेगी। पसंद न हो तो आप मना कर सकते हैं।";
+  }
+
+  if (asksPenalty(normalized)) {
+    if (english) return "Any late fee or penalty is shown on the payment screen. Paying as soon as possible helps avoid extra charges.";
+    return "Late fee या penalty payment screen पर साफ दिखेगी। जल्दी payment करने से extra charges कम हो सकते हैं।";
   }
 
   if (asksFeesOrCharges(normalized)) {
@@ -737,14 +780,97 @@ function buildScriptedReply(session, text) {
     return "ई एम आई और tenure options ऐप में final offer के साथ दिखेंगे। सुरक्षित link खोलिए, मैं line पर हूँ।";
   }
 
+  if (asksChangeAmount(normalized)) {
+    if (english) return "You can choose a lower amount if the app allows it. A higher amount depends on final eligibility.";
+    return "कम amount app में allowed हो तो चुन सकते हैं। ज़्यादा amount final eligibility पर depend करेगा।";
+  }
+
   if (asksDocuments(normalized)) {
     if (english) return "The app will show the exact documents needed. Usually it is basic KYC and income details, if required.";
     return "ऐप exact documents दिखाएगा। आम तौर पर basic KYC और income details लग सकती हैं।";
   }
 
-  if (asksSafety(normalized)) {
-    if (english) return "Yes, use only the secure app link. I will never ask for OTP, PIN, password, or card details on this call.";
-    return "हाँ, सिर्फ सुरक्षित ऐप link use कीजिए। मैं call पर ओ टी पी, PIN, password या card details नहीं पूछूँगा।";
+  if (asksApprovalStatus(normalized)) {
+    if (english) return "Your eligibility looks incomplete or pending. Please open the secure link to see what is pending and the final offer.";
+    return "आपकी eligibility incomplete या pending दिख रही है। क्या pending है और final offer देखने के लिए सुरक्षित link खोलिए।";
+  }
+
+  if (asksEligibilityCriteria(normalized)) {
+    if (english) return "Eligibility depends on your profile, income details, and bureau checks. The app will show the final result before you accept.";
+    return "Eligibility profile, income details और bureau checks पर depend करती है। Accept करने से पहले app final result दिखाएगा।";
+  }
+
+  if (asksProcessAfterDocs(normalized)) {
+    if (english) return "After documents are checked, the app shows your final offer. You can review it before accepting anything.";
+    return "Documents check होने के बाद app final offer दिखाएगा। कुछ accept करने से पहले आप उसे review कर सकते हैं।";
+  }
+
+  if (asksDisbursal(normalized)) {
+    if (english) return "Disbursal timing depends on final approval and bank processing. The app will show the next step after acceptance.";
+    return "Disbursal final approval और bank processing पर depend करता है। Accept करने के बाद app next step दिखाएगा।";
+  }
+
+  if (asksCibil(normalized)) {
+    if (english) return "Repaying on time helps protect your CIBIL record. Overdue payment can negatively affect it.";
+    return "समय पर payment करने से आपका सिबिल record protect रहता है। Overdue payment से negative impact हो सकता है।";
+  }
+
+  if (asksCommitmentOrRejection(normalized)) {
+    if (english) return "Checking the offer does not force you to take it. You can review the final terms and reject if they do not suit you.";
+    return "Offer check करने से loan लेना compulsory नहीं है। Final terms देखकर पसंद न हो तो आप मना कर सकते हैं।";
+  }
+
+  if (asksOfferValidity(normalized)) {
+    const dueText = lead.due_date ? ` It is currently marked until ${lead.due_date}.` : "";
+    if (english) return `Offer validity is shown in the app before acceptance.${dueText} Please check it once now.`;
+    return lead.due_date
+      ? `Offer validity app में दिखेगी। अभी record में ${lead.due_date} तक दिख रहा है, एक बार app में confirm कर लीजिए।`
+      : "Offer validity app में accept करने से पहले साफ दिखेगी। कृपया एक बार अभी check कर लीजिए।";
+  }
+
+  if (asksDueDate(normalized)) {
+    if (lead.due_date) {
+      if (english) return `Your due date is showing as ${lead.due_date}. Please confirm the amount on the secure payment screen.`;
+      return `आपकी due date ${lead.due_date} दिख रही है। Amount सुरक्षित payment screen पर confirm कर लीजिए।`;
+    }
+    if (english) return "The exact due date is shown on the payment screen in the app. Please open the secure link to confirm it.";
+    return "Exact due date app की payment screen पर दिखेगी। Confirm करने के लिए सुरक्षित link खोलिए।";
+  }
+
+  if (asksPayAmount(normalized)) {
+    const payAmount = lead.loan_amount || lead.offer_amount || "";
+    if (payAmount) {
+      if (english) return `The payable amount is showing around ${formatLoanAmount(payAmount)}. Please confirm the exact amount on the payment screen.`;
+      return `Payable amount लगभग ${formatLoanAmount(payAmount)} दिख रहा है। Exact amount payment screen पर confirm कर लीजिए।`;
+    }
+    if (english) return "The exact payable amount is shown on the secure payment screen before you pay.";
+    return "Exact payable amount payment करने से पहले सुरक्षित payment screen पर दिखेगा।";
+  }
+
+  if (mentionsPaymentFailed(normalized)) {
+    queueLeadLink(session, "payment_failed");
+    if (english) return "If payment failed, please retry only from the secure link. If money was debited, check app support before paying again.";
+    return "Payment failed हो तो सिर्फ secure link से retry कीजिए। पैसा debit हुआ हो तो दोबारा pay करने से पहले app support check कीजिए।";
+  }
+
+  if (asksPartialPayment(normalized)) {
+    if (english) return "Partial payment options, if available, will show on the payment screen. Full payment helps avoid extra charges.";
+    return "Partial payment option available होगा तो payment screen पर दिखेगा। Full payment से extra charges avoid होते हैं।";
+  }
+
+  if (asksEarlyPayment(normalized)) {
+    if (english) return "Early payment can reduce interest where applicable and helps maintain a good repayment record.";
+    return "Early payment से जहाँ applicable हो interest कम हो सकता है, और repayment record अच्छा रहता है।";
+  }
+
+  if (asksRestructureOrHardship(normalized)) {
+    if (english) return "I understand. Please check restructuring or easy EMI options in the app. I will note that you need help.";
+    return "समझ गया। App में restructuring या easy EMI options check कीजिए। मैं note कर रहा हूँ कि आपको help चाहिए।";
+  }
+
+  if (asksConfused(normalized)) {
+    if (english) return "No problem. I will keep it simple: open the secure link, check the final details, and accept only if you are comfortable.";
+    return "कोई बात नहीं। Simple है: secure link खोलिए, final details देखिए, और comfortable हों तभी accept कीजिए।";
   }
 
   if (asksAmount(normalized)) {
@@ -809,10 +935,13 @@ function queueLeadLink(session, reason) {
     .catch(err => logVoicebotEvent(session, "lead_link_failed", { reason, error: err.message }).catch(() => {}));
 }
 
-function terminalClosingText(outcome) {
-  if (outcome === "CALLBACK") return "ठीक है, हम बाद में संपर्क करेंगे। धन्यवाद।";
-  if (outcome === "WRONG_NUMBER") return "माफ कीजिए, मैं इस number को wrong number mark कर रहा हूँ। धन्यवाद।";
-  if (outcome === "OPTED_OUT") return "समझ गया। हम आपको दोबारा call नहीं करेंगे। धन्यवाद।";
+function terminalClosingText(outcome, session = {}) {
+  const english = isEnglishSession(session);
+  if (outcome === "PAID") return english ? "Thanks, I have noted that you already paid. Please keep the payment receipt handy." : "धन्यवाद, मैं note कर रहा हूँ कि आपने payment कर दिया है। Receipt संभाल कर रखिए।";
+  if (outcome === "PROMISE_TO_PAY") return english ? "Thanks, I have noted your payment commitment. Please pay from the secure link before the time you mentioned." : "धन्यवाद, मैं आपका payment commitment note कर रहा हूँ। बताए हुए समय से पहले secure link से payment कर दीजिए।";
+  if (outcome === "CALLBACK") return english ? "Sure, we will contact you later. Thank you." : "ठीक है, हम बाद में संपर्क करेंगे। धन्यवाद।";
+  if (outcome === "WRONG_NUMBER") return english ? "Sorry about that, I am marking this as a wrong number. Thank you." : "माफ कीजिए, मैं इस number को wrong number mark कर रहा हूँ। धन्यवाद।";
+  if (outcome === "OPTED_OUT") return english ? "Understood. We will not call you again. Thank you." : "समझ गया। हम आपको दोबारा call नहीं करेंगे। धन्यवाद।";
   return "ठीक है, मैं call यहीं close कर रहा हूँ। धन्यवाद।";
 }
 
@@ -851,8 +980,28 @@ function mentionsMissingLink(text) {
   return /(link nahi|link nahin|link नहीं|लिंक नहीं|लिंक नही|लिंक नहीं है|लिंक नही है|नहीं है मेरे पास|नही है मेरे पास|mere paas nahi|mere paas nahin)/.test(text);
 }
 
+function mentionsLinkProblem(text) {
+  return /(link.*(open nahi|open nahin|not opening|nahi khul|nahin khul|error|expired|expire|काम नहीं|work nahi)|लिंक.*(नहीं खुल|नही खुल|error|एरर|expire|expired|काम नहीं|काम नही)|app.*(open nahi|not opening|nahi khul|error)|ऐप.*(नहीं खुल|नही खुल|error|एरर))/.test(text);
+}
+
+function asksSendDetails(text) {
+  return /(send details|share details|details bhej|details send|whatsapp|sms|message kar|मेसेज|मैसेज|डिटेल भेज|details भेज|व्हाट्सऐप|वॉट्सऐप|एस एम एस|sms भेज)/.test(text);
+}
+
 function mentionsWrongAnswer(text) {
   return /(ye nahi|ye nahin|यह नहीं|ये नहीं|यह नही|ये नही|not asked|did not ask|wrong answer|गलत जवाब|गलत समझ|nahi pucha|nahin pucha|नहीं पूछा|नही पूछा)/.test(text);
+}
+
+function asksIdentity(text) {
+  return /(who are you|who is this|which company|company name|कौन बोल|कौन हो|किस company|किस कंपनी|कंपनी का नाम|company ka naam|कहाँ से बोल|kahan se bol|loanconnect kaun|लोन कनेक्ट कौन)/.test(text);
+}
+
+function asksDataSource(text) {
+  return /(got my number|where.*number|number.*kaha|number.*कहाँ|मेरा number|मेरे number|मेरा नंबर|मेरे नंबर|data kaha|data कहाँ|कहाँ से मिला|कहा से मिला)/.test(text);
+}
+
+function asksHumanSupport(text) {
+  return /(agent|human|person|representative|customer care|support se baat|talk to.*support|कस्टमर केयर|support से बात|सपोर्ट से बात|किसी आदमी|इंसान से बात|agent से बात)/.test(text);
 }
 
 function mentionsLinkReceived(text) {
@@ -876,8 +1025,16 @@ function asksFeesOrCharges(text) {
   return /(processing fee|process fee|fees|fee|charge|charges|hidden charge|penalty|late fee|प्रोसेसिंग|फीस|चार्ज|शुल्क|पेनल्टी|जुर्माना|लेट fee|लेट फीस)/.test(text);
 }
 
+function asksPenalty(text) {
+  return /(penalty|late fee|late charge|everyday charge|delay charge|पेनल्टी|जुर्माना|लेट fee|लेट फीस|late fees|देर से|देरी)/.test(text);
+}
+
 function asksEmiOrTenure(text) {
   return /(emi|e m i|installment|instalment|tenure|month|months|किस्त|किश्त|ई एम आई|ईएमआई|महीने|कितने महीने|टेन्योर)/.test(text);
+}
+
+function asksChangeAmount(text) {
+  return /(reduce.*amount|lower amount|increase.*amount|higher amount|amount kam|amount badh|कम amount|कम अमाउंट|ज्यादा amount|ज़्यादा amount|अमाउंट कम|अमाउंट बढ़|राशि कम|राशि बढ़)/.test(text);
 }
 
 function asksDocuments(text) {
@@ -886,6 +1043,70 @@ function asksDocuments(text) {
 
 function asksSafety(text) {
   return /(safe|secure|genuine|real|fraud|scam|trust|सुरक्षित|सेफ|सच में|असली|फ्रॉड|धोखा|भरोसा)/.test(text);
+}
+
+function asksOtpOrSensitiveDetails(text) {
+  return /(otp|o t p|pin|password|card detail|aadhaar otp|aadhar otp|ओ टी पी|ओटीपी|पिन|पासवर्ड|card details|कार्ड details|आधार ओटीपी|आधार ओ टी पी)/.test(text);
+}
+
+function asksForgotLogin(text) {
+  return /(forgot.*login|login.*forgot|login nahi|login nahin|password bhool|password भूल|login भूल|पासवर्ड भूल|login नहीं|login नही|लॉगिन नहीं|लॉगिन नही|लॉगिन भूल)/.test(text);
+}
+
+function asksApprovalStatus(text) {
+  return /(why.*not approved|not approved|approval status|pending.*approval|what.*pending|kyun approve|approve क्यों|approved नहीं|approved नही|क्यों approve|pending क्या|क्या pending|क्या बचा|document pending|kyc pending)/.test(text);
+}
+
+function asksEligibilityCriteria(text) {
+  return /(minimum income|salary required|income required|eligible kaise|eligibility criteria|self employed|business.*loan|salary slip required|कितनी income|income चाहिए|salary चाहिए|self employed|business वाले|eligible कैसे|eligibility कैसे)/.test(text);
+}
+
+function asksProcessAfterDocs(text) {
+  return /(after upload|after documents|upload ke baad|document ke baad|kyc ke baad|upload करने के बाद|document के बाद|documents के बाद|kyc के बाद|आगे क्या)/.test(text);
+}
+
+function asksDisbursal(text) {
+  return /(disbursal|disbursement|money.*account|account.*money|kab milega|कब मिलेगा|पैसा कब|account में कब|खाते में कब|bank में कब|डिस्बर्स)/.test(text);
+}
+
+function asksCibil(text) {
+  return /(cibil|credit score|bureau|सिबिल|क्रेडिट score|क्रेडिट स्कोर|ब्यूरो)/.test(text);
+}
+
+function asksCommitmentOrRejection(text) {
+  return /(commitment|compulsory|mandatory|reject|cancel|can i say no|without commitment|force|reject kar|cancel kar|compulsory है|ज़रूरी है|जरूरी है|मना कर|reject कर|cancel कर|loan lena padega|लेना पड़ेगा)/.test(text);
+}
+
+function asksOfferValidity(text) {
+  return /(valid|validity|expire|expiry|kab tak|कब तक|valid कब|expire कब|expiry कब|offer कब तक|ऑफर कब तक|offer expire)/.test(text);
+}
+
+function asksDueDate(text) {
+  return /(due date|payment date|last date|pay date|कब payment|payment कब|पेमेंट कब|due कब|due date|ड्यू date|ड्यू डेट|last date|आखिरी date|आखिरी तारीख)/.test(text);
+}
+
+function asksPayAmount(text) {
+  return /(how much.*pay|pay कितना|pay kitna|payment amount|payable amount|कितना pay|कितना पे|कितनी payment|कितना payment|पेमेंट amount|payable)/.test(text);
+}
+
+function mentionsPaymentFailed(text) {
+  return /(payment failed|payment fail|payment stuck|money debited|amount debited|paid but failed|पेमेंट failed|पेमेंट fail|payment अटक|पेमेंट अटक|पैसा कट|पैसे कट|amount debit|debit हो गया)/.test(text);
+}
+
+function asksPartialPayment(text) {
+  return /(partial payment|part payment|pay partially|half payment|thoda pay|थोड़ा pay|थोड़ा पे|part payment|partial|आधा payment|आधा पे)/.test(text);
+}
+
+function asksEarlyPayment(text) {
+  return /(pay early|early payment|advance payment|prepay|pre payment|jaldi pay|पहले payment|early closure|जल्दी payment|पहले पे|advance में)/.test(text);
+}
+
+function asksRestructureOrHardship(text) {
+  return /(restructur|easy emi|extend|extension|job lost|lost job|no job|salary nahi|cannot pay|can't pay|cant pay|unable to pay|financial problem|पैसे नहीं|पैसे नही|pay नहीं कर|pay नही कर|नौकरी चली|salary नहीं|salary नही|extend कर|extension|easy emi|ईज़ी ई एम आई|रीस्ट्रक्चर)/.test(text);
+}
+
+function asksConfused(text) {
+  return /(samajh nahi|samajh nahin|samajh nahi aaya|understand nahi|understand nahin|confused|clear nahi|समझ नहीं|समझ नही|समझ नहीं आया|समझ नही आया|clear नहीं|क्लियर नहीं)/.test(text);
 }
 
 function asksReason(text) {
