@@ -1,6 +1,7 @@
 const express = require("express");
 const { query } = require("../db/pool");
-const { generateReply } = require("../providers/gemini");
+const { generateReply, llmProviderStatus } = require("../providers/llm");
+const { liveSttProviderStatus } = require("../providers/sttLive");
 const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
 const { transcribeAudioUrl } = require("../providers/deepgram");
@@ -133,7 +134,10 @@ router.get("/exotel/voicebot-health", (req, res) => {
     firstMediaFallbackMs: Number(process.env.VOICEBOT_FIRST_MEDIA_FALLBACK_MS || 350),
     silenceKeepaliveEnabled: process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true",
     introDelayMs: Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0),
+    stt: liveSttProviderStatus(),
+    llm: llmProviderStatus(),
     deepgramConfigured: Boolean(config.ai.deepgramApiKey),
+    geminiConfigured: Boolean(config.ai.geminiApiKey),
     sarvamConfigured: Boolean(config.ai.sarvamApiKey),
     tokenRequired: Boolean(config.voicebotToken)
   });

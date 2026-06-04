@@ -5,7 +5,8 @@ const { redisClient } = require("../queue");
 const config = require("../config");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { getTenantSettings } = require("../services/settings");
-const { generateReply } = require("../providers/gemini");
+const { generateReply, llmProviderStatus } = require("../providers/llm");
+const { liveSttProviderStatus } = require("../providers/sttLive");
 
 const router = express.Router();
 router.use(requireAuth, requireRole("admin"));
@@ -43,6 +44,8 @@ router.get("/overview", async (req, res) => {
       gemini: Boolean(config.ai.geminiApiKey),
       deepgram: Boolean(config.ai.deepgramApiKey),
       sarvam: Boolean(config.ai.sarvamApiKey),
+      stt: liveSttProviderStatus(),
+      llm: llmProviderStatus(),
       serverUrl: Boolean(config.serverUrl),
       frontendUrl: Boolean(config.frontendUrl)
     },
@@ -145,6 +148,7 @@ router.get("/voicebot-events", async (req, res) => {
 
 router.get("/gemini-test", async (req, res) => {
   const startedAt = Date.now();
+  const providerStatus = llmProviderStatus();
   try {
     const reply = await generateReply({
       lead: {
@@ -160,14 +164,18 @@ router.get("/gemini-test", async (req, res) => {
     });
     res.json({
       ok: true,
-      model: config.ai.geminiModel,
+      provider: providerStatus.primary,
+      fallbackProvider: providerStatus.fallback,
+      model: providerStatus.primary === "sarvam" ? providerStatus.sarvamModel : providerStatus.geminiModel,
       elapsedMs: Date.now() - startedAt,
       reply
     });
   } catch (err) {
     res.status(502).json({
       ok: false,
-      model: config.ai.geminiModel,
+      provider: providerStatus.primary,
+      fallbackProvider: providerStatus.fallback,
+      model: providerStatus.primary === "sarvam" ? providerStatus.sarvamModel : providerStatus.geminiModel,
       elapsedMs: Date.now() - startedAt,
       error: err.message
     });

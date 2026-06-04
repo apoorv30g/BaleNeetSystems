@@ -1,9 +1,9 @@
 const { WebSocketServer } = require("ws");
 const { query } = require("../db/pool");
-const { generateReply } = require("../providers/gemini");
+const { generateReply } = require("../providers/llm");
 const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
-const { createDeepgramLive } = require("../providers/deepgramLive");
+const { createLiveStt } = require("../providers/sttLive");
 const { classifyConversation, isOptOut } = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
@@ -384,21 +384,34 @@ async function speakIntro(ws, session) {
 function startStt(ws, session) {
   if (session.stt) return;
 
-  session.stt = createDeepgramLive({
-    language: deepgramLanguage(session.lead?.language),
+  session.stt = createLiveStt({
+    leadLanguage: session.lead?.language,
     onOpen: details => logVoicebotEvent(session, "stt_open", details).catch(() => {}),
     onClose: details => logVoicebotEvent(session, "stt_closed", details).catch(() => {}),
     onStatus: status => {
-      if (["ConnectAttempt", "ReconnectAttempt", "UnexpectedResponse", "SpeechStarted", "UtteranceEnd"].includes(status.type)) {
+      if (status.type === "SpeechStarted") {
+        clearNoSpeechTimers(session);
+      }
+      if ([
+        "ConnectAttempt",
+        "ReconnectAttempt",
+        "UnexpectedResponse",
+        "SpeechStarted",
+        "UtteranceEnd",
+        "FallbackStarted",
+        "ProviderUnavailable",
+        "FallbackUnavailable",
+        "OpenTimeout"
+      ].includes(status.type)) {
         logVoicebotEvent(session, "stt_status", status).catch(() => {});
       }
     },
     onTranscript: event => handleTranscript(ws, session, event).catch(err => {
       logger.error("voicebot_transcript_failed", { error: err.message, callId: session.callId });
     }),
-    onError: err => {
-      logger.warn("voicebot_stt_failed", { error: err.message, callId: session.callId });
-      logVoicebotEvent(session, "stt_error", { error: err.message }).catch(() => {});
+    onError: (err, meta = {}) => {
+      logger.warn("voicebot_stt_failed", { error: err.message, callId: session.callId, provider: meta.provider });
+      logVoicebotEvent(session, "stt_error", { error: err.message, ...meta }).catch(() => {});
     }
   });
 }
@@ -479,6 +492,7 @@ async function processUserTranscript(ws, session, event) {
   const text = event.transcript.trim();
   if (!text) return;
   if (isRecentlyProcessedTranscript(session, text)) return;
+  const sttProvider = liveSttEventProvider(event);
   session.interimStartedAt = 0;
   session.interimCount = 0;
   if (session.speaking) return;
@@ -504,8 +518,8 @@ async function processUserTranscript(ws, session, event) {
     if (session.callId) {
       await query(
         `INSERT INTO call_stt_events (tenant_id, call_id, provider, transcript, confidence, status)
-         VALUES ($1,$2,'deepgram-live',$3,$4,'ignored_low_confidence')`,
-        [session.tenantId, session.callId, text, event.confidence]
+         VALUES ($1,$2,$3,$4,$5,'ignored_low_confidence')`,
+        [session.tenantId, session.callId, sttProvider, text, event.confidence]
       );
     }
     await speakText(ws, session, FAST_CLARIFY_TEXT, "clarify_low_confidence");
@@ -522,8 +536,8 @@ async function processUserTranscript(ws, session, event) {
     await addTranscript(session.callId, "user", text);
     await query(
       `INSERT INTO call_stt_events (tenant_id, call_id, provider, transcript, confidence, status)
-       VALUES ($1,$2,'deepgram-live',$3,$4,'completed')`,
-      [session.tenantId, session.callId, text, event.confidence]
+       VALUES ($1,$2,$3,$4,$5,'completed')`,
+      [session.tenantId, session.callId, sttProvider, text, event.confidence]
     );
   }
   session.userTurns++;
@@ -641,10 +655,16 @@ function clearNoSpeechTimers(session) {
 }
 
 function isLikelyMisheardTranscript(text, event) {
+  if (event.confidence === null || event.confidence === undefined || event.confidence === "") return false;
   const confidence = Number(event.confidence);
   if (!Number.isFinite(confidence) || confidence >= MIN_TRANSCRIPT_CONFIDENCE) return false;
   if (transcriptWordCount(text) > LOW_CONFIDENCE_MAX_WORDS) return false;
   return !isAllowedShortIntent(text);
+}
+
+function liveSttEventProvider(event) {
+  const provider = String(event?.provider || "live-stt").replace(/[^a-z0-9_-]/gi, "").toLowerCase();
+  return provider ? `${provider}-live` : "live-stt";
 }
 
 function transcriptWordCount(text) {
@@ -805,13 +825,6 @@ function sendMediaFrame(ws, session, payload, timestamp) {
       payload
     }
   }));
-}
-
-function deepgramLanguage(language) {
-  const value = String(language || "").toLowerCase();
-  if (value.includes("hindi")) return "hi";
-  if (value.includes("english")) return "en";
-  return process.env.DEEPGRAM_LANGUAGE || "multi";
 }
 
 function pick(obj, paths) {
