@@ -87,10 +87,15 @@ async function runSarvamHealth() {
 function checkStt() {
   const timeoutMs = Number(process.env.SARVAM_PREFLIGHT_STT_TIMEOUT_MS || process.env.SARVAM_PREFLIGHT_TIMEOUT_MS || 2500);
   const params = sarvamSttParams();
+  const sampleRate = Number(process.env.SARVAM_STT_SAMPLE_RATE || 8000);
+  const audioEncoding = process.env.SARVAM_STT_AUDIO_ENCODING || "pcm_s16le";
+  const audioProbeEnabled = envEnabled("SARVAM_PREFLIGHT_STT_AUDIO_PROBE", true);
+  const audioProbeHoldMs = Number(process.env.SARVAM_PREFLIGHT_STT_AUDIO_PROBE_HOLD_MS || 650);
 
   return new Promise(resolve => {
     let done = false;
     const startedAt = Date.now();
+    let probeTimer = null;
     const ws = new WebSocket(`wss://api.sarvam.ai/speech-to-text/ws?${params.toString()}`, {
       headers: { "Api-Subscription-Key": config.ai.sarvamApiKey }
     });
@@ -98,13 +103,29 @@ function checkStt() {
     const timer = setTimeout(() => finish({ ok: false, error: `timeout_${timeoutMs}ms` }), timeoutMs);
 
     ws.on("open", () => {
-      finish({
+      const result = {
         ok: true,
         model: process.env.SARVAM_STT_MODEL || "saaras:v3",
         mode: process.env.SARVAM_STT_MODE || "codemix",
-        sampleRate: Number(process.env.SARVAM_STT_SAMPLE_RATE || 8000),
+        sampleRate,
+        audioProbe: audioProbeEnabled,
         elapsedMs: Date.now() - startedAt
-      });
+      };
+
+      if (!audioProbeEnabled) {
+        finish(result);
+        return;
+      }
+
+      ws.send(JSON.stringify({
+        audio: {
+          data: makePcmProbe(sampleRate).toString("base64"),
+          sample_rate: String(sampleRate),
+          encoding: audioEncoding
+        }
+      }));
+
+      probeTimer = setTimeout(() => finish({ ...result, elapsedMs: Date.now() - startedAt }), audioProbeHoldMs);
     });
 
     ws.on("unexpected-response", (req, res) => {
@@ -126,12 +147,28 @@ function checkStt() {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      if (probeTimer) clearTimeout(probeTimer);
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         ws.close();
       }
       resolve(result);
     }
   });
+}
+
+function makePcmProbe(sampleRate) {
+  const durationMs = Number(process.env.SARVAM_PREFLIGHT_STT_AUDIO_PROBE_MS || 300);
+  const samples = Math.max(160, Math.floor(sampleRate * durationMs / 1000));
+  const audio = Buffer.alloc(samples * 2);
+  const amplitude = Number(process.env.SARVAM_PREFLIGHT_STT_AUDIO_PROBE_AMPLITUDE || 800);
+  const frequency = Number(process.env.SARVAM_PREFLIGHT_STT_AUDIO_PROBE_HZ || 440);
+
+  for (let index = 0; index < samples; index++) {
+    const sample = Math.round(Math.sin(2 * Math.PI * frequency * index / sampleRate) * amplitude);
+    audio.writeInt16LE(sample, index * 2);
+  }
+
+  return audio;
 }
 
 async function checkChat() {

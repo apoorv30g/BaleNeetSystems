@@ -134,7 +134,7 @@ router.get("/exotel/voicebot-health", async (req, res) => {
     wssUrl: `${config.serverUrl.replace(/^http/, "ws")}/webhooks/exotel/voicebot`,
     dynamicUrl: `${config.serverUrl}/webhooks/exotel/voicebot-url`,
     dynamicJsonUrl: `${config.serverUrl}/webhooks/exotel/voicebot-url?format=json`,
-    mediaVersion: "2026-06-03-first-media-3200-seq-v2",
+    mediaVersion: "2026-06-04-audible-preroll-volume-v1",
     chunkBytes: chunkBytes || 3200,
     introStartMode: process.env.VOICEBOT_INTRO_START_MODE || "first_media",
     firstMediaFallbackMs: Number(process.env.VOICEBOT_FIRST_MEDIA_FALLBACK_MS || 350),
@@ -188,15 +188,23 @@ router.get("/exotel/tts-health", async (req, res) => {
   try {
     const speech = await synthesizeSpeech("Namaste, LoanConnect se AI assistant bol raha hoon.");
     let pcmBytes = 0;
+    let pcmStats = null;
     if (speech.mode === "audio") {
-      const pcmBase64 = await toExotelPcmBase64(speech.audioBase64);
-      pcmBytes = Buffer.from(pcmBase64, "base64").length;
+      const sampleRate = Number(process.env.EXOTEL_MEDIA_SAMPLE_RATE || 8000);
+      const pcmBase64 = await toExotelPcmBase64(speech.audioBase64, {
+        sampleRate,
+        volume: Number(process.env.VOICEBOT_TTS_VOLUME || 1.6)
+      });
+      const pcm = Buffer.from(pcmBase64, "base64");
+      pcmBytes = pcm.length;
+      pcmStats = pcm16Stats(pcm);
     }
     res.json({
       ok: speech.mode === "audio",
       mode: speech.mode,
       mimeType: speech.mimeType || null,
-      pcmBytes
+      pcmBytes,
+      pcmStats
     });
   } catch (err) {
     res.status(503).json({ ok: false, error: err.message });
@@ -229,6 +237,24 @@ async function serveAudio(req, res) {
   res.setHeader("Content-Type", audio.mime_type);
   res.setHeader("Cache-Control", "no-store");
   res.send(Buffer.from(audio.audio_base64, "base64"));
+}
+
+function pcm16Stats(buffer) {
+  if (!buffer?.length) return { peak: 0, rms: 0, samples: 0 };
+  let peak = 0;
+  let sumSquares = 0;
+  const samples = Math.floor(buffer.length / 2);
+  for (let offset = 0; offset + 1 < buffer.length; offset += 2) {
+    const sample = buffer.readInt16LE(offset);
+    const abs = Math.abs(sample);
+    if (abs > peak) peak = abs;
+    sumSquares += sample * sample;
+  }
+  return {
+    peak,
+    rms: samples ? Math.round(Math.sqrt(sumSquares / samples)) : 0,
+    samples
+  };
 }
 
 function escapeXml(str) {

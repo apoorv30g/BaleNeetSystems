@@ -10,11 +10,14 @@ function createLiveStt({ leadLanguage, onTranscript, onOpen, onClose, onStatus, 
   const fallbackProvider = normalizeProvider(process.env.STT_FALLBACK_PROVIDER || DEFAULT_FALLBACK);
   const replayLimitBytes = Number(process.env.STT_FALLBACK_REPLAY_BYTES || 96000);
   const primaryOpenTimeoutMs = Number(process.env.STT_PRIMARY_OPEN_TIMEOUT_MS || 3500);
+  const primaryNormalCloseReconnects = Number(process.env.STT_PRIMARY_NORMAL_CLOSE_RECONNECTS || 20);
+  const primaryReconnectDelayMs = Number(process.env.STT_PRIMARY_RECONNECT_DELAY_MS || 250);
   const recentAudio = [];
   let recentBytes = 0;
   let active = null;
   let activeProvider = "";
   let activeGeneration = 0;
+  let primaryNormalCloseReconnectCount = 0;
   let fallbackUsed = false;
   let closedByClient = false;
   let openTimer = null;
@@ -69,6 +72,21 @@ function createLiveStt({ leadLanguage, onTranscript, onOpen, onClose, onStatus, 
         const replaced = generation !== activeGeneration;
         if (!replaced) clearOpenTimer();
         onClose?.({ provider: normalized, replaced, ...details });
+        if (!closedByClient && !replaced && shouldReconnectPrimary(normalized, details)) {
+          primaryNormalCloseReconnectCount++;
+          const nextAttempt = primaryNormalCloseReconnectCount + 1;
+          emitStatus({
+            provider: normalized,
+            type: "ReconnectAttempt",
+            reason: `normal_close_${details?.code || "unknown"}`,
+            nextAttempt,
+            maxReconnects: primaryNormalCloseReconnects
+          });
+          setTimeout(() => {
+            if (!closedByClient && activeGeneration === generation) startProvider(normalized, "primary_reconnect");
+          }, primaryReconnectDelayMs);
+          return;
+        }
         if (!closedByClient && !replaced) {
           maybeStartFallback(normalized, `close_${details?.code || "unknown"}`);
         }
@@ -83,6 +101,7 @@ function createLiveStt({ leadLanguage, onTranscript, onOpen, onClose, onStatus, 
       },
       onTranscript: event => {
         if (generation !== activeGeneration) return;
+        if (normalized === primaryProvider) primaryNormalCloseReconnectCount = 0;
         onTranscript?.({ provider: normalized, ...event });
       },
       onError: err => {
@@ -139,6 +158,14 @@ function createLiveStt({ leadLanguage, onTranscript, onOpen, onClose, onStatus, 
 
   function emitStatus(status) {
     onStatus?.(status);
+  }
+
+  function shouldReconnectPrimary(provider, details = {}) {
+    if (provider !== primaryProvider) return false;
+    if (fallbackUsed) return false;
+    if (primaryNormalCloseReconnectCount >= primaryNormalCloseReconnects) return false;
+    if (details.closedByClient) return false;
+    return Number(details.code) === 1000;
   }
 }
 

@@ -155,7 +155,7 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
     ws.send(JSON.stringify({
       audio: {
         data: audio.toString("base64"),
-        sample_rate: sampleRate,
+        sample_rate: String(sampleRate),
         encoding: audioEncoding
       }
     }));

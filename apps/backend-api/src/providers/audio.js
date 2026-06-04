@@ -1,19 +1,35 @@
 const { spawn } = require("child_process");
 const ffmpegPath = require("ffmpeg-static");
 
-async function toExotelPcmBase64(inputBase64) {
+async function toExotelPcmBase64(inputBase64, options = {}) {
   const input = Buffer.from(inputBase64, "base64");
-  const output = await runFfmpeg(input, [
+  const sampleRate = normalizeSampleRate(options.sampleRate);
+  const volume = normalizeVolume(options.volume);
+  const args = [
     "-hide_banner",
     "-loglevel", "error",
     "-i", "pipe:0",
     "-ac", "1",
-    "-ar", "8000",
+    "-ar", String(sampleRate),
+    ...(volume === 1 ? [] : ["-filter:a", `volume=${volume}`]),
     "-f", "s16le",
     "pipe:1"
-  ]);
+  ];
+  const output = await runFfmpeg(input, args);
 
   return output.toString("base64");
+}
+
+function normalizeSampleRate(value) {
+  const sampleRate = Number(value || process.env.EXOTEL_MEDIA_SAMPLE_RATE || 8000);
+  if ([8000, 16000, 24000].includes(sampleRate)) return sampleRate;
+  return 8000;
+}
+
+function normalizeVolume(value) {
+  const volume = Number(value || process.env.VOICEBOT_TTS_VOLUME || 1.6);
+  if (!Number.isFinite(volume) || volume <= 0) return 1;
+  return Math.min(volume, 3);
 }
 
 function runFfmpeg(input, args) {

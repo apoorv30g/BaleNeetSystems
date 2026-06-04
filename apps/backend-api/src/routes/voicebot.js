@@ -8,7 +8,7 @@ const { classifyConversation, isOptOut } = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
 
-const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, main LoanConnect ka AI assistant bol raha hoon. Kya main aapse ek minute baat kar sakta hoon?";
+const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, LoanConnect se AI assistant. Kya aap mujhe sun paa rahe hain?";
 const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Okay.|Got it.|Sure.|Haan ji.|Theek hai.|Samjha.");
 const FAST_ACK_TEXT = FAST_ACK_TEXTS[0] || "Haan ji.";
 const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?";
@@ -27,7 +27,9 @@ const INTERIM_TRANSCRIPT_DELAY_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRI
 const INTERIM_TRANSCRIPT_FORCE_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_FORCE_MS || 2600);
 const INTERIM_TRANSCRIPT_MIN_WORDS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_WORDS || 2);
 const INTERIM_TRANSCRIPT_MIN_CHARS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS || 5);
-const VOICEBOT_MEDIA_VERSION = "2026-06-03-first-media-3200-seq-v2";
+const STT_DURING_ASSISTANT_ENABLED = process.env.VOICEBOT_STT_DURING_ASSISTANT_ENABLED === "true";
+const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
+const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
 const pcmCache = new Map();
 
@@ -72,6 +74,8 @@ function attachVoicebot(server) {
       callId: null,
       tenantId: null,
       lead: null,
+      mediaFormat: null,
+      mediaSampleRate: 8000,
       callerPhone: "",
       calledPhone: "",
       stt: null,
@@ -170,7 +174,9 @@ async function handleMessage(ws, session, data) {
       if (INTRO_START_MODE === "first_media" && !session.introStarted) {
         startIntro(ws, session, "first_media");
       }
-      session.stt?.sendAudio(audio);
+      if (STT_DURING_ASSISTANT_ENABLED || !session.speaking) {
+        session.stt?.sendAudio(audio);
+      }
     }
     return;
   }
@@ -240,7 +246,17 @@ async function initializeSession(session, message) {
     || "";
   session.callSid = callSid;
   session.streamSid = pick(message, ["stream_sid", "streamSid", "start.stream_sid", "start.streamSid"]) || session.streamSid;
-  await logVoicebotEvent(session, "start_received", { callSid, rawKeys: Object.keys(message || {}) });
+  session.mediaFormat = message?.start?.media_format || message?.start?.mediaFormat || message?.media_format || null;
+  session.mediaSampleRate = normalizeMediaSampleRate(
+    session.mediaFormat?.sample_rate || session.mediaFormat?.sampleRate || message?.start?.sample_rate || message?.start?.sampleRate
+  );
+  await logVoicebotEvent(session, "start_received", {
+    callSid,
+    rawKeys: Object.keys(message || {}),
+    streamSid: session.streamSid,
+    mediaFormat: session.mediaFormat,
+    mediaSampleRate: session.mediaSampleRate
+  });
 
   const customParameters = message?.start?.customParameters || message?.start?.custom_parameters || message?.customParameters || {};
 
@@ -709,7 +725,7 @@ async function speakText(ws, session, text, markName) {
   const startedAt = Date.now();
   const stopKeepalive = SILENCE_KEEPALIVE_ENABLED ? startSilenceKeepalive(ws, session, markName) : () => {};
   try {
-    const pcmBase64 = await getPcmBase64(text);
+    const pcmBase64 = await getPcmBase64(text, session);
     stopKeepalive();
 
     if (pcmBase64) {
@@ -734,26 +750,29 @@ async function speakText(ws, session, text, markName) {
   }
 }
 
-async function getPcmBase64(text) {
-  if (pcmCache.has(text)) return pcmCache.get(text);
+async function getPcmBase64(text, session = {}) {
+  const sampleRate = session.mediaSampleRate || 8000;
+  const volume = Number(process.env.VOICEBOT_TTS_VOLUME || 1.6);
+  const cacheKey = `${sampleRate}:${volume}:${text}`;
+  if (pcmCache.has(cacheKey)) return pcmCache.get(cacheKey);
 
   const speech = await synthesizeSpeech(text);
   if (speech.mode !== "audio") return null;
 
-  const pcmBase64 = await toExotelPcmBase64(speech.audioBase64);
+  const pcmBase64 = await toExotelPcmBase64(speech.audioBase64, { sampleRate, volume });
   if (pcmCache.size < Number(process.env.VOICEBOT_PCM_CACHE_LIMIT || 50)) {
-    pcmCache.set(text, pcmBase64);
+    pcmCache.set(cacheKey, pcmBase64);
   }
   return pcmBase64;
 }
 
 async function prewarmAudio(text) {
-  await getPcmBase64(text);
+  await getPcmBase64(text, { mediaSampleRate: 8000 });
 }
 
 function startSilenceKeepalive(ws, session, markName) {
   const chunkBytes = outboundChunkBytes();
-  const delayMs = pcmDurationMs(chunkBytes);
+  const delayMs = pcmDurationMs(chunkBytes, session);
   const silence = Buffer.alloc(chunkBytes).toString("base64");
   let stopped = false;
 
@@ -774,7 +793,7 @@ function startSilenceKeepalive(ws, session, markName) {
 async function sendMedia(ws, session, audioBase64) {
   if (ws.readyState !== ws.OPEN) return { chunks: 0, stoppedEarly: true, chunkBytes: outboundChunkBytes(), pcmBytes: 0 };
   const chunkBytes = outboundChunkBytes();
-  const rawAudio = Buffer.from(audioBase64, "base64");
+  const rawAudio = prependPreroll(Buffer.from(audioBase64, "base64"), session);
   const audio = padToChunkSize(rawAudio, chunkBytes);
   let chunks = 0;
 
@@ -782,9 +801,9 @@ async function sendMedia(ws, session, audioBase64) {
     if (ws.readyState !== ws.OPEN || session.closed) break;
     const chunk = audio.subarray(offset, offset + chunkBytes);
     const payload = chunk.toString("base64");
-    sendMediaFrame(ws, session, payload, Math.floor(offset / 16));
+    sendMediaFrame(ws, session, payload, pcmTimestampMs(session, offset));
     chunks++;
-    if (offset + chunkBytes < audio.length) await sleep(pcmDurationMs(chunk.length));
+    if (offset + chunkBytes < audio.length) await sleep(pcmDurationMs(chunk.length, session));
   }
 
   return {
@@ -792,6 +811,8 @@ async function sendMedia(ws, session, audioBase64) {
     chunkBytes,
     pcmBytes: rawAudio.length,
     paddedBytes: audio.length,
+    sampleRate: session.mediaSampleRate || 8000,
+    prerollMs: TTS_PREROLL_MS,
     stoppedEarly: chunks * chunkBytes < audio.length,
     mediaVersion: VOICEBOT_MEDIA_VERSION
   };
@@ -803,14 +824,35 @@ function outboundChunkBytes() {
   return Math.floor(bounded / 320) * 320 || 3200;
 }
 
+function prependPreroll(audio, session) {
+  if (!Number.isFinite(TTS_PREROLL_MS) || TTS_PREROLL_MS <= 0) return audio;
+  const silenceBytes = Math.floor((TTS_PREROLL_MS * mediaBytesPerMs(session)) / 320) * 320;
+  if (silenceBytes <= 0) return audio;
+  return Buffer.concat([Buffer.alloc(silenceBytes), audio]);
+}
+
 function padToChunkSize(audio, chunkBytes) {
   const remainder = audio.length % chunkBytes;
   if (!remainder) return audio;
   return Buffer.concat([audio, Buffer.alloc(chunkBytes - remainder)]);
 }
 
-function pcmDurationMs(byteLength) {
-  return Math.max(20, Math.floor(byteLength / 16));
+function pcmDurationMs(byteLength, session) {
+  return Math.max(20, Math.floor(byteLength / mediaBytesPerMs(session)));
+}
+
+function mediaBytesPerMs(session) {
+  return ((session?.mediaSampleRate || 8000) * 2) / 1000;
+}
+
+function pcmTimestampMs(session, offsetBytes) {
+  return Math.floor(offsetBytes / mediaBytesPerMs(session));
+}
+
+function normalizeMediaSampleRate(value) {
+  const sampleRate = Number(value || process.env.EXOTEL_MEDIA_SAMPLE_RATE || 8000);
+  if ([8000, 16000, 24000].includes(sampleRate)) return sampleRate;
+  return 8000;
 }
 
 function sendMediaFrame(ws, session, payload, timestamp) {
