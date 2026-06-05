@@ -12,10 +12,21 @@ function required(name, fallback = "") {
   return value;
 }
 
+function positiveNumber(value, fallback) {
+  const parsed = Number(value || fallback);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const exotelChannelCount = positiveNumber(process.env.EXOTEL_CHANNEL_COUNT, 20);
+
 module.exports = {
   databaseUrl: required("DATABASE_URL", isProduction ? "" : "postgresql://postgres:password@localhost:5432/loanconnect"),
   redisUrl: required("REDIS_URL", process.env.REDIS_PRIVATE_URL || (isProduction ? "" : "redis://localhost:6379")),
-  maxConcurrentCalls: Number(process.env.MAX_CONCURRENT_CALLS || 20),
+  exotelChannelCount,
+  maxConcurrentCalls: positiveNumber(process.env.MAX_CONCURRENT_CALLS, exotelChannelCount),
+  callDispatchSpacingSeconds: Number(process.env.CALL_DISPATCH_SPACING_SECONDS || 0),
+  callChannelHoldMaxSeconds: Number(process.env.CALL_CHANNEL_HOLD_MAX_SECONDS || 0),
+  callChannelPollMs: positiveNumber(process.env.CALL_CHANNEL_POLL_MS, 1000),
   callWindowStart: Number(process.env.CALL_WINDOW_START || 9),
   callWindowEnd: Number(process.env.CALL_WINDOW_END || 20),
   callWindowTimeZone: process.env.CALL_WINDOW_TIME_ZONE || "Asia/Kolkata",

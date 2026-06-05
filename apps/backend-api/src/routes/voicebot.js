@@ -32,6 +32,9 @@ const INTERIM_TRANSCRIPT_MIN_WORDS = Number(process.env.VOICEBOT_INTERIM_TRANSCR
 const INTERIM_TRANSCRIPT_MIN_CHARS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS || 5);
 const STT_DURING_ASSISTANT_ENABLED = process.env.VOICEBOT_STT_DURING_ASSISTANT_ENABLED === "true";
 const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "false";
+const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 2500);
+const BARGE_IN_MIN_CHUNKS = Number(process.env.VOICEBOT_BARGE_IN_MIN_CHUNKS || 10);
+const INTRO_BARGE_IN_ENABLED = process.env.VOICEBOT_INTRO_BARGE_IN_ENABLED === "true";
 const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
 const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
@@ -109,6 +112,9 @@ function attachVoicebot(server) {
       capturedName: "",
       lastSpokenText: "",
       lastSpokenMark: "",
+      activeSpeechMark: "",
+      activeSpeechMediaStartedAt: 0,
+      activeSpeechChunksSent: 0,
       ending: false,
       introTimer: null,
       noSpeechPromptTimer: null,
@@ -449,7 +455,7 @@ function startStt(ws, session) {
     onStatus: status => {
       if (status.type === "SpeechStarted") {
         clearNoSpeechTimers(session);
-        if (session.speaking && STT_DURING_ASSISTANT_ENABLED) {
+        if (session.speaking && STT_DURING_ASSISTANT_ENABLED && shouldCancelAssistantSpeech(session, status)) {
           invalidateAssistantTurn(session, "barge_in_speech_started");
           cancelAssistantSpeech(ws, session, "barge_in_speech_started");
         }
@@ -1394,6 +1400,9 @@ async function speakText(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
   session.lastSpokenText = text;
   session.lastSpokenMark = markName;
+  session.activeSpeechMark = markName;
+  session.activeSpeechMediaStartedAt = 0;
+  session.activeSpeechChunksSent = 0;
   const speechSeq = (session.speechSeq || 0) + 1;
   session.speechSeq = speechSeq;
   session.activeSpeechSeq = speechSeq;
@@ -1424,8 +1433,46 @@ async function speakText(ws, session, text, markName) {
     stopKeepalive();
     if (session.activeSpeechSeq === speechSeq) {
       session.speaking = false;
+      session.activeSpeechMark = "";
+      session.activeSpeechMediaStartedAt = 0;
+      session.activeSpeechChunksSent = 0;
     }
   }
+}
+
+function shouldCancelAssistantSpeech(session, status = {}) {
+  if (!session.activeSpeechSeq) return false;
+
+  const mark = String(session.activeSpeechMark || "");
+  const isIntro = mark.includes("intro");
+  if (isIntro && !INTRO_BARGE_IN_ENABLED) {
+    logVoicebotEvent(session, "barge_in_ignored", {
+      reason: "intro_protected",
+      mark,
+      provider: status.provider || "",
+      signalType: status.signalType || status.type || ""
+    }).catch(() => {});
+    return false;
+  }
+
+  const mediaStartedAt = session.activeSpeechMediaStartedAt || 0;
+  const speechAgeMs = mediaStartedAt ? Date.now() - mediaStartedAt : 0;
+  const chunksSent = session.activeSpeechChunksSent || 0;
+  if (speechAgeMs < BARGE_IN_GRACE_MS || chunksSent < BARGE_IN_MIN_CHUNKS) {
+    logVoicebotEvent(session, "barge_in_ignored", {
+      reason: "speech_grace_period",
+      mark,
+      speechAgeMs,
+      chunksSent,
+      minChunks: BARGE_IN_MIN_CHUNKS,
+      graceMs: BARGE_IN_GRACE_MS,
+      provider: status.provider || "",
+      signalType: status.signalType || status.type || ""
+    }).catch(() => {});
+    return false;
+  }
+
+  return true;
 }
 
 function cancelAssistantSpeech(ws, session, reason = "") {
@@ -1545,6 +1592,8 @@ async function sendMedia(ws, session, audioBase64, speechSeq = session.activeSpe
   const rawAudio = prependPreroll(Buffer.from(audioBase64, "base64"), session);
   const audio = padToChunkSize(rawAudio, chunkBytes);
   let chunks = 0;
+  session.activeSpeechMediaStartedAt = Date.now();
+  session.activeSpeechChunksSent = 0;
 
   for (let offset = 0; offset < audio.length; offset += chunkBytes) {
     if (ws.readyState !== ws.OPEN || session.closed) break;
@@ -1553,6 +1602,7 @@ async function sendMedia(ws, session, audioBase64, speechSeq = session.activeSpe
     const payload = chunk.toString("base64");
     sendMediaFrame(ws, session, payload, pcmTimestampMs(session, offset));
     chunks++;
+    if (session.activeSpeechSeq === speechSeq) session.activeSpeechChunksSent = chunks;
     if (offset + chunkBytes < audio.length) await sleep(pcmDurationMs(chunk.length, session));
   }
 
@@ -1767,6 +1817,7 @@ module.exports = {
     invalidateAssistantTurn,
     isCurrentTurn,
     normalizeVoiceIntent,
+    shouldCancelAssistantSpeech,
     updateConversationMemory
   }
 };

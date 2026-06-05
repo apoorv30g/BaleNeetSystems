@@ -171,3 +171,23 @@ test("voicebot invalidates active turn when user barges in", () => {
   _test.invalidateAssistantTurn(state, "barge_in_speech_started");
   assert.equal(_test.isCurrentTurn(state, firstTurn), false);
 });
+
+test("voicebot protects intro audio from barge-in cancellation", () => {
+  const state = {
+    activeSpeechSeq: 1,
+    activeSpeechMark: "intro_played",
+    activeSpeechMediaStartedAt: Date.now() - 10000,
+    activeSpeechChunksSent: 30
+  };
+  assert.equal(_test.shouldCancelAssistantSpeech(state, { type: "SpeechStarted" }), false);
+});
+
+test("voicebot allows later barge-in after speech grace period", () => {
+  const state = {
+    activeSpeechSeq: 2,
+    activeSpeechMark: "reply_played",
+    activeSpeechMediaStartedAt: Date.now() - 10000,
+    activeSpeechChunksSent: 30
+  };
+  assert.equal(_test.shouldCancelAssistantSpeech(state, { type: "SpeechStarted" }), true);
+});

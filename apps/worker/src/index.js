@@ -59,6 +59,7 @@ const worker = new Worker("lead-calls", async (job) => {
     const result = await triggerOutboundCall({ to: lead.phone, leadId, campaignId, callId: callRow.rows[0].id });
     await query(`UPDATE calls SET call_sid=$1, status='dialing', updated_at=NOW() WHERE id=$2`, [result.callSid, callRow.rows[0].id]);
     await query(`UPDATE leads SET status='called', attempt_count=attempt_count+1, last_called_at=NOW() WHERE id=$1`, [leadId]);
+    await holdDispatchSlot({ leadId, campaignId, callId: callRow.rows[0].id, callSid: result.callSid, dryRun: result.dryRun });
   } catch (err) {
     await query(`UPDATE calls SET status='failed', error=$1, updated_at=NOW() WHERE id=$2`, [err.message, callRow.rows[0].id]);
     await query(`UPDATE leads SET status='failed', attempt_count=attempt_count+1, last_called_at=NOW() WHERE id=$1`, [leadId]);
@@ -70,3 +71,71 @@ worker.on("completed", job => console.log(`completed job ${job.id}`));
 worker.on("failed", (job, err) => console.error(`failed job ${job?.id}: ${err.message}`));
 
 console.log(`Worker started with concurrency ${config.maxConcurrentCalls}`);
+
+async function holdDispatchSlot({ leadId, campaignId, callId, callSid, dryRun = false }) {
+  if (dryRun) return;
+
+  const minHoldMs = Math.max(0, config.callDispatchSpacingSeconds) * 1000;
+  const maxHoldMs = channelHoldMaxMs();
+  const startedAt = Date.now();
+  let lastStatus = "dialing";
+  let terminal = false;
+
+  console.log("holding channel slot", {
+    leadId,
+    campaignId,
+    callSid,
+    minHoldSeconds: config.callDispatchSpacingSeconds,
+    maxHoldSeconds: Math.round(maxHoldMs / 1000)
+  });
+
+  while (Date.now() - startedAt < maxHoldMs) {
+    const elapsed = Date.now() - startedAt;
+    const status = await callStatus(callId);
+    if (status) lastStatus = status;
+    terminal = isTerminalCallStatus(lastStatus);
+
+    if (terminal && elapsed >= minHoldMs) break;
+    await sleep(Math.min(config.callChannelPollMs, Math.max(250, maxHoldMs - elapsed)));
+  }
+
+  console.log("released channel slot", {
+    leadId,
+    campaignId,
+    callSid,
+    status: lastStatus,
+    terminal,
+    elapsedMs: Date.now() - startedAt
+  });
+}
+
+function channelHoldMaxMs() {
+  const configured = Number(config.callChannelHoldMaxSeconds || 0);
+  const seconds = configured > 0
+    ? configured
+    : config.exotel.ringTimeoutSeconds + config.exotel.timeLimitSeconds + 15;
+  return Math.max(seconds, config.callDispatchSpacingSeconds, 1) * 1000;
+}
+
+async function callStatus(callId) {
+  const result = await query(`SELECT status FROM calls WHERE id=$1`, [callId]);
+  return result.rows[0]?.status || "";
+}
+
+function isTerminalCallStatus(status) {
+  return [
+    "completed",
+    "failed",
+    "busy",
+    "no-answer",
+    "no_answer",
+    "canceled",
+    "cancelled",
+    "timeout",
+    "rejected"
+  ].includes(String(status || "").toLowerCase());
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}

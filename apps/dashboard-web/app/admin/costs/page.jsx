@@ -180,7 +180,7 @@ export default function AdminCostsPage() {
               {Object.entries(data?.rates || {}).map(([key, value]) => (
                 <div key={key} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
                   <span className="font-semibold text-slate-600">{key}</span>
-                  <span className="font-bold text-slate-950">{money(value)}</span>
+                  <span className="font-bold text-slate-950">{formatRateValue(key, value)}</span>
                 </div>
               ))}
             </div>
@@ -223,9 +223,17 @@ function formatNumber(value) {
   return number.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 }
 
+function formatRateValue(key, value) {
+  if (key.toLowerCase().includes("count")) return formatNumber(value);
+  return money(value);
+}
+
 function rateVariableFor(key) {
   return {
-    exotel_voice: "EXOTEL_COST_PER_MINUTE_INR",
+    exotel_voice: "EXOTEL_OUTBOUND_COST_PER_MINUTE_INR",
+    exotel_attempts: "EXOTEL_ATTEMPT_COST_INR",
+    exotel_channels: "EXOTEL_CHANNEL_MONTHLY_COST_INR and EXOTEL_CHANNEL_COUNT",
+    exotel_minimum_billing: "EXOTEL_MIN_MONTHLY_BILLING_INR",
     sarvam_stt: "SARVAM_STT_COST_PER_HOUR_INR",
     sarvam_tts: "SARVAM_TTS_COST_PER_1K_CHARS_INR",
     sarvam_llm: "SARVAM_LLM_COST_PER_1K_TOKENS_INR",

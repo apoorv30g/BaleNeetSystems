@@ -103,6 +103,12 @@ EXOTEL_API_KEY=
 EXOTEL_API_TOKEN=
 EXOTEL_FROM_NUMBER=
 EXOTEL_API_BASE=https://api.in.exotel.com
+EXOTEL_OUTBOUND_COST_PER_MINUTE_INR=0.60
+EXOTEL_INBOUND_COST_PER_MINUTE_INR=0.20
+EXOTEL_ATTEMPT_COST_INR=0.06
+EXOTEL_CHANNEL_MONTHLY_COST_INR=1500
+EXOTEL_CHANNEL_COUNT=1
+EXOTEL_MIN_MONTHLY_BILLING_INR=20000
 
 GEMINI_API_KEY=
 SARVAM_API_KEY=
@@ -114,6 +120,7 @@ CALL_WINDOW_START=9
 CALL_WINDOW_END=20
 MAX_CALL_ATTEMPTS=3
 MAX_CONCURRENT_CALLS=20
+CALL_DISPATCH_SPACING_SECONDS=0
 CALL_RETRY_DELAY_MINUTES=360
 
 LOAN_APP_URL=https://yourapp.com/apply
@@ -146,10 +153,14 @@ NODE_ENV=production
 DATABASE_URL=
 REDIS_URL=
 SERVER_URL=https://your-backend-service.up.railway.app
+EXOTEL_CHANNEL_COUNT=1
 MAX_CONCURRENT_CALLS=20
+CALL_DISPATCH_SPACING_SECONDS=0
+CALL_CHANNEL_HOLD_MAX_SECONDS=0
+CALL_CHANNEL_POLL_MS=1000
 ```
 
-Start with 10–20.
+Set `EXOTEL_CHANNEL_COUNT` to the number of paid WSS/concurrent calling channels confirmed by Exotel. Leave `MAX_CONCURRENT_CALLS` unset to use that channel count automatically, or set it explicitly to the same number. If you need one active phone call at a time, set both to `1`; the worker holds that channel slot until the Exotel call reaches a terminal status or the safety timeout expires. `CALL_CHANNEL_HOLD_MAX_SECONDS=0` uses ring timeout + call time limit + buffer.
 
 ---
 
@@ -396,6 +407,7 @@ For 25,000 minutes/month:
 - keep Redis mandatory
 - start concurrency at 10–20
 - increase only after Exotel confirms allowed channels
+- keep `EXOTEL_CHANNEL_COUNT` aligned with paid Exotel channels/concurrent calling capacity
 - keep calls short using playbooks
 - store only call metadata/transcripts for now
 - do not store large recordings in DB

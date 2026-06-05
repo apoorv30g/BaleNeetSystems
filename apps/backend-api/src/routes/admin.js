@@ -426,7 +426,9 @@ async function platformCostOverview(days) {
         COUNT(CASE WHEN c.status='completed' THEN 1 END)::int AS completed_calls,
         COALESCE(SUM(GREATEST(c.duration_seconds,0)),0)::float AS duration_seconds,
         COALESCE(SUM(CEIL(GREATEST(c.duration_seconds,0) / 60.0)),0)::float AS billable_minutes,
-        COALESCE(SUM(c.cost_estimate),0)::float AS stored_cost
+        COALESCE(SUM(c.cost_estimate),0)::float AS stored_cost,
+        MIN(c.created_at) AS first_call_at,
+        MAX(c.created_at) AS last_call_at
       FROM calls c
       ${callWhere.sql}
     `, callWhere.params),
@@ -502,6 +504,16 @@ async function platformCostOverview(days) {
   const ttsStats = tts.rows[0] || {};
   const sarvamLlm = llm.rows.find(row => row.provider === "sarvam") || {};
   const geminiLlm = llm.rows.find(row => row.provider === "gemini") || {};
+  const periodMonths = costPeriodMonths(days, callStats);
+  const exotelUsageCost = roundMoney(
+    number(callStats.billable_minutes) * rates.exotelOutboundCostPerMinuteInr
+      + number(callStats.calls) * rates.exotelAttemptCostInr
+  );
+  const exotelChannelCost = roundMoney(
+    rates.exotelChannelCount * periodMonths * rates.exotelChannelMonthlyCostPerChannelInr
+  );
+  const exotelMinimumTarget = roundMoney(periodMonths * rates.exotelMonthlyMinimumInr);
+  const exotelMinimumTopUp = roundMoney(Math.max(0, exotelMinimumTarget - exotelUsageCost - exotelChannelCost));
 
   const components = [
     component({
@@ -511,7 +523,35 @@ async function platformCostOverview(days) {
       unit: "billable minute",
       quantity: number(callStats.billable_minutes),
       rawUsage: `${formatNumber(callStats.duration_seconds)} seconds across ${callStats.calls || 0} calls`,
-      rate: rates.exotelCostPerMinuteInr
+      rate: rates.exotelOutboundCostPerMinuteInr
+    }),
+    component({
+      key: "exotel_attempts",
+      vendor: "Exotel",
+      label: "Call attempts",
+      unit: "attempt",
+      quantity: number(callStats.calls),
+      rawUsage: `${formatNumber(callStats.calls)} outbound attempts`,
+      rate: rates.exotelAttemptCostInr
+    }),
+    component({
+      key: "exotel_channels",
+      vendor: "Exotel",
+      label: "Channel rental",
+      unit: "channel-month",
+      quantity: rates.exotelChannelCount * periodMonths,
+      rawUsage: `${formatNumber(rates.exotelChannelCount)} channels over ${formatNumber(periodMonths)} month(s)`,
+      rate: rates.exotelChannelMonthlyCostPerChannelInr
+    }),
+    component({
+      key: "exotel_minimum_billing",
+      vendor: "Exotel",
+      label: "Minimum billing adjustment",
+      unit: "period top-up",
+      quantity: exotelMinimumTopUp > 0 ? 1 : 0,
+      rawUsage: `Minimum floor ${moneyText(exotelMinimumTarget)} minus voice, attempts and channel rental`,
+      rate: exotelMinimumTopUp,
+      configured: rates.exotelMonthlyMinimumInr > 0
     }),
     component({
       key: "sarvam_stt",
@@ -584,11 +624,16 @@ async function platformCostOverview(days) {
       calls: client.calls || 0,
       durationSeconds: number(client.duration_seconds),
       billableMinutes: number(client.billable_minutes),
-      estimatedExotelCostInr: roundMoney(number(client.billable_minutes) * rates.exotelCostPerMinuteInr)
+      estimatedExotelCostInr: roundMoney(
+        number(client.billable_minutes) * rates.exotelOutboundCostPerMinuteInr
+          + number(client.calls) * rates.exotelAttemptCostInr
+      )
     })),
     notes: [
       "These are operational estimates from app usage, not vendor invoices.",
-      "Exotel uses rounded-up per-call billable minutes.",
+      "Exotel outbound campaign calls are modeled at the outbound WSS rate.",
+      "Exotel uses rounded-up per-call billable minutes and also charges per attempt.",
+      "Exotel channel rental and minimum billing are modeled as period-adjusted monthly commercial terms.",
       "Sarvam LLM tokens are estimated from reply bytes because vendors bill by token internally.",
       "Set Railway rate variables to make totals match your actual plans."
     ]
@@ -596,8 +641,14 @@ async function platformCostOverview(days) {
 }
 
 function costRates() {
+  const legacyExotelMinuteRate = moneyEnv("EXOTEL_COST_PER_MINUTE_INR");
   return {
-    exotelCostPerMinuteInr: moneyEnv("EXOTEL_COST_PER_MINUTE_INR"),
+    exotelOutboundCostPerMinuteInr: moneyEnv("EXOTEL_OUTBOUND_COST_PER_MINUTE_INR", legacyExotelMinuteRate),
+    exotelInboundCostPerMinuteInr: moneyEnv("EXOTEL_INBOUND_COST_PER_MINUTE_INR"),
+    exotelAttemptCostInr: moneyEnv("EXOTEL_ATTEMPT_COST_INR"),
+    exotelChannelMonthlyCostPerChannelInr: moneyEnv("EXOTEL_CHANNEL_MONTHLY_COST_INR"),
+    exotelChannelCount: numberEnv("EXOTEL_CHANNEL_COUNT"),
+    exotelMonthlyMinimumInr: moneyEnv("EXOTEL_MIN_MONTHLY_BILLING_INR"),
     sarvamSttCostPerHourInr: moneyEnv("SARVAM_STT_COST_PER_HOUR_INR"),
     sarvamTtsCostPer1kCharsInr: moneyEnv("SARVAM_TTS_COST_PER_1K_CHARS_INR"),
     sarvamLlmCostPer1kTokensInr: moneyEnv("SARVAM_LLM_COST_PER_1K_TOKENS_INR"),
@@ -606,7 +657,7 @@ function costRates() {
   };
 }
 
-function component({ key, vendor, label, unit, quantity, rawUsage, rate }) {
+function component({ key, vendor, label, unit, quantity, rawUsage, rate, configured }) {
   const usage = number(quantity);
   return {
     key,
@@ -617,7 +668,7 @@ function component({ key, vendor, label, unit, quantity, rawUsage, rate }) {
     rawUsage,
     rateInr: rate,
     estimatedCostInr: roundMoney(usage * rate),
-    configured: rate > 0
+    configured: configured ?? rate > 0
   };
 }
 
@@ -635,14 +686,32 @@ function normalizeCostDays(value) {
   return Math.min(Math.round(days), 3650);
 }
 
-function moneyEnv(name) {
-  const value = Number(process.env[name] || 0);
+function costPeriodMonths(days, callStats) {
+  if (days) return Math.max(days / 30, 1 / 30);
+  const first = callStats.first_call_at ? new Date(callStats.first_call_at).getTime() : 0;
+  const last = callStats.last_call_at ? new Date(callStats.last_call_at).getTime() : 0;
+  if (!first || !last || last <= first) return 1;
+  const daysBetween = Math.max((last - first) / 86400000, 1);
+  return Math.max(daysBetween / 30, 1 / 30);
+}
+
+function moneyEnv(name, fallback = 0) {
+  const value = Number(process.env[name] || fallback || 0);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function numberEnv(name, fallback = 0) {
+  const value = Number(process.env[name] || fallback || 0);
   return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
 function number(value) {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function moneyText(value) {
+  return `INR ${roundMoney(value).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 }
 
 function roundMoney(value) {
