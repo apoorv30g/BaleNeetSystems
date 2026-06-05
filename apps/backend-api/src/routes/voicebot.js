@@ -18,6 +18,8 @@ const NO_SPEECH_GOODBYE_TEXT = process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT || "I
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
 const FAST_ACK_ENABLED = process.env.VOICEBOT_FAST_ACK_ENABLED !== "false";
+const FAST_ACK_DELAY_MS = Number(process.env.VOICEBOT_FAST_ACK_DELAY_MS || process.env.VOICEBOT_ACK_DELAY_MS || 850);
+const FAST_ACK_SCRIPTED_ENABLED = process.env.VOICEBOT_FAST_ACK_SCRIPTED_ENABLED === "true";
 const NO_SPEECH_TIMEOUT_ENABLED = process.env.VOICEBOT_NO_SPEECH_TIMEOUT_ENABLED !== "false";
 const NO_SPEECH_PROMPT_MS = Number(process.env.VOICEBOT_NO_SPEECH_PROMPT_MS || 9000);
 const NO_SPEECH_END_MS = Number(process.env.VOICEBOT_NO_SPEECH_END_MS || 22000);
@@ -673,8 +675,8 @@ async function processUserTranscript(ws, session, event) {
       conversationState: buildConversationState(session)
     });
   const ackText = pickAckText(session);
-  if (FAST_ACK_ENABLED && ackText) {
-    await speakText(ws, session, ackText, "ack_played");
+  if (FAST_ACK_ENABLED && ackText && (!scriptedReply || FAST_ACK_SCRIPTED_ENABLED)) {
+    await maybeSpeakDelayedAck(ws, session, replyPromise, ackText, turnSeq);
   }
 
   const reply = await replyPromise;
@@ -706,6 +708,21 @@ async function processUserTranscript(ws, session, event) {
 
   await speakText(ws, session, reply, "reply_played");
   scheduleNoSpeechCheck(ws, session, "after_reply");
+}
+
+async function maybeSpeakDelayedAck(ws, session, replyPromise, ackText, turnSeq) {
+  let settled = false;
+  replyPromise.then(() => {
+    settled = true;
+  }).catch(() => {
+    settled = true;
+  });
+
+  await sleep(FAST_ACK_DELAY_MS);
+  if (settled || !isCurrentTurn(session, turnSeq) || session.speaking) return false;
+
+  await speakText(ws, session, ackText, "ack_played");
+  return true;
 }
 
 function beginUserTurn(session, text, source = "") {
