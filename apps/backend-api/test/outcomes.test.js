@@ -3,8 +3,10 @@ const assert = require("node:assert/strict");
 const {
   classifyConversation,
   inferOutcome,
+  isCallScreening,
   isOptOut,
   isTerminalIntent,
+  isVoicemail,
   terminalOutcome
 } = require("../src/services/outcomes");
 
@@ -52,6 +54,22 @@ test("paid and promise-to-pay responses are terminal", () => {
   assert.equal(isTerminalIntent("I will pay tomorrow"), true);
 });
 
+test("voicemail and call screening are terminal non-human outcomes", () => {
+  assert.equal(isVoicemail("Please reply after the tone."), true);
+  assert.equal(inferOutcome("Please reply after the tone."), "VOICEMAIL");
+  assert.equal(terminalOutcome("Please reply after the tone."), "VOICEMAIL");
+  assert.equal(isTerminalIntent("Please reply after the tone."), true);
+
+  assert.equal(isCallScreening("Name and reason for your call? Please stay on the line."), true);
+  assert.equal(inferOutcome("Name and reason for your call? Please stay on the line."), "CALL_SCREENING");
+  assert.equal(terminalOutcome("Name and reason for your call? Please stay on the line."), "CALL_SCREENING");
+});
+
+test("customer asking reason for call is not call screening", () => {
+  assert.equal(isCallScreening("What is the reason for this call?"), false);
+  assert.equal(isTerminalIntent("What is the reason for this call?"), false);
+});
+
 test("classifyConversation summarizes the outcome", () => {
   const result = classifyConversation({
     userMessage: "I will pay tomorrow",
@@ -60,4 +78,7 @@ test("classifyConversation summarizes the outcome", () => {
   });
   assert.equal(result.outcome, "PROMISE_TO_PAY");
   assert.match(result.summary, /future payment commitment/);
+  assert.equal(result.intent, "PROMISE_TO_PAY");
+  assert.equal(result.nextAction, "Schedule payment follow-up near the promised time.");
+  assert.ok(result.confidence > 0.8);
 });

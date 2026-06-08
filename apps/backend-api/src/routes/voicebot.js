@@ -4,7 +4,14 @@ const { generateReply } = require("../providers/llm");
 const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
 const { createLiveStt } = require("../providers/sttLive");
-const { classifyConversation, isOptOut, isTerminalIntent, terminalOutcome } = require("../services/outcomes");
+const {
+  classifyConversation,
+  isCallScreening,
+  isOptOut,
+  isTerminalIntent,
+  isVoicemail,
+  terminalOutcome
+} = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
 const { sendLeadLink } = require("../providers/notifications");
@@ -35,6 +42,7 @@ const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "
 const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 2500);
 const BARGE_IN_MIN_CHUNKS = Number(process.env.VOICEBOT_BARGE_IN_MIN_CHUNKS || 10);
 const INTRO_BARGE_IN_ENABLED = process.env.VOICEBOT_INTRO_BARGE_IN_ENABLED === "true";
+const SCREENING_RESPONSE_ENABLED = process.env.VOICEBOT_SCREENING_RESPONSE_ENABLED === "true";
 const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
 const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
@@ -613,6 +621,37 @@ async function processUserTranscript(ws, session, event) {
   session.userTurns++;
   updateConversationMemory(session, text);
 
+  const nonHumanOutcome = isVoicemail(text) ? "VOICEMAIL" : (isCallScreening(text) ? "CALL_SCREENING" : "");
+  if (nonHumanOutcome) {
+    session.ending = true;
+    const transcript = session.callId ? await getTranscript(session.callId) : [];
+    const classification = classifyConversation({
+      userMessage: text,
+      transcript,
+      playbookType: session.lead.playbook_type
+    });
+    if (session.callId) {
+      await finalizeCall(session, {
+        outcome: nonHumanOutcome,
+        summary: classification.summary
+      });
+    }
+    await logVoicebotEvent(session, "non_human_detected", {
+      text,
+      outcome: nonHumanOutcome,
+      reason: classification.reason,
+      nextAction: classification.nextAction
+    });
+    if (nonHumanOutcome === "CALL_SCREENING" && SCREENING_RESPONSE_ENABLED) {
+      const reply = callScreeningReply(session);
+      if (session.callId) await addTranscript(session.callId, "assistant", reply);
+      await speakAndClose(ws, session, reply, "call_screening_close");
+    } else {
+      await closeQuietly(ws, session);
+    }
+    return;
+  }
+
   const languageSwitch = detectLanguageSwitch(text);
   if (languageSwitch) {
     session.preferredLanguage = languageSwitch.language;
@@ -1105,6 +1144,8 @@ function queueLeadLink(session, reason) {
 
 function terminalClosingText(outcome, session = {}) {
   const english = isEnglishSession(session);
+  if (outcome === "VOICEMAIL") return english ? "Reached voicemail. Ending this call." : "Voicemail मिला। Call close कर रहा हूँ।";
+  if (outcome === "CALL_SCREENING") return english ? "LoanConnect AI assistant calling about a loan enquiry. Thank you." : "लोन कनेक्ट AI assistant, loan enquiry के बारे में call कर रहा हूँ। धन्यवाद।";
   if (outcome === "PAID") return english ? "Thanks, I have noted that you already paid. Please keep the payment receipt handy." : "धन्यवाद, मैं note कर रहा हूँ कि आपने payment कर दिया है। Receipt संभाल कर रखिए।";
   if (outcome === "PROMISE_TO_PAY") return english ? "Thanks, I have noted your payment commitment. Please pay from the secure link before the time you mentioned." : "धन्यवाद, मैं आपका payment commitment note कर रहा हूँ। बताए हुए समय से पहले secure link से payment कर दीजिए।";
   if (outcome === "CALLBACK") return english ? "Sure, we will contact you later. Thank you." : "ठीक है, हम बाद में संपर्क करेंगे। धन्यवाद।";
@@ -1113,11 +1154,22 @@ function terminalClosingText(outcome, session = {}) {
   return "ठीक है, मैं call यहीं close कर रहा हूँ। धन्यवाद।";
 }
 
+function callScreeningReply(session = {}) {
+  return terminalClosingText("CALL_SCREENING", session);
+}
+
 async function speakAndClose(ws, session, text, markName) {
   clearNoSpeechTimers(session);
   clearInterimTimer(session);
   await speakText(ws, session, text, markName);
   await sleep(Number(process.env.VOICEBOT_END_CLOSE_GRACE_MS || 900));
+  if (!session.closed && ws.readyState === ws.OPEN) ws.close();
+}
+
+async function closeQuietly(ws, session) {
+  clearNoSpeechTimers(session);
+  clearInterimTimer(session);
+  await sleep(Number(process.env.VOICEBOT_NON_HUMAN_CLOSE_GRACE_MS || 100));
   if (!session.closed && ws.readyState === ws.OPEN) ws.close();
 }
 

@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Download, Filter, PhoneCall, RefreshCcw, Trash2 } from "lucide-react";
+import { Activity, Download, Filter, PhoneCall, RefreshCcw, TimerReset, Trash2 } from "lucide-react";
 import Shell from "../../../components/Shell";
 import { API_BASE_URL, apiFetch, getToken } from "../../../lib/api";
 
-const outcomes = ["IN_PROGRESS", "INTERESTED", "PROMISE_TO_PAY", "PAID", "CALLBACK", "WRONG_NUMBER", "DISPUTE", "NOT_INTERESTED", "OPTED_OUT"];
+const outcomes = ["IN_PROGRESS", "INTERESTED", "PROMISE_TO_PAY", "PAID", "CALLBACK", "WRONG_NUMBER", "VOICEMAIL", "CALL_SCREENING", "DISPUTE", "NOT_INTERESTED", "OPTED_OUT", "UNCLEAR"];
 
 export default function CampaignDetail() {
   const { campaignId } = useParams();
@@ -71,12 +71,37 @@ export default function CampaignDetail() {
   }, [filters, leads]);
 
   const allVisibleSelected = filteredLeads.length > 0 && filteredLeads.every(lead => selected.includes(lead.id));
+  const latestCallByLead = useMemo(() => {
+    const map = new Map();
+    for (const call of calls) {
+      if (call.lead_id && !map.has(call.lead_id)) map.set(call.lead_id, call);
+    }
+    return map;
+  }, [calls]);
+  const callStats = useMemo(() => {
+    const outcomeCounts = calls.reduce((acc, call) => {
+      const key = call.outcome || "IN_PROGRESS";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const billableMinutes = calls.reduce((sum, call) => sum + Math.ceil(Number(call.duration_seconds || 0) / 60), 0);
+    const nonHuman = (outcomeCounts.VOICEMAIL || 0) + (outcomeCounts.CALL_SCREENING || 0);
+    const positive = (outcomeCounts.INTERESTED || 0) + (outcomeCounts.PROMISE_TO_PAY || 0) + (outcomeCounts.PAID || 0);
+    return {
+      outcomeCounts,
+      billableMinutes,
+      nonHuman,
+      positive,
+      completed: calls.filter(call => call.status === "completed").length
+    };
+  }, [calls]);
   const stats = [
     ["Leads", campaign?.lead_count || 0],
     ["Pending", campaign?.pending_count || 0],
     ["Queued", campaign?.queued_count || 0],
     ["Called", campaign?.called_count || 0],
-    ["Failed", campaign?.failed_count || 0]
+    ["Positive", callStats.positive || 0],
+    ["Voicemail/Screening", callStats.nonHuman || 0]
   ];
 
   function setNotice({ ok, text }) {
@@ -225,6 +250,44 @@ export default function CampaignDetail() {
         </div>
       </section>
 
+      <section className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_1fr]">
+        <div className="card p-5">
+          <div className="flex items-center gap-2">
+            <Activity className="text-sky-700" size={18} />
+            <h2 className="text-lg font-black text-slate-950">Channel Queue</h2>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+            <MiniMetric label="Channels" value={queueStatus?.channels?.configured || 0} />
+            <MiniMetric label="Active" value={queueStatus?.channels?.active || 0} />
+            <MiniMetric label="Available" value={queueStatus?.channels?.available || 0} />
+            <MiniMetric label="Waiting" value={queueStatus?.channels?.waiting || 0} />
+          </div>
+          {!!queueStatus?.activeJobs?.length && (
+            <div className="mt-4 space-y-2">
+              {queueStatus.activeJobs.map(job => (
+                <div key={job.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  <span className="font-semibold">{job.leadId}</span>
+                  <span>{job.ageSeconds}s active</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card p-5">
+          <div className="flex items-center gap-2">
+            <TimerReset className="text-emerald-700" size={18} />
+            <h2 className="text-lg font-black text-slate-950">Call Quality</h2>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <MiniMetric label="Completed" value={callStats.completed} />
+            <MiniMetric label="Billable Min" value={callStats.billableMinutes} />
+            <MiniMetric label="Interested" value={callStats.outcomeCounts.INTERESTED || 0} />
+            <MiniMetric label="Callback" value={callStats.outcomeCounts.CALLBACK || 0} />
+          </div>
+        </div>
+      </section>
+
       <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
         <form onSubmit={upload} className="card p-5">
           <h2 className="text-lg font-black text-slate-950">Upload Leads</h2>
@@ -237,7 +300,7 @@ export default function CampaignDetail() {
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_160px_220px_auto]">
             <input className="input" placeholder="Search name, phone or playbook" value={filters.q} onChange={e => setFilters({ ...filters, q: e.target.value })} />
             <select className="input" value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}>
-              {["all", "pending", "queued", "called", "completed", "failed"].map(status => <option key={status} value={status}>{status}</option>)}
+              {["all", "pending", "queued", "called", "completed", "failed", "max_attempts"].map(status => <option key={status} value={status}>{status}</option>)}
             </select>
             <select className="input" value={filters.playbook} onChange={e => setFilters({ ...filters, playbook: e.target.value })}>
               <option value="all">All playbooks</option>
@@ -256,11 +319,11 @@ export default function CampaignDetail() {
       </section>
 
       <section className="card mt-8 overflow-x-auto">
-        <table className="w-full min-w-[920px] text-sm">
+        <table className="w-full min-w-[1080px] text-sm">
           <thead className="bg-slate-50 text-left text-slate-500">
             <tr>
               <th className="p-4"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisible} /></th>
-              <th>Name</th><th>Phone</th><th>Playbook</th><th>Status</th><th>Attempts</th><th></th>
+              <th>Name</th><th>Phone</th><th>Playbook</th><th>Status</th><th>Last Outcome</th><th>Attempts</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -271,17 +334,18 @@ export default function CampaignDetail() {
                 <td>{lead.phone}</td>
                 <td>{playbooks[lead.playbook_type]?.title || lead.playbook_type}</td>
                 <td><span className="status-pill">{lead.status}</span></td>
+                <td><span className="status-pill">{latestCallByLead.get(lead.id)?.outcome || "-"}</span></td>
                 <td>{lead.attempt_count}</td>
                 <td className="pr-4 text-right">
                   <div className="flex flex-wrap justify-end gap-2">
-                    <button onClick={() => bulkQueue([lead.id])} className="btn" disabled={loading}>Call</button>
+                    <button onClick={() => bulkQueue([lead.id])} className="btn" disabled={loading}><PhoneCall size={16} /> Call Now</button>
                     <button onClick={() => runAction(() => apiFetch(`/campaigns/${campaignId}/leads/${lead.id}/send-link`, { method: "POST", body: JSON.stringify({ channel: "sms" }) }), event => `SMS link ${event.status}.`)} className="btn-secondary">SMS</button>
                     <button onClick={() => bulkDelete([lead.id])} className="btn-secondary">Remove</button>
                   </div>
                 </td>
               </tr>
             ))}
-            {!filteredLeads.length && <tr><td className="p-4 text-slate-500" colSpan="7">No leads match the current view.</td></tr>}
+            {!filteredLeads.length && <tr><td className="p-4 text-slate-500" colSpan="8">No leads match the current view.</td></tr>}
           </tbody>
         </table>
       </section>
@@ -289,9 +353,9 @@ export default function CampaignDetail() {
       <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div className="card overflow-x-auto">
           <div className="border-b border-slate-200 p-5"><h2 className="text-lg font-black text-slate-950">Calls</h2></div>
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[980px] text-sm">
             <thead className="bg-slate-50 text-left text-slate-500">
-              <tr><th className="p-4">Lead</th><th>Status</th><th>Outcome</th><th>Summary</th><th>Duration</th></tr>
+              <tr><th className="p-4">Lead</th><th>Status</th><th>Outcome</th><th>Confidence</th><th>Next Action</th><th>Summary</th><th>Duration</th></tr>
             </thead>
             <tbody>
               {calls.map(call => (
@@ -299,11 +363,13 @@ export default function CampaignDetail() {
                   <td className="p-4">{call.lead_name || call.phone || "Unknown"}</td>
                   <td><span className="status-pill">{call.status}</span></td>
                   <td><select className="input max-w-44 py-2" value={call.outcome || "IN_PROGRESS"} onChange={e => runAction(() => apiFetch(`/campaigns/${campaignId}/calls/${call.id}/outcome`, { method: "PATCH", body: JSON.stringify({ outcome: e.target.value }) }), () => "Outcome updated.")}>{outcomes.map(outcome => <option key={outcome} value={outcome}>{outcome}</option>)}</select></td>
+                  <td>{Math.round(Number(call.confidence || 0) * 100)}%</td>
+                  <td className="max-w-64 pr-4 text-slate-600">{call.next_action || "-"}</td>
                   <td className="max-w-80 pr-4 text-slate-500">{call.summary || "-"}</td>
                   <td>{call.duration_seconds || 0}s</td>
                 </tr>
               ))}
-              {!calls.length && <tr><td className="p-4 text-slate-500" colSpan="5">No calls yet.</td></tr>}
+              {!calls.length && <tr><td className="p-4 text-slate-500" colSpan="7">No calls yet.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -325,5 +391,14 @@ export default function CampaignDetail() {
         </div>
       </section>
     </Shell>
+  );
+}
+
+function MiniMetric({ label, value }) {
+  return (
+    <div className="rounded-lg bg-slate-50 p-3">
+      <p className="text-xs font-semibold text-slate-500">{label}</p>
+      <p className="mt-1 text-xl font-black text-slate-950">{Number(value || 0).toLocaleString("en-IN")}</p>
+    </div>
   );
 }

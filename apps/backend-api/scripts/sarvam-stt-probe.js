@@ -1,5 +1,5 @@
 const { spawn } = require("child_process");
-const ffmpegPath = require("ffmpeg-static");
+const ffmpegPath = resolveFfmpegPath();
 const WebSocket = require("ws");
 
 const apiKey = process.env.SARVAM_API_KEY;
@@ -17,6 +17,15 @@ main().catch(err => {
   console.error(JSON.stringify({ ok: false, error: err.message }));
   process.exitCode = 1;
 });
+
+function resolveFfmpegPath() {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  try {
+    return require("ffmpeg-static");
+  } catch {
+    return "ffmpeg";
+  }
+}
 
 async function main() {
   const tts = await synthesizeProbeAudio(probeText);

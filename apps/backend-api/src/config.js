@@ -36,6 +36,7 @@ module.exports = {
   callWindowEnd: Number(process.env.CALL_WINDOW_END || 20),
   maxCallAttempts: Number(process.env.MAX_CALL_ATTEMPTS || 3),
   retryDelayMinutes: Number(process.env.CALL_RETRY_DELAY_MINUTES || 360),
+  maxConcurrentCalls: Number(process.env.MAX_CONCURRENT_CALLS || process.env.EXOTEL_CHANNEL_COUNT || 1),
   loanAppUrl: process.env.LOAN_APP_URL || "https://yourapp.com/apply",
   paymentLinkBase: process.env.PAYMENT_LINK_BASE || "https://yourapp.com/pay",
   supportPhone: process.env.SUPPORT_PHONE || "",
@@ -45,7 +46,8 @@ module.exports = {
     apiKey: process.env.EXOTEL_API_KEY,
     apiToken: process.env.EXOTEL_API_TOKEN,
     fromNumber: process.env.EXOTEL_FROM_NUMBER,
-    apiBase: process.env.EXOTEL_API_BASE || "https://api.in.exotel.com"
+    apiBase: process.env.EXOTEL_API_BASE || "https://api.in.exotel.com",
+    channelCount: Number(process.env.EXOTEL_CHANNEL_COUNT || process.env.MAX_CONCURRENT_CALLS || 1)
   },
   ai: {
     geminiApiKey: process.env.GEMINI_API_KEY,

@@ -6,7 +6,7 @@ const { parseCsv } = require("../utils/csv");
 const { callQueue } = require("../queue");
 const { isDnc, logCompliance } = require("../services/compliance");
 const { getTenantSettings } = require("../services/settings");
-const { OUTCOMES } = require("../services/outcomes");
+const { describeOutcome, OUTCOMES } = require("../services/outcomes");
 const { sendLeadLink } = require("../providers/notifications");
 const { assertSarvamHealthyForCall } = require("../providers/sarvamHealth");
 const { listPlaybooks } = require("../services/playbooks");
@@ -53,8 +53,11 @@ async function enqueueLeads({ tenantId, campaignId, leadIds, resetAttempts = fal
   const providerHealth = await assertSarvamHealthyForCall();
   const settings = await getTenantSettings(tenantId);
   const params = [tenantId, campaignId];
-  let where = `tenant_id=$1 AND campaign_id=$2 AND status IN ('pending','failed','queued')`;
-  if (!resetAttempts) {
+  const forceSpecificLeads = force && Array.isArray(leadIds) && leadIds.length > 0;
+  let where = forceSpecificLeads
+    ? `tenant_id=$1 AND campaign_id=$2`
+    : `tenant_id=$1 AND campaign_id=$2 AND status IN ('pending','failed','queued')`;
+  if (!resetAttempts && !forceSpecificLeads) {
     params.push(settings.maxCallAttempts);
     where += ` AND attempt_count < $${params.length}`;
   }
@@ -377,12 +380,32 @@ router.get("/:campaignId/queue-status", async (req, res) => {
   if (!campaignResult.rows[0]) return res.status(404).json({ error: "Campaign not found" });
 
   const counts = await callQueue.getJobCounts("waiting", "active", "delayed", "completed", "failed", "paused");
-  const jobs = await callQueue.getJobs(["waiting", "active", "delayed", "paused"], 0, -1, false);
+  const jobs = await callQueue.getJobs(["waiting", "active", "delayed", "paused"], 0, 250, false);
   const campaignJobs = jobs.filter(job => job.data?.tenantId === req.user.tenantId && job.data?.campaignId === req.params.campaignId);
+  const campaignActive = campaignJobs.filter(job => job.finishedOn === undefined && job.processedOn);
+  const channelCount = Math.max(1, Number(config.exotel.channelCount || config.maxConcurrentCalls || 1));
+  const activeChannels = Number(counts.active || 0);
+  const waitingCalls = Number(counts.waiting || 0) + Number(counts.delayed || 0) + Number(counts.paused || 0);
   res.json({
     queue: counts,
+    channels: {
+      configured: channelCount,
+      active: activeChannels,
+      available: Math.max(0, channelCount - activeChannels),
+      waiting: waitingCalls
+    },
     campaignQueued: campaignJobs.length,
-    workerHint: counts.active > 0 || counts.waiting > 0 || counts.delayed > 0 ? "Queue has active work" : "No queued work"
+    campaignActive: campaignActive.length,
+    campaignWaiting: Math.max(0, campaignJobs.length - campaignActive.length),
+    activeJobs: campaignActive.slice(0, 10).map(job => ({
+      id: job.id,
+      leadId: job.data?.leadId,
+      processedOn: job.processedOn || null,
+      ageSeconds: job.processedOn ? Math.max(0, Math.round((Date.now() - job.processedOn) / 1000)) : 0
+    })),
+    workerHint: activeChannels > 0 || waitingCalls > 0
+      ? `${activeChannels}/${channelCount} channel slots active; ${waitingCalls} calls waiting.`
+      : "No queued work"
   });
 });
 
@@ -408,7 +431,7 @@ router.get("/:campaignId/export/leads", async (req, res) => {
 
 router.get("/:campaignId/export/calls", async (req, res) => {
   const result = await query(
-    `SELECT c.created_at, l.name, l.phone, c.call_sid, c.status, c.outcome, c.summary, c.duration_seconds, c.error
+    `SELECT c.created_at, l.name, l.phone, c.call_sid, c.status, c.outcome, c.summary, c.duration_seconds, c.error, l.playbook_type
      FROM calls c
      LEFT JOIN leads l ON l.id=c.lead_id
      WHERE c.tenant_id=$1 AND c.campaign_id=$2
@@ -416,8 +439,25 @@ router.get("/:campaignId/export/calls", async (req, res) => {
     [req.user.tenantId, req.params.campaignId]
   );
   sendCsv(res, "calls.csv", [
-    ["created_at", "name", "phone", "call_sid", "status", "outcome", "summary", "duration_seconds", "error"],
-    ...result.rows.map(row => [row.created_at, row.name, row.phone, row.call_sid, row.status, row.outcome, row.summary, row.duration_seconds, row.error])
+    ["created_at", "name", "phone", "call_sid", "status", "outcome", "intent", "confidence", "next_action", "objections", "summary", "duration_seconds", "error"],
+    ...result.rows.map(row => {
+      const details = describeOutcome(row.outcome || "IN_PROGRESS", row.summary || "", row.playbook_type || "");
+      return [
+        row.created_at,
+        row.name,
+        row.phone,
+        row.call_sid,
+        row.status,
+        row.outcome,
+        details.intent,
+        details.confidence,
+        details.nextAction,
+        details.objections.join("|"),
+        row.summary,
+        row.duration_seconds,
+        row.error
+      ];
+    })
   ]);
 });
 
@@ -446,7 +486,17 @@ router.get("/:campaignId/calls", async (req, res) => {
      ORDER BY c.created_at DESC LIMIT 200`,
     [req.user.tenantId, req.params.campaignId]
   );
-  res.json(result.rows);
+  res.json(result.rows.map(row => {
+    const details = describeOutcome(row.outcome || "IN_PROGRESS", row.summary || "", row.playbook_type || "");
+    return {
+      ...row,
+      intent: details.intent,
+      confidence: details.confidence,
+      reason: details.reason,
+      next_action: details.nextAction,
+      objections: details.objections
+    };
+  }));
 });
 
 router.patch("/:campaignId/calls/:callId/outcome", async (req, res) => {

@@ -1,5 +1,5 @@
 const { spawn } = require("child_process");
-const ffmpegPath = require("ffmpeg-static");
+const ffmpegPath = resolveFfmpegPath();
 
 async function toExotelPcmBase64(inputBase64, options = {}) {
   const input = Buffer.from(inputBase64, "base64");
@@ -55,3 +55,12 @@ function runFfmpeg(input, args) {
 }
 
 module.exports = { toExotelPcmBase64 };
+
+function resolveFfmpegPath() {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  try {
+    return require("ffmpeg-static");
+  } catch {
+    return "ffmpeg";
+  }
+}

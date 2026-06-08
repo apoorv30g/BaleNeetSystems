@@ -12,6 +12,12 @@ const blankForm = {
   trigger: "",
   cadence: "",
   goal: "",
+  opening: "",
+  qualification: "",
+  objectionHandling: "",
+  successCondition: "",
+  stopCondition: "",
+  outcomeFields: "intent, confidence, reason, next action, objection",
   steps: ""
 };
 
@@ -32,6 +38,7 @@ export default function Playbooks() {
   }, []);
 
   function editPlaybook(key, playbook) {
+    const parsed = parsePlaybookSteps(playbook.steps || []);
     setEditingKey(key);
     setForm({
       key,
@@ -41,7 +48,13 @@ export default function Playbooks() {
       trigger: playbook.trigger || "",
       cadence: playbook.cadence || "",
       goal: playbook.goal || "",
-      steps: (playbook.steps || []).join("\n")
+      opening: parsed.opening,
+      qualification: parsed.qualification,
+      objectionHandling: parsed.objectionHandling,
+      successCondition: parsed.successCondition,
+      stopCondition: parsed.stopCondition,
+      outcomeFields: parsed.outcomeFields || blankForm.outcomeFields,
+      steps: parsed.steps.join("\n")
     });
     setFormOpen(true);
   }
@@ -53,7 +66,7 @@ export default function Playbooks() {
     try {
       const path = editingKey ? `/playbooks/${editingKey}` : "/playbooks";
       const method = editingKey ? "PUT" : "POST";
-      await apiFetch(path, { method, body: JSON.stringify(form) });
+      await apiFetch(path, { method, body: JSON.stringify({ ...form, steps: buildPlaybookSteps(form) }) });
       setMessage(editingKey ? "Playbook updated." : "Playbook created.");
       setForm(blankForm);
       setEditingKey("");
@@ -99,7 +112,20 @@ export default function Playbooks() {
           <input className="input" placeholder="Trigger" value={form.trigger} onChange={e => setForm({ ...form, trigger: e.target.value })} />
           <input className="input" placeholder="Cadence" value={form.cadence} onChange={e => setForm({ ...form, cadence: e.target.value })} />
           <textarea className="input min-h-24 lg:col-span-2" placeholder="Goal" value={form.goal} onChange={e => setForm({ ...form, goal: e.target.value })} />
-          <textarea className="input min-h-40 lg:col-span-2" placeholder="One conversation step per line" value={form.steps} onChange={e => setForm({ ...form, steps: e.target.value })} />
+          <div className="lg:col-span-2">
+            <div className="mb-3 grid grid-cols-2 gap-2 text-xs font-bold text-slate-500 sm:grid-cols-3 lg:grid-cols-6">
+              {["Opening", "Qualification", "Objections", "Success", "Stop", "Outcome"].map(label => (
+                <span key={label} className="rounded-lg bg-slate-50 px-3 py-2 text-center">{label}</span>
+              ))}
+            </div>
+          </div>
+          <textarea className="input min-h-20" placeholder="Opening line and consent check" value={form.opening} onChange={e => setForm({ ...form, opening: e.target.value })} />
+          <textarea className="input min-h-20" placeholder="Qualification question or next best question" value={form.qualification} onChange={e => setForm({ ...form, qualification: e.target.value })} />
+          <textarea className="input min-h-24 lg:col-span-2" placeholder="Objection handling: interest, fees, safety, callback, not interested" value={form.objectionHandling} onChange={e => setForm({ ...form, objectionHandling: e.target.value })} />
+          <textarea className="input min-h-20" placeholder="Success condition, e.g. user agrees to open link" value={form.successCondition} onChange={e => setForm({ ...form, successCondition: e.target.value })} />
+          <textarea className="input min-h-20" placeholder="Stop condition, e.g. opt-out, wrong number, voicemail" value={form.stopCondition} onChange={e => setForm({ ...form, stopCondition: e.target.value })} />
+          <input className="input lg:col-span-2" placeholder="Outcome fields to capture" value={form.outcomeFields} onChange={e => setForm({ ...form, outcomeFields: e.target.value })} />
+          <textarea className="input min-h-40 lg:col-span-2" placeholder="Additional conversation steps, one per line" value={form.steps} onChange={e => setForm({ ...form, steps: e.target.value })} />
           <button className="btn">{editingKey ? "Save Playbook" : "Create Playbook"}</button>
           <button type="button" onClick={() => { setFormOpen(false); setEditingKey(""); setForm(blankForm); }} className="btn-secondary">Cancel</button>
         </form>
@@ -136,4 +162,53 @@ export default function Playbooks() {
       </div>
     </Shell>
   );
+}
+
+function buildPlaybookSteps(form) {
+  const structured = [
+    ["Opening", form.opening],
+    ["Qualification", form.qualification],
+    ["Objection handling", form.objectionHandling],
+    ["Success condition", form.successCondition],
+    ["Stop condition", form.stopCondition],
+    ["Outcome fields", form.outcomeFields]
+  ]
+    .filter(([, value]) => String(value || "").trim())
+    .map(([label, value]) => `${label}: ${String(value).trim()}`);
+  const additional = String(form.steps || "")
+    .split(/\r?\n/)
+    .map(step => step.trim())
+    .filter(Boolean);
+  return [...structured, ...additional].join("\n");
+}
+
+function parsePlaybookSteps(steps) {
+  const result = {
+    opening: "",
+    qualification: "",
+    objectionHandling: "",
+    successCondition: "",
+    stopCondition: "",
+    outcomeFields: "",
+    steps: []
+  };
+  const prefixes = [
+    ["Opening:", "opening"],
+    ["Qualification:", "qualification"],
+    ["Objection handling:", "objectionHandling"],
+    ["Success condition:", "successCondition"],
+    ["Stop condition:", "stopCondition"],
+    ["Outcome fields:", "outcomeFields"]
+  ];
+
+  for (const step of steps) {
+    const text = String(step || "").trim();
+    const match = prefixes.find(([prefix]) => text.toLowerCase().startsWith(prefix.toLowerCase()));
+    if (match) {
+      result[match[1]] = text.slice(match[0].length).trim();
+    } else if (text) {
+      result.steps.push(text);
+    }
+  }
+  return result;
 }
