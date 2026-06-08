@@ -205,6 +205,15 @@ export default function CampaignDetail() {
     setSelected(current => Array.from(new Set([...current, ...filteredLeads.map(lead => lead.id)])));
   }
 
+  function cleanProviderError(error) {
+    if (!error) return "";
+    return String(error)
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/^Exotel failed:\s*/i, "")
+      .trim();
+  }
+
   return (
     <Shell>
       <div className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm xl:flex-row xl:items-start xl:justify-between">
@@ -366,7 +375,7 @@ export default function CampaignDetail() {
           <div className="border-b border-slate-200 p-5"><h2 className="text-lg font-black text-slate-950">Calls</h2></div>
           <table className="w-full min-w-[980px] text-sm">
             <thead className="bg-slate-50 text-left text-slate-500">
-              <tr><th className="p-4">Lead</th><th>Status</th><th>Outcome</th><th>Confidence</th><th>Next Action</th><th>Summary</th><th>Duration</th></tr>
+              <tr><th className="p-4">Lead</th><th>Status</th><th>Outcome</th><th>Confidence</th><th>Next Action</th><th>Summary</th><th>Failure</th><th>Duration</th></tr>
             </thead>
             <tbody>
               {calls.map(call => (
@@ -377,10 +386,11 @@ export default function CampaignDetail() {
                   <td>{Math.round(Number(call.confidence || 0) * 100)}%</td>
                   <td className="max-w-64 pr-4 text-slate-600">{call.next_action || "-"}</td>
                   <td className="max-w-80 pr-4 text-slate-500">{call.summary || "-"}</td>
+                  <td className="max-w-72 pr-4 text-red-600" title={cleanProviderError(call.error)}>{cleanProviderError(call.error) || "-"}</td>
                   <td>{call.duration_seconds || 0}s</td>
                 </tr>
               ))}
-              {!calls.length && <tr><td className="p-4 text-slate-500" colSpan="7">No calls yet.</td></tr>}
+              {!calls.length && <tr><td className="p-4 text-slate-500" colSpan="8">No calls yet.</td></tr>}
             </tbody>
           </table>
         </div>
