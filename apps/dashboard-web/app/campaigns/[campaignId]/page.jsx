@@ -152,10 +152,21 @@ export default function CampaignDetail() {
 
   async function bulkQueue(ids = selected) {
     await runAction(
-      () => apiFetch(`/campaigns/${campaignId}/leads/bulk-queue`, { method: "POST", body: JSON.stringify({ leadIds: ids }) }),
-      result => `Queued ${result.queued} calls. Blocked ${result.blocked} DNC leads.`
+      () => apiFetch(`/campaigns/${campaignId}/leads/bulk-queue`, { method: "POST", body: JSON.stringify({ leadIds: ids, force: true }) }),
+      result => result.queued
+        ? `Queued ${result.queued} selected calls. Blocked ${result.blocked} DNC leads.`
+        : `No selected calls were queued. Blocked ${result.blocked} DNC leads.`
     );
     setSelected([]);
+  }
+
+  async function queueLead(lead) {
+    await runAction(
+      () => apiFetch(`/campaigns/${campaignId}/leads/${lead.id}/queue-call`, { method: "POST" }),
+      result => result.queued
+        ? `Queued call for ${lead.name || lead.phone}.`
+        : `Could not queue ${lead.name || lead.phone}. Blocked ${result.blocked} DNC leads.`
+    );
   }
 
   async function bulkDelete(ids = selected) {
@@ -338,7 +349,7 @@ export default function CampaignDetail() {
                 <td>{lead.attempt_count}</td>
                 <td className="pr-4 text-right">
                   <div className="flex flex-wrap justify-end gap-2">
-                    <button onClick={() => bulkQueue([lead.id])} className="btn" disabled={loading}><PhoneCall size={16} /> Call Now</button>
+                    <button onClick={() => queueLead(lead)} className="btn" disabled={loading}><PhoneCall size={16} /> Call Now</button>
                     <button onClick={() => runAction(() => apiFetch(`/campaigns/${campaignId}/leads/${lead.id}/send-link`, { method: "POST", body: JSON.stringify({ channel: "sms" }) }), event => `SMS link ${event.status}.`)} className="btn-secondary">SMS</button>
                     <button onClick={() => bulkDelete([lead.id])} className="btn-secondary">Remove</button>
                   </div>

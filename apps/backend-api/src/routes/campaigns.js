@@ -331,7 +331,12 @@ router.post("/:campaignId/leads/bulk-queue", async (req, res) => {
   try {
     const leadIds = Array.isArray(req.body.leadIds) ? req.body.leadIds : [];
     if (!leadIds.length) return res.status(400).json({ error: "leadIds are required" });
-    const result = await enqueueLeads({ tenantId: req.user.tenantId, campaignId: req.params.campaignId, leadIds });
+    const result = await enqueueLeads({
+      tenantId: req.user.tenantId,
+      campaignId: req.params.campaignId,
+      leadIds,
+      force: Boolean(req.body.force)
+    });
     res.json(result);
   } catch (err) {
     console.error("bulk queue failed", err);
