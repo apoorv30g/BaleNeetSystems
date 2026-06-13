@@ -62,12 +62,12 @@ export default function Upload() {
 
       <form onSubmit={submit} className="card mt-8 p-8">
         <label className="block text-sm font-semibold text-slate-600">Campaign</label>
-        <select className="input mt-3" value={campaignId} onChange={e => setCampaignId(e.target.value)}>
+        <select className="input mt-3" value={campaignId} onChange={e => setCampaignId(e.target.value)} aria-label="Select campaign for CSV upload" title="Select campaign for CSV upload">
           {campaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
         </select>
         {campaignId && <Link className="mt-3 inline-block text-sm font-semibold text-sky-700 hover:text-sky-900" href={`/campaigns/${campaignId}`}>Open selected campaign</Link>}
         <label className="mt-6 block text-sm font-semibold text-slate-600">Choose CSV file</label>
-        <input className="input mt-3" type="file" accept=".csv,text/csv" onChange={e => setFile(e.target.files?.[0] || null)} />
+        <input className="input mt-3" type="file" accept=".csv,text/csv" aria-label="Upload CSV with lead columns" title="Upload CSV with lead columns" onChange={e => setFile(e.target.files?.[0] || null)} />
         <button className="btn mt-5" disabled={loading}>{loading ? "Uploading..." : "Upload Leads"}</button>
       </form>
     </Shell>

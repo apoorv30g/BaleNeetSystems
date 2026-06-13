@@ -70,10 +70,10 @@ export default function Login() {
         {error && <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
         <label className="mt-6 block text-sm font-semibold text-slate-600">Email</label>
-        <input className="input mt-2" value={email} onChange={e => setEmail(e.target.value)} type="email" required />
+        <input className="input mt-2" value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="you@company.com" autoComplete="email" required />
 
         <label className="mt-4 block text-sm font-semibold text-slate-600">Password</label>
-        <input className="input mt-2" value={password} onChange={e => setPassword(e.target.value)} type="password" required />
+        <input className="input mt-2" value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder="Enter your password" autoComplete="current-password" required />
 
         <button className="btn mt-6 w-full" disabled={loading}>{loading ? "Signing in..." : "Sign in"}</button>
         <Link href="/admin/login" className="mt-4 block text-center text-sm font-semibold text-slate-500 hover:text-sky-700">Platform admin login</Link>

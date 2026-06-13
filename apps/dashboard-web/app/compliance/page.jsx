@@ -89,8 +89,8 @@ export default function Compliance() {
       <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
         <form onSubmit={addDnc} className="card p-6">
           <h2 className="text-lg font-black text-slate-950">Add DNC</h2>
-          <input className="input mt-5" placeholder="Phone number" value={phone} onChange={e => setPhone(e.target.value)} />
-          <input className="input mt-3" placeholder="Reason" value={reason} onChange={e => setReason(e.target.value)} />
+          <input className="input mt-5" placeholder="Phone number, e.g. +918826522604" value={phone} onChange={e => setPhone(e.target.value)} />
+          <input className="input mt-3" placeholder="Reason, e.g. customer opted out" value={reason} onChange={e => setReason(e.target.value)} />
           <button className="btn mt-4 w-full">Save</button>
         </form>
 
@@ -123,14 +123,14 @@ export default function Compliance() {
         <form onSubmit={saveSettings} className="card p-6">
           <h2 className="text-lg font-black text-slate-950">Settings</h2>
           <div className="mt-4 grid grid-cols-2 gap-3">
-            <input className="input" type="number" min="0" max="23" value={settingsForm?.callWindowStart || 9} onChange={e => setSettingsForm({ ...settingsForm, callWindowStart: Number(e.target.value) })} />
-            <input className="input" type="number" min="1" max="24" value={settingsForm?.callWindowEnd || 20} onChange={e => setSettingsForm({ ...settingsForm, callWindowEnd: Number(e.target.value) })} />
-            <input className="input" type="number" min="1" value={settingsForm?.maxCallAttempts || 3} onChange={e => setSettingsForm({ ...settingsForm, maxCallAttempts: Number(e.target.value) })} />
-            <input className="input" type="number" min="1" value={settingsForm?.retryDelayMinutes || 360} onChange={e => setSettingsForm({ ...settingsForm, retryDelayMinutes: Number(e.target.value) })} />
+            <input className="input" type="number" min="0" max="23" placeholder="Start hour, e.g. 9" aria-label="Call window start hour" title="Call window start hour" value={settingsForm?.callWindowStart || 9} onChange={e => setSettingsForm({ ...settingsForm, callWindowStart: Number(e.target.value) })} />
+            <input className="input" type="number" min="1" max="24" placeholder="End hour, e.g. 20" aria-label="Call window end hour" title="Call window end hour" value={settingsForm?.callWindowEnd || 20} onChange={e => setSettingsForm({ ...settingsForm, callWindowEnd: Number(e.target.value) })} />
+            <input className="input" type="number" min="1" placeholder="Max attempts, e.g. 3" aria-label="Maximum call attempts" title="Maximum call attempts" value={settingsForm?.maxCallAttempts || 3} onChange={e => setSettingsForm({ ...settingsForm, maxCallAttempts: Number(e.target.value) })} />
+            <input className="input" type="number" min="1" placeholder="Retry delay minutes, e.g. 360" aria-label="Retry delay in minutes" title="Retry delay in minutes" value={settingsForm?.retryDelayMinutes || 360} onChange={e => setSettingsForm({ ...settingsForm, retryDelayMinutes: Number(e.target.value) })} />
           </div>
-          <textarea className="input mt-3 min-h-24" value={settingsForm?.aiDisclosure || ""} onChange={e => setSettingsForm({ ...settingsForm, aiDisclosure: e.target.value })} placeholder="AI disclosure" />
-          <input className="input mt-3" value={settingsForm?.smsWebhookUrl || ""} onChange={e => setSettingsForm({ ...settingsForm, smsWebhookUrl: e.target.value })} placeholder="SMS webhook URL" />
-          <input className="input mt-3" value={settingsForm?.whatsappWebhookUrl || ""} onChange={e => setSettingsForm({ ...settingsForm, whatsappWebhookUrl: e.target.value })} placeholder="WhatsApp webhook URL" />
+          <textarea className="input mt-3 min-h-24" value={settingsForm?.aiDisclosure || ""} onChange={e => setSettingsForm({ ...settingsForm, aiDisclosure: e.target.value })} placeholder="AI disclosure, e.g. This is an AI assistant calling from LoanConnect." />
+          <input className="input mt-3" value={settingsForm?.smsWebhookUrl || ""} onChange={e => setSettingsForm({ ...settingsForm, smsWebhookUrl: e.target.value })} placeholder="SMS webhook URL, e.g. https://example.com/sms" />
+          <input className="input mt-3" value={settingsForm?.whatsappWebhookUrl || ""} onChange={e => setSettingsForm({ ...settingsForm, whatsappWebhookUrl: e.target.value })} placeholder="WhatsApp webhook URL, e.g. https://example.com/whatsapp" />
           <button className="btn mt-4 w-full">Save Settings</button>
         </form>
 

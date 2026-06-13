@@ -195,15 +195,15 @@ export default function AdminPage() {
                 <p className="text-sm text-slate-500">Create tenant and first login.</p>
               </div>
             </div>
-            <input className="input mt-5" placeholder="Client company name" value={clientForm.clientName} onChange={e => setClientForm({ ...clientForm, clientName: e.target.value })} required />
-            <select className="input mt-3" value={clientForm.planType} onChange={e => setClientForm({ ...clientForm, planType: e.target.value })}>
+            <input className="input mt-5" placeholder="Client company name, e.g. Acme Finance Pvt Ltd" value={clientForm.clientName} onChange={e => setClientForm({ ...clientForm, clientName: e.target.value })} required />
+            <select className="input mt-3" value={clientForm.planType} onChange={e => setClientForm({ ...clientForm, planType: e.target.value })} aria-label="Client plan type" title="Client plan type">
               <option value="starter">Starter</option>
               <option value="growth">Growth</option>
               <option value="enterprise">Enterprise</option>
             </select>
-            <input className="input mt-3" placeholder="Client user name" value={clientForm.adminName} onChange={e => setClientForm({ ...clientForm, adminName: e.target.value })} />
-            <input className="input mt-3" placeholder="Client login email" type="email" value={clientForm.adminEmail} onChange={e => setClientForm({ ...clientForm, adminEmail: e.target.value })} required />
-            <input className="input mt-3" placeholder="Temporary password" type="password" value={clientForm.adminPassword} onChange={e => setClientForm({ ...clientForm, adminPassword: e.target.value })} required />
+            <input className="input mt-3" placeholder="First admin name, e.g. Priya Sharma" value={clientForm.adminName} onChange={e => setClientForm({ ...clientForm, adminName: e.target.value })} />
+            <input className="input mt-3" placeholder="Client admin email, e.g. admin@client.com" type="email" value={clientForm.adminEmail} onChange={e => setClientForm({ ...clientForm, adminEmail: e.target.value })} required />
+            <input className="input mt-3" placeholder="Set temporary password" type="password" value={clientForm.adminPassword} onChange={e => setClientForm({ ...clientForm, adminPassword: e.target.value })} required />
             <button className="btn mt-4 w-full" disabled={loading}><Plus size={16} /> Create Client</button>
           </form>
         </section>
@@ -217,13 +217,13 @@ export default function AdminPage() {
                 <p className="text-sm text-slate-500">{selectedClientName}</p>
               </div>
             </div>
-            <select className="input mt-5" value={selectedClient} onChange={e => { setSelectedClient(e.target.value); loadClientUsers(e.target.value); }}>
+            <select className="input mt-5" value={selectedClient} onChange={e => { setSelectedClient(e.target.value); loadClientUsers(e.target.value); }} aria-label="Select client workspace" title="Select client workspace">
               {(overview?.clients || []).map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
             </select>
-            <input className="input mt-3" placeholder="Name" value={userForm.name} onChange={e => setUserForm({ ...userForm, name: e.target.value })} />
-            <input className="input mt-3" placeholder="Email" type="email" value={userForm.email} onChange={e => setUserForm({ ...userForm, email: e.target.value })} required />
-            <input className="input mt-3" placeholder="Temporary password" type="password" value={userForm.password} onChange={e => setUserForm({ ...userForm, password: e.target.value })} required />
-            <select className="input mt-3" value={userForm.role} onChange={e => setUserForm({ ...userForm, role: e.target.value })}>
+            <input className="input mt-3" placeholder="User full name, e.g. Rahul Verma" value={userForm.name} onChange={e => setUserForm({ ...userForm, name: e.target.value })} />
+            <input className="input mt-3" placeholder="User email, e.g. ops@client.com" type="email" value={userForm.email} onChange={e => setUserForm({ ...userForm, email: e.target.value })} required />
+            <input className="input mt-3" placeholder="Set temporary password" type="password" value={userForm.password} onChange={e => setUserForm({ ...userForm, password: e.target.value })} required />
+            <select className="input mt-3" value={userForm.role} onChange={e => setUserForm({ ...userForm, role: e.target.value })} aria-label="User role" title="User role">
               <option value="operator">Operator</option>
               <option value="viewer">Viewer</option>
             </select>

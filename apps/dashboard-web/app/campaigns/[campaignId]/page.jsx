@@ -235,22 +235,22 @@ export default function CampaignDetail() {
 
       {editOpen && (
         <form onSubmit={saveCampaign} className="card mt-8 grid grid-cols-1 gap-4 p-5 md:grid-cols-2 md:p-6">
-          <input className="input" value={form.name || ""} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Campaign name" />
-          <select className="input" value={form.status || "draft"} onChange={e => setForm({ ...form, status: e.target.value })}>
+          <input className="input" value={form.name || ""} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Campaign name, e.g. June fresh leads" />
+          <select className="input" value={form.status || "draft"} onChange={e => setForm({ ...form, status: e.target.value })} aria-label="Campaign status" title="Campaign status">
             {["draft", "active", "paused", "completed"].map(status => <option key={status} value={status}>{status}</option>)}
           </select>
-          <input className="input" value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Description" />
-          <select className="input" value={form.campaignType || "RETARGETING"} onChange={e => setForm({ ...form, campaignType: e.target.value })}>
+          <input className="input" value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Description, e.g. Follow up on approved offers" />
+          <select className="input" value={form.campaignType || "RETARGETING"} onChange={e => setForm({ ...form, campaignType: e.target.value })} aria-label="Campaign type" title="Campaign type">
             <option value="RETARGETING">Retargeting</option>
             <option value="COLLECTION">Collection</option>
             <option value="TARGETING">Targeting</option>
           </select>
-          <select className="input" value={form.playbookType || ""} onChange={e => setForm({ ...form, playbookType: e.target.value })}>
+          <select className="input" value={form.playbookType || ""} onChange={e => setForm({ ...form, playbookType: e.target.value })} aria-label="Playbook" title="Playbook">
             {Object.entries(playbooks).map(([key, playbook]) => <option key={key} value={key}>{playbook.title}</option>)}
           </select>
-          <input className="input" value={form.language || ""} onChange={e => setForm({ ...form, language: e.target.value })} />
-          <input className="input" type="number" min="1" value={form.dailyLimit || 200} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
-          <input className="input" type="number" min="1" value={form.maxAttempts || 3} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
+          <input className="input" value={form.language || ""} onChange={e => setForm({ ...form, language: e.target.value })} placeholder="Language, e.g. Hinglish, Hindi, English" />
+          <input className="input" type="number" min="1" placeholder="Daily call limit, e.g. 200" aria-label="Daily call limit" title="Daily call limit" value={form.dailyLimit || 200} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
+          <input className="input" type="number" min="1" placeholder="Max attempts per lead, e.g. 3" aria-label="Max attempts per lead" title="Max attempts per lead" value={form.maxAttempts || 3} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
           <button className="btn">Save</button>
           <button type="button" onClick={deleteCampaign} className="btn-secondary">Delete Campaign</button>
         </form>
@@ -318,11 +318,11 @@ export default function CampaignDetail() {
 
         <div className="card p-5">
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_160px_220px_auto]">
-            <input className="input" placeholder="Search name, phone or playbook" value={filters.q} onChange={e => setFilters({ ...filters, q: e.target.value })} />
-            <select className="input" value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}>
+            <input className="input" placeholder="Search by name, phone, status or playbook" value={filters.q} onChange={e => setFilters({ ...filters, q: e.target.value })} />
+            <select className="input" value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })} aria-label="Lead status filter" title="Lead status filter">
               {["all", "pending", "queued", "called", "completed", "failed", "max_attempts"].map(status => <option key={status} value={status}>{status}</option>)}
             </select>
-            <select className="input" value={filters.playbook} onChange={e => setFilters({ ...filters, playbook: e.target.value })}>
+            <select className="input" value={filters.playbook} onChange={e => setFilters({ ...filters, playbook: e.target.value })} aria-label="Playbook filter" title="Playbook filter">
               <option value="all">All playbooks</option>
               {Object.entries(playbooks).map(([key, playbook]) => <option key={key} value={key}>{playbook.title}</option>)}
             </select>

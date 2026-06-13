@@ -66,19 +66,19 @@ export default function Campaigns() {
 
       {formOpen && (
         <form onSubmit={createCampaign} className="card mt-8 grid grid-cols-1 gap-4 p-5 md:grid-cols-2 md:p-6">
-          <input className="input" placeholder="Campaign name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
-          <input className="input" placeholder="Description" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
-          <select className="input" value={form.campaignType} onChange={e => setForm({ ...form, campaignType: e.target.value })}>
+          <input className="input" placeholder="Campaign name, e.g. June fresh leads" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
+          <input className="input" placeholder="Description, e.g. New loan eligibility outreach" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+          <select className="input" value={form.campaignType} onChange={e => setForm({ ...form, campaignType: e.target.value })} aria-label="Campaign type" title="Campaign type">
             <option value="RETARGETING">Retargeting</option>
             <option value="COLLECTION">Collection</option>
             <option value="TARGETING">Targeting</option>
           </select>
-          <select className="input" value={form.playbookType} onChange={e => setForm({ ...form, playbookType: e.target.value })}>
+          <select className="input" value={form.playbookType} onChange={e => setForm({ ...form, playbookType: e.target.value })} aria-label="Playbook" title="Playbook">
             {Object.entries(playbooks).map(([key, playbook]) => <option key={key} value={key}>{playbook.title}</option>)}
           </select>
-          <input className="input" type="number" min="1" value={form.dailyLimit} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
-          <input className="input" type="number" min="1" value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
-          <input className="input" value={form.language} onChange={e => setForm({ ...form, language: e.target.value })} />
+          <input className="input" type="number" min="1" placeholder="Daily call limit, e.g. 200" aria-label="Daily call limit" title="Daily call limit" value={form.dailyLimit} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
+          <input className="input" type="number" min="1" placeholder="Max attempts per lead, e.g. 3" aria-label="Max attempts per lead" title="Max attempts per lead" value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
+          <input className="input" placeholder="Language, e.g. Hinglish, Hindi, English" value={form.language} onChange={e => setForm({ ...form, language: e.target.value })} />
           <button className="btn"><Megaphone size={16} /> Create</button>
         </form>
       )}

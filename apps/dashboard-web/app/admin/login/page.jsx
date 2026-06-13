@@ -56,10 +56,10 @@ export default function AdminLogin() {
         {error && <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
         <label className="mt-6 block text-sm font-semibold text-slate-600">Admin Email</label>
-        <input className="input mt-2" value={email} onChange={e => setEmail(e.target.value)} type="email" required />
+        <input className="input mt-2" value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="admin@company.com" autoComplete="email" required />
 
         <label className="mt-4 block text-sm font-semibold text-slate-600">Password</label>
-        <input className="input mt-2" value={password} onChange={e => setPassword(e.target.value)} type="password" required />
+        <input className="input mt-2" value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder="Enter admin password" autoComplete="current-password" required />
 
         <button className="btn mt-6 w-full" disabled={loading}>{loading ? "Verifying..." : "Sign in as admin"}</button>
         <Link href="/login" className="mt-4 block text-center text-sm font-semibold text-slate-500 hover:text-sky-700">Client login</Link>
