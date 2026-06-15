@@ -10,6 +10,7 @@ const {
   getCachedAudio,
   saveCachedAudio
 } = require("../services/audioCache");
+const { createPcmVad } = require("../services/vad");
 const {
   classifyConversation,
   isCallScreening,
@@ -44,6 +45,7 @@ const INTERIM_TRANSCRIPT_FORCE_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRI
 const INTERIM_TRANSCRIPT_MIN_WORDS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_WORDS || 2);
 const INTERIM_TRANSCRIPT_MIN_CHARS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS || 5);
 const STT_DURING_ASSISTANT_ENABLED = process.env.VOICEBOT_STT_DURING_ASSISTANT_ENABLED === "true";
+const VAD_ENABLED = process.env.VOICEBOT_VAD_ENABLED !== "false";
 const AUDIO_CACHE_ENABLED = process.env.VOICEBOT_AUDIO_CACHE_ENABLED !== "false";
 const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "false";
 const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 2500);
@@ -102,9 +104,15 @@ function attachVoicebot(server) {
       calledPhone: "",
       preferredLanguage: "",
       stt: null,
+      vad: null,
       sttAudioChunks: 0,
       sttAudioBytes: 0,
       sttAudioSkippedChunks: 0,
+      sttAudioSkippedBytes: 0,
+      sttVadSuppressedChunks: 0,
+      sttVadSuppressedBytes: 0,
+      sttVadSpeechStarts: 0,
+      sttVadSpeechEnds: 0,
       ttsCharsDynamic: 0,
       ttsCharsCached: 0,
       ttsCacheHits: 0,
@@ -223,25 +231,15 @@ async function handleMessage(ws, session, data) {
       }
       const shouldForwardToStt = STT_DURING_ASSISTANT_ENABLED || !session.speaking;
       if (shouldForwardToStt) {
-        session.sttAudioChunks++;
-        session.sttAudioBytes += audio.length;
-        if (session.sttAudioChunks === 1 || session.sttAudioChunks % 100 === 0) {
-          logVoicebotEvent(session, "stt_audio_forwarded", {
-            payloadBytes: audio.length,
-            sttAudioChunks: session.sttAudioChunks,
-            sttAudioBytes: session.sttAudioBytes,
-            sttProvider: session.stt?.provider || "",
-            sttReady: Boolean(session.stt?.ready),
-            speaking: session.speaking
-          }).catch(() => {});
-        }
-        session.stt?.sendAudio(audio);
+        forwardAudioToStt(session, audio);
       } else {
         session.sttAudioSkippedChunks++;
+        session.sttAudioSkippedBytes += audio.length;
         if (session.sttAudioSkippedChunks === 1 || session.sttAudioSkippedChunks % 100 === 0) {
           logVoicebotEvent(session, "stt_audio_skipped_during_assistant", {
             payloadBytes: audio.length,
             sttAudioSkippedChunks: session.sttAudioSkippedChunks,
+            sttAudioSkippedBytes: session.sttAudioSkippedBytes,
             speaking: session.speaking
           }).catch(() => {});
         }
@@ -504,6 +502,88 @@ function startStt(ws, session) {
       logVoicebotEvent(session, "stt_error", { error: err.message, ...meta }).catch(() => {});
     }
   });
+}
+
+function forwardAudioToStt(session, audio) {
+  if (!audio?.length) return;
+  const vadResult = applyVad(session, audio);
+  const forwardedBytes = vadResult.forwarded.reduce((sum, buffer) => sum + buffer.length, 0);
+
+  if (vadResult.started) {
+    session.sttVadSpeechStarts++;
+    logVoicebotEvent(session, "vad_speech_started", {
+      speechStarts: session.sttVadSpeechStarts,
+      stats: vadResult.stats,
+      snapshot: session.vad?.snapshot?.() || null
+    }).catch(() => {});
+  }
+  if (vadResult.ended) {
+    session.sttVadSpeechEnds++;
+    logVoicebotEvent(session, "vad_speech_ended", {
+      speechEnds: session.sttVadSpeechEnds,
+      stats: vadResult.stats,
+      snapshot: session.vad?.snapshot?.() || null
+    }).catch(() => {});
+  }
+
+  if (!forwardedBytes) {
+    session.sttVadSuppressedChunks++;
+    session.sttVadSuppressedBytes += audio.length;
+    if (session.sttVadSuppressedChunks === 1 || session.sttVadSuppressedChunks % 100 === 0) {
+      logVoicebotEvent(session, "stt_audio_vad_suppressed", {
+        payloadBytes: audio.length,
+        suppressedChunks: session.sttVadSuppressedChunks,
+        suppressedBytes: session.sttVadSuppressedBytes,
+        reason: vadResult.reason,
+        stats: vadResult.stats,
+        sttProvider: session.stt?.provider || "",
+        sttReady: Boolean(session.stt?.ready)
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  for (const buffer of vadResult.forwarded) {
+    session.sttAudioChunks++;
+    session.sttAudioBytes += buffer.length;
+    session.stt?.sendAudio(buffer);
+  }
+
+  if (session.sttAudioChunks === vadResult.forwarded.length || session.sttAudioChunks % 100 === 0 || vadResult.started) {
+    logVoicebotEvent(session, "stt_audio_forwarded", {
+      inputBytes: audio.length,
+      forwardedBytes,
+      forwardedBuffers: vadResult.forwarded.length,
+      sttAudioChunks: session.sttAudioChunks,
+      sttAudioBytes: session.sttAudioBytes,
+      vadEnabled: VAD_ENABLED,
+      vadReason: vadResult.reason,
+      stats: vadResult.stats,
+      sttProvider: session.stt?.provider || "",
+      sttReady: Boolean(session.stt?.ready),
+      speaking: session.speaking
+    }).catch(() => {});
+  }
+}
+
+function applyVad(session, audio) {
+  if (!VAD_ENABLED) {
+    return {
+      forwarded: [audio],
+      speech: true,
+      started: false,
+      ended: false,
+      reason: "disabled",
+      stats: { durationMs: pcmBytesToMs(audio.length, session.mediaSampleRate || 8000) }
+    };
+  }
+  if (!session.vad) {
+    session.vad = createPcmVad({
+      enabled: true,
+      sampleRate: session.mediaSampleRate || 8000
+    });
+  }
+  return session.vad.process(audio);
 }
 
 async function handleTranscript(ws, session, event) {
@@ -2138,7 +2218,15 @@ function buildCallMetrics(session, durationSeconds) {
     ttsCharsDynamic,
     ttsCharsCached,
     llmInputTokens,
-    llmOutputTokens
+    llmOutputTokens,
+    vad: {
+      enabled: VAD_ENABLED,
+      suppressedBytes: wholeNumber(session.sttVadSuppressedBytes),
+      suppressedChunks: wholeNumber(session.sttVadSuppressedChunks),
+      speechStarts: wholeNumber(session.sttVadSpeechStarts),
+      speechEnds: wholeNumber(session.sttVadSpeechEnds),
+      skippedDuringAssistantBytes: wholeNumber(session.sttAudioSkippedBytes)
+    }
   });
 
   return {
@@ -2157,7 +2245,7 @@ function buildCallMetrics(session, durationSeconds) {
   };
 }
 
-function computeVoicebotCallCost({ durationSeconds, sttAudioMsSent, ttsCharsDynamic, ttsCharsCached, llmInputTokens, llmOutputTokens }) {
+function computeVoicebotCallCost({ durationSeconds, sttAudioMsSent, ttsCharsDynamic, ttsCharsCached, llmInputTokens, llmOutputTokens, vad = {} }) {
   const rates = voicebotCostRates();
   const connectedMinutes = Math.max(0, Number(durationSeconds || 0) / 60);
   const billableMinutes = connectedMinutes > 0 ? Math.max(1, Math.ceil(connectedMinutes)) : 0;
@@ -2186,7 +2274,8 @@ function computeVoicebotCallCost({ durationSeconds, sttAudioMsSent, ttsCharsDyna
       ttsCharsDynamic: wholeNumber(ttsCharsDynamic),
       ttsCharsCached: wholeNumber(ttsCharsCached),
       llmInputTokens: wholeNumber(llmInputTokens),
-      llmOutputTokens: wholeNumber(llmOutputTokens)
+      llmOutputTokens: wholeNumber(llmOutputTokens),
+      vad
     },
     rates,
     components: {
