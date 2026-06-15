@@ -21,6 +21,7 @@ export default function CampaignDetail() {
   const [selected, setSelected] = useState([]);
   const [filters, setFilters] = useState({ q: "", status: "all", playbook: "all" });
   const [file, setFile] = useState(null);
+  const [uploadResult, setUploadResult] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -63,7 +64,7 @@ export default function CampaignDetail() {
   const filteredLeads = useMemo(() => {
     const q = filters.q.trim().toLowerCase();
     return leads.filter(lead => {
-      const matchesText = !q || [lead.name, lead.phone, lead.playbook_type].some(value => String(value || "").toLowerCase().includes(q));
+      const matchesText = !q || [lead.name, lead.phone, lead.playbook_type, lead.drop_stage, lead.source_status].some(value => String(value || "").toLowerCase().includes(q));
       const matchesStatus = filters.status === "all" || lead.status === filters.status;
       const matchesPlaybook = filters.playbook === "all" || lead.playbook_type === filters.playbook;
       return matchesText && matchesStatus && matchesPlaybook;
@@ -126,13 +127,26 @@ export default function CampaignDetail() {
 
   async function upload(e) {
     e.preventDefault();
-    if (!file) return setError("Choose a CSV file first.");
+    if (!file) return setError("Choose a CSV or Excel file first.");
     const body = new FormData();
     body.append("file", file);
-    await runAction(
-      () => apiFetch(`/campaigns/${campaignId}/upload`, { method: "POST", body }),
-      result => `Inserted ${result.inserted}, skipped ${result.skipped}. ${result.errors?.length ? "Review skipped rows in your CSV." : ""}`
-    );
+    setLoading(true);
+    setError("");
+    setMessage("");
+    setUploadResult(null);
+    try {
+      const result = await apiFetch(`/campaigns/${campaignId}/upload`, { method: "POST", body });
+      setUploadResult(result);
+      setNotice({
+        ok: true,
+        text: `Inserted ${result.inserted}, skipped ${result.skipped}. ${result.errors?.length ? "Review skipped rows below." : ""}`
+      });
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function saveCampaign(e) {
@@ -311,9 +325,25 @@ export default function CampaignDetail() {
       <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
         <form onSubmit={upload} className="card p-5">
           <h2 className="text-lg font-black text-slate-950">Upload Leads</h2>
-          <p className="mt-2 text-sm text-slate-500">CSV columns: name, phone, playbookType, dueDate, loanAmount, offerAmount, language.</p>
-          <input className="input mt-5" type="file" accept=".csv,text/csv" onChange={e => setFile(e.target.files?.[0] || null)} />
-          <button className="btn mt-4 w-full" disabled={loading}>{loading ? "Working..." : "Upload CSV"}</button>
+          <p className="mt-2 text-sm text-slate-500">Upload CSV or TezCredit/CredNorth Excel. Headers like Mobile Number, Selfie, Aadhaar, Penny Drop and E-sign are auto-mapped.</p>
+          <input className="input mt-5" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={e => setFile(e.target.files?.[0] || null)} />
+          <button className="btn mt-4 w-full" disabled={loading}>{loading ? "Working..." : "Upload Leads"}</button>
+          {uploadResult && (
+            <div className="mt-5 space-y-4 text-sm">
+              <UploadBreakdown title="Imported stages" data={uploadResult.stageCounts} />
+              <UploadBreakdown title="Skipped rows" data={uploadResult.skippedReasons} />
+              {!!uploadResult.errors?.length && (
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <p className="font-bold text-slate-800">First skipped rows</p>
+                  <div className="mt-2 space-y-1 text-xs text-slate-600">
+                    {uploadResult.errors.slice(0, 5).map((item, index) => (
+                      <p key={`${item.row}-${index}`}>Row {item.row}: {item.error}{item.stage ? ` (${item.stage})` : ""}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </form>
 
         <div className="card p-5">
@@ -339,11 +369,11 @@ export default function CampaignDetail() {
       </section>
 
       <section className="card mt-8 overflow-x-auto">
-        <table className="w-full min-w-[1080px] text-sm">
+        <table className="w-full min-w-[1180px] text-sm">
           <thead className="bg-slate-50 text-left text-slate-500">
             <tr>
               <th className="p-4"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisible} /></th>
-              <th>Name</th><th>Phone</th><th>Playbook</th><th>Status</th><th>Last Outcome</th><th>Attempts</th><th></th>
+              <th>Name</th><th>Phone</th><th>Journey Stage</th><th>Playbook</th><th>Status</th><th>Last Outcome</th><th>Attempts</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -352,6 +382,7 @@ export default function CampaignDetail() {
                 <td className="p-4"><input type="checkbox" checked={selected.includes(lead.id)} onChange={() => setSelected(current => current.includes(lead.id) ? current.filter(id => id !== lead.id) : [...current, lead.id])} /></td>
                 <td className="font-semibold text-slate-950">{lead.name || "Unknown"}</td>
                 <td>{lead.phone}</td>
+                <td><span className="status-pill">{formatStage(lead.drop_stage)}</span></td>
                 <td>{playbooks[lead.playbook_type]?.title || lead.playbook_type}</td>
                 <td><span className="status-pill">{lead.status}</span></td>
                 <td><span className="status-pill">{latestCallByLead.get(lead.id)?.outcome || "-"}</span></td>
@@ -365,7 +396,7 @@ export default function CampaignDetail() {
                 </td>
               </tr>
             ))}
-            {!filteredLeads.length && <tr><td className="p-4 text-slate-500" colSpan="8">No leads match the current view.</td></tr>}
+            {!filteredLeads.length && <tr><td className="p-4 text-slate-500" colSpan="9">No leads match the current view.</td></tr>}
           </tbody>
         </table>
       </section>
@@ -422,4 +453,29 @@ function MiniMetric({ label, value }) {
       <p className="mt-1 text-xl font-black text-slate-950">{Number(value || 0).toLocaleString("en-IN")}</p>
     </div>
   );
+}
+
+function UploadBreakdown({ title, data }) {
+  const entries = Object.entries(data || {});
+  if (!entries.length) return null;
+  return (
+    <div className="rounded-lg bg-slate-50 p-3">
+      <p className="font-bold text-slate-800">{title}</p>
+      <div className="mt-2 space-y-1 text-xs text-slate-600">
+        {entries.map(([key, value]) => (
+          <div key={key} className="flex justify-between gap-3">
+            <span>{formatStage(key)}</span>
+            <span className="font-bold text-slate-900">{Number(value || 0).toLocaleString("en-IN")}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatStage(value) {
+  return String(value || "-")
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, letter => letter.toUpperCase());
 }

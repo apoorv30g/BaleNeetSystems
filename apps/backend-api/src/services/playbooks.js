@@ -77,6 +77,96 @@ const PLAYBOOKS = {
       "Send UTM link via SMS/WhatsApp",
       "Guide through the process, final loan amount check, and loan receipt"
     ]
+  },
+  TEZ_SELFIE_PENDING: {
+    category: "TezCredit Retargeting",
+    title: "TezCredit - Selfie Pending",
+    task: "Bring back users who stopped at live selfie.",
+    trigger: "User has entered basic details but selfie is not completed.",
+    cadence: "Call once soon after drop-off, then retry as per campaign policy.",
+    goal: "Get the user to open the app and complete the live selfie correctly.",
+    steps: [
+      "Say their TezCredit loan application is almost ready but live selfie is pending",
+      "Explain the selfie takes under one minute and the face must stay centered",
+      "Send or mention the secure app link",
+      "Ask them to open the app now while you stay on the line",
+      "If they are busy, capture a callback time"
+    ]
+  },
+  TEZ_AADHAAR_PENDING: {
+    category: "TezCredit Retargeting",
+    title: "TezCredit - Aadhaar KYC Pending",
+    task: "Help users complete Aadhaar DigiLocker KYC.",
+    trigger: "Selfie is done but Aadhaar KYC is incomplete.",
+    cadence: "Retarget until KYC completion or decline.",
+    goal: "Get the user to complete Aadhaar KYC through DigiLocker.",
+    steps: [
+      "Say their TezCredit application is pending only at Aadhaar KYC",
+      "Clarify that KYC happens inside the secure app through DigiLocker",
+      "Reassure that you will never ask for OTP on the call",
+      "Ask them to open the app and complete Aadhaar KYC now",
+      "If there is a mismatch or app issue, note the issue and point to app support"
+    ]
+  },
+  TEZ_PROFILE_PENDING: {
+    category: "TezCredit Retargeting",
+    title: "TezCredit - Profile Details Pending",
+    task: "Help users finish income, employer, PAN or pincode details.",
+    trigger: "Profile details are incomplete before final eligibility.",
+    cadence: "Retarget until profile completion or decline.",
+    goal: "Get the user to complete pending profile details in the app.",
+    steps: [
+      "Say their TezCredit application is stuck at profile details",
+      "Mention PAN, income, employer or pincode may be pending in the app",
+      "Ask them to open the secure app and finish the pending field",
+      "Explain final eligibility can be checked only after this",
+      "If they are confused, ask which screen they see and guide simply"
+    ]
+  },
+  TEZ_BANK_VERIFICATION_PENDING: {
+    category: "TezCredit Retargeting",
+    title: "TezCredit - Bank Verification Pending",
+    task: "Convert approved users stuck at penny drop or bank verification.",
+    trigger: "User has approval/profile complete but bank verification is pending.",
+    cadence: "High priority retargeting until bank verification or expiry.",
+    goal: "Get the user to verify bank details so the loan can move to agreement/disbursal.",
+    steps: [
+      "Say their TezCredit loan offer is ready but bank verification is pending",
+      "Mention they can verify using UPI or bank account details in the app",
+      "Ask them to complete bank verification now from the secure app",
+      "Reassure that no OTP, PIN or card details are needed on the call",
+      "If they face failure, ask them to retry in the app or use app support"
+    ]
+  },
+  TEZ_ESIGN_PENDING: {
+    category: "TezCredit Retargeting",
+    title: "TezCredit - E-sign Pending",
+    task: "Convert approved users stuck at loan agreement e-sign.",
+    trigger: "Bank verification is done but loan agreement is not signed.",
+    cadence: "High priority retargeting until signed or declined.",
+    goal: "Get the user to review and e-sign the loan agreement.",
+    steps: [
+      "Say their TezCredit loan is at the final agreement step",
+      "Ask them to review the loan amount and terms in the app",
+      "Tell them to e-sign only if they are comfortable with the terms",
+      "Mention disbursal can proceed after successful e-sign and final checks",
+      "If they have a doubt, answer briefly and return to e-sign"
+    ]
+  },
+  TEZ_APPROVED_NOT_DISBURSED: {
+    category: "TezCredit Retargeting",
+    title: "TezCredit - Approved Not Disbursed",
+    task: "Help approved users complete the remaining step before disbursal.",
+    trigger: "User is approved but no disbursal is recorded.",
+    cadence: "High priority retargeting until disbursed, declined or expired.",
+    goal: "Find the blocker and guide the user to the next app step.",
+    steps: [
+      "Say their TezCredit approval is visible but disbursal is not complete",
+      "Ask what screen they currently see in the app",
+      "Guide to the pending step: bank verification, e-sign, or final review",
+      "Reassure that you will not ask for OTP, PIN or password",
+      "Close with a clear next action or callback"
+    ]
   }
 };
 
@@ -148,9 +238,6 @@ async function deletePlaybook(tenantId, key) {
 }
 
 async function seedDefaultPlaybooks(tenantId) {
-  const existing = await query(`SELECT 1 FROM playbooks WHERE tenant_id=$1 LIMIT 1`, [tenantId]);
-  if (existing.rows.length) return;
-
   for (const [key, playbook] of Object.entries(PLAYBOOKS)) {
     await query(
       `INSERT INTO playbooks (tenant_id, key, title, category, task, trigger, cadence, goal, steps, is_active)
@@ -183,6 +270,8 @@ async function buildPrompt(lead, { transcript = [], lastUserMessage = "", conver
   const recentTranscript = formatTranscript(transcript);
   const languageInstruction = responseLanguageInstruction(lead.language);
   const stateNotes = conversationStateNotes(lead, conversationState, lastUserMessage);
+  const journeyNotes = journeyContextNotes(lead);
+  const suggestedLines = suggestedVoiceLines(lead);
 
   return `
 You are a warm Hindi-English AI loan assistant for a phone call.
@@ -204,12 +293,20 @@ Loan amount: ${lead.loan_amount || "not provided"}
 Offer amount: ${lead.offer_amount || "not provided"}
 Due date: ${lead.due_date || "not provided"}
 Language: ${lead.language || "Hinglish"}
+Source status: ${lead.source_status || "not provided"}
+Journey stage: ${lead.drop_stage || lead.playbook_type}
+
+Journey context:
+${journeyNotes}
 
 Known call memory:
 ${stateNotes}
 
 Conversation steps:
 ${playbook.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")}
+
+Crisp spoken lines for this journey:
+${suggestedLines}
 
 Recent transcript:
 ${recentTranscript || "No prior conversation except the opening greeting."}
@@ -219,6 +316,8 @@ ${lastUserMessage || "No clear customer message captured yet."}
 
 Rules:
 - Treat the selected playbook as the source of truth for what to do next.
+- If a journey stage is provided, anchor every response to that exact pending step.
+- Use the crisp spoken lines as examples. Do not read them all at once.
 - Follow the current required playbook action. Do not restart from the beginning unless the user asks.
 - If the known call memory says the name is already confirmed, never ask the name or reference details again.
 - If the customer answers a question, progress to the next relevant action.
@@ -269,6 +368,107 @@ Common answers you can use:
 
 Now generate only the next spoken response.
 `;
+}
+
+function journeyContextNotes(lead = {}) {
+  const meta = lead.source_metadata || {};
+  const product = meta.productName || "the loan app";
+  const stage = String(lead.drop_stage || lead.playbook_type || "");
+  const notes = [`- Product/application: ${product}.`];
+
+  if (stage === "SELFIE_PENDING") notes.push("- Pending step: live selfie. User must keep face centered and complete it in the app.");
+  if (stage === "AADHAAR_PENDING") notes.push("- Pending step: Aadhaar KYC through DigiLocker inside the app.");
+  if (stage === "PROFILE_PENDING") notes.push("- Pending step: profile details such as income, employer, PAN or pincode.");
+  if (stage === "BANK_VERIFICATION_PENDING") notes.push("- Pending step: bank verification / penny drop using UPI or bank account details.");
+  if (stage === "E_SIGN_PENDING") notes.push("- Pending step: review and e-sign the loan agreement.");
+  if (stage === "APPROVED_NOT_DISBURSED") notes.push("- Pending step: approval exists but disbursal is not complete; discover current app screen.");
+
+  if (meta.utmCampaign) notes.push(`- UTM campaign: ${meta.utmCampaign}. Do not say this to the customer.`);
+  if (meta.rejectReason) notes.push(`- Internal reject reason: ${meta.rejectReason}. Do not call rejected users unless explicitly uploaded.`);
+  return notes.join("\n");
+}
+
+function suggestedVoiceLines(lead = {}) {
+  const english = responseLanguageInstruction(lead.language).includes("English");
+  const stage = String(lead.drop_stage || lead.playbook_type || "");
+  const amount = lead.offer_amount || lead.loan_amount;
+  const amountText = amount ? ` ${formatAmountForPrompt(amount)}` : "";
+  const lines = {
+    SELFIE_PENDING: english
+      ? [
+        "Your TezCredit application is pending at the live selfie step.",
+        "It takes less than a minute. Please keep your face centered in the camera.",
+        "Can you open the app now and complete the selfie?"
+      ]
+      : [
+        "आपकी TezCredit application live selfie step पर pending है।",
+        "इसमें एक minute से कम लगेगा। Face camera के center में रखना है।",
+        "क्या आप अभी app खोलकर selfie complete कर सकते हैं?"
+      ],
+    AADHAAR_PENDING: english
+      ? [
+        "Your TezCredit KYC is pending at Aadhaar DigiLocker.",
+        "Please complete it only inside the secure app. I will not ask for OTP.",
+        "Can you open the app and finish Aadhaar KYC now?"
+      ]
+      : [
+        "आपकी TezCredit KYC Aadhaar DigiLocker step पर pending है।",
+        "यह secure app के अंदर ही complete होगा। मैं OTP नहीं पूछूँगा।",
+        "क्या आप अभी app खोलकर Aadhaar KYC complete कर सकते हैं?"
+      ],
+    PROFILE_PENDING: english
+      ? [
+        "Your TezCredit application is stuck at profile details.",
+        "Please complete the pending income, employer, PAN or pincode field.",
+        "After this, the app can show final eligibility."
+      ]
+      : [
+        "आपकी TezCredit application profile details पर रुकी हुई है।",
+        "Income, employer, PAN या pincode में जो field pending है, उसे complete करना है।",
+        "इसके बाद app final eligibility दिखा पाएगा।"
+      ],
+    BANK_VERIFICATION_PENDING: english
+      ? [
+        `Your TezCredit offer${amountText ? ` of about${amountText}` : ""} is ready, but bank verification is pending.`,
+        "You can verify using UPI or bank account details inside the app.",
+        "Can you complete bank verification now?"
+      ]
+      : [
+        `आपका TezCredit offer${amountText ? ` लगभग${amountText}` : ""} ready है, बस bank verification pending है।`,
+        "App में UPI या bank account details से verify कर सकते हैं।",
+        "क्या आप अभी bank verification complete कर सकते हैं?"
+      ],
+    E_SIGN_PENDING: english
+      ? [
+        "Your TezCredit loan is at the final agreement step.",
+        "Please review the amount and terms in the app, then e-sign only if comfortable.",
+        "After successful e-sign and final checks, disbursal can move ahead."
+      ]
+      : [
+        "आपका TezCredit loan final agreement step पर है।",
+        "App में amount और terms review कीजिए, comfortable हों तभी e-sign कीजिए।",
+        "E-sign और final checks के बाद disbursal आगे बढ़ सकता है।"
+      ],
+    APPROVED_NOT_DISBURSED: english
+      ? [
+        "Your TezCredit approval is visible, but disbursal is not complete.",
+        "Which screen do you see in the app right now?",
+        "I can guide you to bank verification, e-sign, or final review."
+      ]
+      : [
+        "आपकी TezCredit approval दिख रही है, लेकिन disbursal complete नहीं हुआ है।",
+        "App में अभी कौन सा screen दिख रहा है?",
+        "मैं bank verification, e-sign या final review step में guide कर दूँगा।"
+      ]
+  }[stage] || [];
+
+  return lines.length ? lines.map((line, index) => `${index + 1}. ${line}`).join("\n") : "- No stage-specific line. Keep the response short and helpful.";
+}
+
+function formatAmountForPrompt(value) {
+  const number = Number(String(value || "").replace(/,/g, ""));
+  if (!Number.isFinite(number) || number <= 0) return String(value || "");
+  return `₹${Math.round(number).toLocaleString("en-IN")}`;
 }
 
 function responseLanguageInstruction(language) {

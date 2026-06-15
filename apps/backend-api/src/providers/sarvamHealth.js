@@ -236,7 +236,7 @@ async function checkTts() {
     text: process.env.SARVAM_PREFLIGHT_TTS_TEXT || "Namaste.",
     target_language_code: process.env.SARVAM_TTS_LANGUAGE || "hi-IN",
     speaker: process.env.SARVAM_TTS_SPEAKER || "shubh",
-    model: process.env.SARVAM_TTS_MODEL || "bulbul:v3"
+    model: process.env.SARVAM_TTS_MODEL || "bulbul:v2"
   };
   const { ok, status, text, data } = await fetchJsonWithTimeout("https://api.sarvam.ai/text-to-speech", {
     method: "POST",

@@ -2,7 +2,6 @@ const express = require("express");
 const multer = require("multer");
 const { query } = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
-const { parseCsv } = require("../utils/csv");
 const { callQueue } = require("../queue");
 const { isDnc, logCompliance } = require("../services/compliance");
 const { getTenantSettings } = require("../services/settings");
@@ -10,6 +9,7 @@ const { describeOutcome, OUTCOMES } = require("../services/outcomes");
 const { sendLeadLink } = require("../providers/notifications");
 const { assertSarvamHealthyForCall } = require("../providers/sarvamHealth");
 const { listPlaybooks } = require("../services/playbooks");
+const { parseLeadUpload } = require("../services/leadImport");
 const config = require("../config");
 
 const router = express.Router();
@@ -204,58 +204,68 @@ router.delete("/:campaignId", async (req, res) => {
 });
 
 router.post("/:campaignId/upload", upload.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "CSV file required" });
+  if (!req.file) return res.status(400).json({ error: "CSV or XLSX file required" });
 
   const campaign = await query(`SELECT * FROM campaigns WHERE id=$1 AND tenant_id=$2`, [req.params.campaignId, req.user.tenantId]);
   if (!campaign.rows[0]) return res.status(404).json({ error: "Campaign not found" });
 
-  const rows = parseCsv(req.file.buffer.toString("utf8"));
+  const rows = parseLeadUpload(req.file, campaign.rows[0]);
   const playbooks = await listPlaybooks(req.user.tenantId);
   let inserted = 0, skipped = 0;
   const errors = [];
+  const stageCounts = {};
+  const skippedReasons = {};
 
-  for (const row of rows) {
-    const phone = (row.phone || "").replace(/\D/g, "");
-    if (!phone) {
+  for (const item of rows) {
+    if (!item.ok) {
       skipped++;
-      if (errors.length < 20) errors.push({ row: inserted + skipped, error: "Missing phone" });
+      skippedReasons[item.reason] = (skippedReasons[item.reason] || 0) + 1;
+      if (errors.length < 20) errors.push({ row: item.rowNumber, error: item.reason, status: item.status || "", stage: item.stage || "" });
       continue;
     }
 
-    const playbookType = row.playbookType || campaign.rows[0].playbook_type;
+    const lead = item.lead;
+    const playbookType = lead.playbookType || campaign.rows[0].playbook_type;
     if (!playbooks[playbookType]) {
       skipped++;
-      if (errors.length < 20) errors.push({ row: inserted + skipped, phone, error: `Unknown playbookType ${playbookType}` });
+      skippedReasons.unknown_playbook = (skippedReasons.unknown_playbook || 0) + 1;
+      if (errors.length < 20) errors.push({ row: item.rowNumber, phone: lead.phone, error: `Unknown playbookType ${playbookType}` });
       continue;
     }
 
     try {
       await query(
         `INSERT INTO leads
-         (tenant_id, campaign_id, name, phone, campaign_type, playbook_type, drop_stage, due_date, loan_amount, offer_amount, language)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+         (tenant_id, campaign_id, external_lead_id, name, phone, campaign_type, playbook_type, drop_stage, due_date, loan_amount, offer_amount, language, source_status, source_reject_reason, source_metadata)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [
           req.user.tenantId,
           req.params.campaignId,
-          row.name || "",
-          phone,
-          row.campaignType || campaign.rows[0].campaign_type,
+          lead.externalLeadId,
+          lead.name || "",
+          lead.phone,
+          lead.campaignType || campaign.rows[0].campaign_type,
           playbookType,
-          row.dropStage || playbookType,
-          row.dueDate || null,
-          row.loanAmount || null,
-          row.offerAmount || null,
-          row.language || campaign.rows[0].language
+          lead.dropStage || playbookType,
+          lead.dueDate || null,
+          lead.loanAmount || null,
+          lead.offerAmount || null,
+          lead.language || campaign.rows[0].language,
+          lead.sourceStatus || null,
+          lead.sourceRejectReason || null,
+          JSON.stringify(lead.sourceMetadata || {})
         ]
       );
       inserted++;
+      stageCounts[lead.dropStage || playbookType] = (stageCounts[lead.dropStage || playbookType] || 0) + 1;
     } catch {
       skipped++;
-      if (errors.length < 20) errors.push({ row: inserted + skipped, phone, error: "Duplicate or invalid row" });
+      skippedReasons.duplicate_or_invalid = (skippedReasons.duplicate_or_invalid || 0) + 1;
+      if (errors.length < 20) errors.push({ row: item.rowNumber, phone: lead.phone, error: "Duplicate or invalid row" });
     }
   }
 
-  res.json({ inserted, skipped, total: rows.length, errors });
+  res.json({ inserted, skipped, total: rows.length, stageCounts, skippedReasons, errors });
 });
 
 router.post("/:campaignId/queue-calls", async (req, res) => {
@@ -424,13 +434,13 @@ router.get("/:campaignId/leads", async (req, res) => {
 
 router.get("/:campaignId/export/leads", async (req, res) => {
   const result = await query(
-    `SELECT name, phone, campaign_type, playbook_type, drop_stage, status, attempt_count, due_date, loan_amount, offer_amount, language, created_at
+    `SELECT external_lead_id, name, phone, campaign_type, playbook_type, drop_stage, source_status, source_reject_reason, status, attempt_count, due_date, loan_amount, offer_amount, language, created_at
      FROM leads WHERE tenant_id=$1 AND campaign_id=$2 ORDER BY created_at DESC`,
     [req.user.tenantId, req.params.campaignId]
   );
   sendCsv(res, "leads.csv", [
-    ["name", "phone", "campaign_type", "playbook_type", "drop_stage", "status", "attempt_count", "due_date", "loan_amount", "offer_amount", "language", "created_at"],
-    ...result.rows.map(row => [row.name, row.phone, row.campaign_type, row.playbook_type, row.drop_stage, row.status, row.attempt_count, row.due_date, row.loan_amount, row.offer_amount, row.language, row.created_at])
+    ["external_lead_id", "name", "phone", "campaign_type", "playbook_type", "drop_stage", "source_status", "source_reject_reason", "status", "attempt_count", "due_date", "loan_amount", "offer_amount", "language", "created_at"],
+    ...result.rows.map(row => [row.external_lead_id, row.name, row.phone, row.campaign_type, row.playbook_type, row.drop_stage, row.source_status, row.source_reject_reason, row.status, row.attempt_count, row.due_date, row.loan_amount, row.offer_amount, row.language, row.created_at])
   ]);
 });
 

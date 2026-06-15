@@ -111,7 +111,7 @@ async function synthesizeProbeAudio(text) {
       text,
       target_language_code: process.env.SARVAM_TTS_LANGUAGE || "hi-IN",
       speaker: process.env.SARVAM_TTS_SPEAKER || "shubh",
-      model: process.env.SARVAM_TTS_MODEL || "bulbul:v3"
+      model: process.env.SARVAM_TTS_MODEL || "bulbul:v2"
     })
   });
 

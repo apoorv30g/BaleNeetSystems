@@ -416,8 +416,6 @@ async function platformCostOverview(days) {
   const params = [];
   const callWhere = dateWhere("c.created_at", days, params);
   const sttWhere = dateWhere("e.created_at", days, params);
-  const transcriptWhere = dateWhere("tr.created_at", days, params);
-  const eventWhere = dateWhere("ve.created_at", days, params);
 
   const [calls, stt, tts, llm, clients] = await Promise.all([
     query(`
@@ -442,7 +440,12 @@ async function platformCostOverview(days) {
           END AS provider,
           e.call_id,
           COUNT(*)::int AS events,
-          MAX(GREATEST(c.duration_seconds,0))::float AS duration_seconds
+          MAX(
+            CASE
+              WHEN COALESCE(c.stt_audio_ms_sent,0) > 0 THEN COALESCE(c.stt_audio_ms_sent,0) / 1000.0
+              ELSE GREATEST(c.duration_seconds,0)
+            END
+          )::float AS duration_seconds
         FROM call_stt_events e
         LEFT JOIN calls c ON c.id=e.call_id
         ${sttWhere.sql}
@@ -459,30 +462,41 @@ async function platformCostOverview(days) {
       ORDER BY provider
     `, sttWhere.params),
     query(`
+      WITH assistant AS (
+        SELECT
+          tr.call_id,
+          COUNT(*)::int AS messages,
+          COALESCE(SUM(LENGTH(tr.text)),0)::float AS transcript_chars
+        FROM transcripts tr
+        WHERE tr.speaker='assistant'
+        GROUP BY tr.call_id
+      )
       SELECT
-        COUNT(*)::int AS messages,
-        COALESCE(SUM(LENGTH(tr.text)),0)::float AS chars
-      FROM transcripts tr
-      LEFT JOIN calls c ON c.id=tr.call_id
-      WHERE tr.speaker='assistant'
-      ${transcriptWhere.andSql}
-    `, transcriptWhere.params),
+        COALESCE(SUM(a.messages),0)::int AS messages,
+        COALESCE(SUM(
+          CASE
+            WHEN COALESCE(c.tts_chars_dynamic,0) + COALESCE(c.tts_chars_cached,0) > 0
+              THEN COALESCE(c.tts_chars_dynamic,0)
+            ELSE COALESCE(a.transcript_chars,0)
+          END
+        ),0)::float AS chars,
+        COALESCE(SUM(c.tts_chars_dynamic),0)::float AS dynamic_chars,
+        COALESCE(SUM(c.tts_chars_cached),0)::float AS cached_chars,
+        COALESCE(SUM(c.tts_cache_hits),0)::int AS cache_hits,
+        COALESCE(SUM(c.tts_cache_misses),0)::int AS cache_misses
+      FROM calls c
+      LEFT JOIN assistant a ON a.call_id=c.id
+      ${callWhere.sql}
+    `, callWhere.params),
     query(`
       SELECT
-        CASE
-          WHEN LOWER(COALESCE(ve.details->>'provider','')) LIKE '%gemini%' THEN 'gemini'
-          ELSE 'sarvam'
-        END AS provider,
-        COUNT(*)::int AS replies,
-        COALESCE(SUM(NULLIF(ve.details->>'textBytes','')::numeric),0)::float AS text_bytes
-      FROM voicebot_events ve
-      LEFT JOIN campaigns c ON c.id=ve.campaign_id
-      WHERE ve.event_type='reply_ready'
-        AND COALESCE(ve.details->>'source','')='llm'
-      ${eventWhere.andSql}
-      GROUP BY provider
-      ORDER BY provider
-    `, eventWhere.params),
+        COALESCE(SUM(c.llm_calls_count),0)::int AS replies,
+        COALESCE(SUM(c.llm_input_tokens),0)::float AS input_tokens,
+        COALESCE(SUM(c.llm_output_tokens),0)::float AS output_tokens,
+        COALESCE(SUM(c.llm_input_tokens + c.llm_output_tokens),0)::float AS total_tokens
+      FROM calls c
+      ${callWhere.sql}
+    `, callWhere.params),
     query(`
       SELECT
         t.id,
@@ -502,8 +516,8 @@ async function platformCostOverview(days) {
   const sarvamStt = stt.rows.find(row => row.provider === "sarvam") || {};
   const deepgramStt = stt.rows.find(row => row.provider === "deepgram") || {};
   const ttsStats = tts.rows[0] || {};
-  const sarvamLlm = llm.rows.find(row => row.provider === "sarvam") || {};
-  const geminiLlm = llm.rows.find(row => row.provider === "gemini") || {};
+  const sarvamLlm = llm.rows[0] || {};
+  const geminiLlm = {};
   const periodMonths = costPeriodMonths(days, callStats);
   const exotelUsageCost = roundMoney(
     number(callStats.billable_minutes) * rates.exotelOutboundCostPerMinuteInr
@@ -515,7 +529,7 @@ async function platformCostOverview(days) {
   const exotelMinimumTarget = roundMoney(periodMonths * rates.exotelMonthlyMinimumInr);
   const exotelMinimumTopUp = roundMoney(Math.max(0, exotelMinimumTarget - exotelUsageCost - exotelChannelCost));
 
-  const components = [
+  const baseComponents = [
     component({
       key: "exotel_voice",
       vendor: "Exotel",
@@ -568,16 +582,16 @@ async function platformCostOverview(days) {
       label: "Bulbul TTS",
       unit: "1K characters",
       quantity: number(ttsStats.chars) / 1000,
-      rawUsage: `${formatNumber(ttsStats.chars)} assistant characters, ${ttsStats.messages || 0} messages`,
+      rawUsage: `${formatNumber(ttsStats.chars)} dynamic chars billed, ${formatNumber(ttsStats.cached_chars)} cached chars saved, ${ttsStats.cache_hits || 0} cache hits`,
       rate: rates.sarvamTtsCostPer1kCharsInr
     }),
     component({
       key: "sarvam_llm",
       vendor: "Sarvam",
       label: "Sarvam chat / LLM",
-      unit: "1K estimated output tokens",
-      quantity: estimatedTokens(sarvamLlm.text_bytes) / 1000,
-      rawUsage: `${formatNumber(estimatedTokens(sarvamLlm.text_bytes))} estimated output tokens, ${sarvamLlm.replies || 0} LLM replies`,
+      unit: "1K estimated tokens",
+      quantity: number(sarvamLlm.total_tokens) / 1000,
+      rawUsage: `${formatNumber(sarvamLlm.input_tokens)} input + ${formatNumber(sarvamLlm.output_tokens)} output tokens, ${sarvamLlm.replies || 0} LLM replies`,
       rate: rates.sarvamLlmCostPer1kTokensInr
     }),
     component({
@@ -597,6 +611,30 @@ async function platformCostOverview(days) {
       quantity: estimatedTokens(geminiLlm.text_bytes) / 1000,
       rawUsage: `${formatNumber(estimatedTokens(geminiLlm.text_bytes))} estimated output tokens, ${geminiLlm.replies || 0} LLM replies`,
       rate: rates.geminiCostPer1kTokensInr
+    }),
+    component({
+      key: "infra_runtime",
+      vendor: "Infrastructure",
+      label: "Railway / domain allowance",
+      unit: "connected minute",
+      quantity: number(callStats.duration_seconds) / 60,
+      rawUsage: `${formatNumber(callStats.duration_seconds)} connected seconds at operating allowance`,
+      rate: rates.infraCostPerMinuteInr
+    })
+  ];
+
+  const taxableSubtotalInr = roundMoney(baseComponents.reduce((sum, item) => sum + item.estimatedCostInr, 0));
+  const components = [
+    ...baseComponents,
+    component({
+      key: "gst",
+      vendor: "Tax",
+      label: "GST",
+      unit: "taxable rupee",
+      quantity: taxableSubtotalInr,
+      rawUsage: `${formatNumber(rates.gstRate * 100)}% GST on the estimated taxable subtotal`,
+      rate: rates.gstRate,
+      configured: rates.gstRate > 0
     })
   ];
 
@@ -634,26 +672,29 @@ async function platformCostOverview(days) {
       "Exotel outbound campaign calls are modeled at the outbound WSS rate.",
       "Exotel uses rounded-up per-call billable minutes and also charges per attempt.",
       "Exotel channel rental and minimum billing are modeled as period-adjusted monthly commercial terms.",
-      "Sarvam LLM tokens are estimated from reply bytes because vendors bill by token internally.",
+      "Sarvam LLM tokens use per-call counters captured during live conversations.",
+      "Cached TTS characters are shown as avoided Sarvam TTS usage; only dynamic characters are billed.",
       "Set Railway rate variables to make totals match your actual plans."
     ]
   };
 }
 
 function costRates() {
-  const legacyExotelMinuteRate = moneyEnv("EXOTEL_COST_PER_MINUTE_INR");
+  const legacyExotelMinuteRate = moneyEnv("EXOTEL_COST_PER_MINUTE_INR", 0.6);
   return {
     exotelOutboundCostPerMinuteInr: moneyEnv("EXOTEL_OUTBOUND_COST_PER_MINUTE_INR", legacyExotelMinuteRate),
-    exotelInboundCostPerMinuteInr: moneyEnv("EXOTEL_INBOUND_COST_PER_MINUTE_INR"),
-    exotelAttemptCostInr: moneyEnv("EXOTEL_ATTEMPT_COST_INR"),
-    exotelChannelMonthlyCostPerChannelInr: moneyEnv("EXOTEL_CHANNEL_MONTHLY_COST_INR"),
-    exotelChannelCount: numberEnv("EXOTEL_CHANNEL_COUNT"),
-    exotelMonthlyMinimumInr: moneyEnv("EXOTEL_MIN_MONTHLY_BILLING_INR"),
-    sarvamSttCostPerHourInr: moneyEnv("SARVAM_STT_COST_PER_HOUR_INR"),
-    sarvamTtsCostPer1kCharsInr: moneyEnv("SARVAM_TTS_COST_PER_1K_CHARS_INR"),
-    sarvamLlmCostPer1kTokensInr: moneyEnv("SARVAM_LLM_COST_PER_1K_TOKENS_INR"),
+    exotelInboundCostPerMinuteInr: moneyEnv("EXOTEL_INBOUND_COST_PER_MINUTE_INR", 0.2),
+    exotelAttemptCostInr: moneyEnv("EXOTEL_ATTEMPT_COST_INR", 0.06),
+    exotelChannelMonthlyCostPerChannelInr: moneyEnv("EXOTEL_CHANNEL_MONTHLY_COST_INR", 1500),
+    exotelChannelCount: numberEnv("EXOTEL_CHANNEL_COUNT", config.exotel.channelCount || 1),
+    exotelMonthlyMinimumInr: moneyEnv("EXOTEL_MIN_MONTHLY_BILLING_INR", 20000),
+    sarvamSttCostPerHourInr: moneyEnv("SARVAM_STT_COST_PER_HOUR_INR", 30),
+    sarvamTtsCostPer1kCharsInr: moneyEnv("SARVAM_TTS_COST_PER_1K_CHARS_INR", 1.5),
+    sarvamLlmCostPer1kTokensInr: moneyEnv("SARVAM_LLM_COST_PER_1K_TOKENS_INR", 0.01),
     deepgramCostPerMinuteInr: moneyEnv("DEEPGRAM_COST_PER_MINUTE_INR"),
-    geminiCostPer1kTokensInr: moneyEnv("GEMINI_COST_PER_1K_TOKENS_INR")
+    geminiCostPer1kTokensInr: moneyEnv("GEMINI_COST_PER_1K_TOKENS_INR"),
+    infraCostPerMinuteInr: moneyEnv("INFRA_COST_PER_MINUTE_INR", 0.03),
+    gstRate: numberEnv("GST_RATE", 0.18)
   };
 }
 

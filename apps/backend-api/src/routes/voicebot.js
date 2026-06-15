@@ -5,6 +5,12 @@ const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
 const { createLiveStt } = require("../providers/sttLive");
 const {
+  buildAudioCacheKey,
+  charLength,
+  getCachedAudio,
+  saveCachedAudio
+} = require("../services/audioCache");
+const {
   classifyConversation,
   isCallScreening,
   isOptOut,
@@ -38,6 +44,7 @@ const INTERIM_TRANSCRIPT_FORCE_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRI
 const INTERIM_TRANSCRIPT_MIN_WORDS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_WORDS || 2);
 const INTERIM_TRANSCRIPT_MIN_CHARS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS || 5);
 const STT_DURING_ASSISTANT_ENABLED = process.env.VOICEBOT_STT_DURING_ASSISTANT_ENABLED === "true";
+const AUDIO_CACHE_ENABLED = process.env.VOICEBOT_AUDIO_CACHE_ENABLED !== "false";
 const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "false";
 const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 2500);
 const BARGE_IN_MIN_CHUNKS = Number(process.env.VOICEBOT_BARGE_IN_MIN_CHUNKS || 10);
@@ -98,6 +105,13 @@ function attachVoicebot(server) {
       sttAudioChunks: 0,
       sttAudioBytes: 0,
       sttAudioSkippedChunks: 0,
+      ttsCharsDynamic: 0,
+      ttsCharsCached: 0,
+      ttsCacheHits: 0,
+      ttsCacheMisses: 0,
+      llmCallsCount: 0,
+      llmInputTokens: 0,
+      llmOutputTokens: 0,
       speaking: false,
       closed: false,
       mediaChunks: 0,
@@ -711,6 +725,15 @@ async function processUserTranscript(ws, session, event) {
 
   const promptTranscript = session.callId ? await getTranscript(session.callId) : [];
   const scriptedReply = buildScriptedReply(session, text);
+  if (!scriptedReply) {
+    session.llmCallsCount++;
+    session.llmInputTokens += estimateInputTokens({
+      lead: session.lead,
+      lastUserMessage: text,
+      transcript: promptTranscript,
+      conversationState: buildConversationState(session)
+    });
+  }
   const replyPromise = scriptedReply
     ? Promise.resolve(scriptedReply)
     : safeGenerateReply(session, {
@@ -725,6 +748,9 @@ async function processUserTranscript(ws, session, event) {
   }
 
   const reply = await replyPromise;
+  if (!scriptedReply) {
+    session.llmOutputTokens += estimateTokens(reply);
+  }
   if (!isCurrentTurn(session, turnSeq)) {
     await logVoicebotEvent(session, "reply_stale_dropped", {
       text,
@@ -739,7 +765,8 @@ async function processUserTranscript(ws, session, event) {
   await logVoicebotEvent(session, "reply_ready", {
     elapsedMs: Date.now() - turnStartedAt,
     textBytes: Buffer.byteLength(reply),
-    source: scriptedReply ? "scripted" : "llm"
+    source: scriptedReply ? "scripted" : "llm",
+    provider: scriptedReply ? "scripted" : normalizeProviderName(process.env.LLM_PROVIDER || "sarvam")
   });
   if (session.callId) {
     await addTranscript(session.callId, "assistant", reply);
@@ -796,6 +823,20 @@ function buildConversationState(session = {}) {
     lastSpokenText: session.lastSpokenText || "",
     userTurns: session.userTurns || 0
   };
+}
+
+function estimateInputTokens(value) {
+  return estimateTokens(JSON.stringify(value || {}));
+}
+
+function estimateTokens(value) {
+  const text = String(value || "");
+  if (!text) return 0;
+  return Math.max(1, Math.ceil(Buffer.byteLength(text, "utf8") / 4));
+}
+
+function normalizeProviderName(value) {
+  return String(value || "").trim().toLowerCase() || "unknown";
 }
 
 function updateConversationMemory(session, text) {
@@ -943,6 +984,11 @@ function buildScriptedReply(session, text) {
   }
 
   if (isPositiveAgreement(normalized)) {
+    const stageReply = stagePositiveReply(session, english);
+    if (stageReply) {
+      queueLeadLink(session, "stage_positive");
+      return stageReply;
+    }
     queueLeadLink(session, "user_agreed");
     if (lead.playbook_type === "UNAPPROVED_USERS") {
       if (english) return "Sure, I am sending the secure link. Please open it and check your documents and final eligibility.";
@@ -1086,6 +1132,8 @@ function buildScriptedReply(session, text) {
   }
 
   if (asksReason(normalized)) {
+    const stageReply = stageReasonReply(session, english);
+    if (stageReply) return stageReply;
     if (english) return "Your loan eligibility is still incomplete, so I called to help you check the final offer.";
     return "आपकी loan eligibility अधूरी दिख रही है, इसलिए यह call है। मैं सिर्फ final offer check करने में मदद कर रहा हूँ।";
   }
@@ -1346,7 +1394,113 @@ function isNameConfirmationTurn(text) {
 }
 
 function firstGreeting(lead) {
-  return FAST_INTRO_TEXT;
+  return stageFirstGreeting(lead) || FAST_INTRO_TEXT;
+}
+
+function stageFirstGreeting(lead = {}) {
+  const english = normalizePreferredLanguage(lead.language) === "English";
+  const product = productNameForLead(lead);
+  const stage = String(lead.drop_stage || lead.playbook_type || "");
+  const amount = lead.offer_amount || lead.loan_amount;
+  const amountText = amount ? formatLoanAmount(amount) : "";
+
+  if (stage === "SELFIE_PENDING") {
+    return english
+      ? `Hi, this is ${product}'s AI assistant. Your loan application is pending at live selfie. Can you complete it now?`
+      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपकी loan application live selfie step पर pending है। क्या आप अभी complete कर सकते हैं?`;
+  }
+  if (stage === "AADHAAR_PENDING") {
+    return english
+      ? `Hi, this is ${product}'s AI assistant. Your Aadhaar DigiLocker KYC is pending in the app. Can you complete it now?`
+      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपकी Aadhaar DigiLocker KYC app में pending है। क्या आप अभी complete कर सकते हैं?`;
+  }
+  if (stage === "PROFILE_PENDING") {
+    return english
+      ? `Hi, this is ${product}'s AI assistant. A profile detail is pending before final eligibility. Can you open the app now?`
+      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। Final eligibility से पहले profile detail pending है। क्या आप अभी app खोल सकते हैं?`;
+  }
+  if (stage === "BANK_VERIFICATION_PENDING") {
+    return english
+      ? `Hi, this is ${product}'s AI assistant. Your${amountText ? ` ${amountText}` : ""} loan offer is ready, but bank verification is pending. Can you do it now?`
+      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपका${amountText ? ` ${amountText}` : ""} loan offer ready है, बस bank verification pending है। क्या अभी कर सकते हैं?`;
+  }
+  if (stage === "E_SIGN_PENDING") {
+    return english
+      ? `Hi, this is ${product}'s AI assistant. Your loan is at the final e-sign step. Can you review and e-sign in the app now?`
+      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपका loan final e-sign step पर है। क्या आप अभी app में review करके e-sign कर सकते हैं?`;
+  }
+  if (stage === "APPROVED_NOT_DISBURSED") {
+    return english
+      ? `Hi, this is ${product}'s AI assistant. Your approval is visible, but disbursal is not complete. Which app screen do you see?`
+      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपकी approval दिख रही है, लेकिन disbursal complete नहीं हुआ। App में कौन सा screen दिख रहा है?`;
+  }
+  return "";
+}
+
+function stagePositiveReply(session = {}, english = false) {
+  const lead = session.lead || {};
+  const stage = String(lead.drop_stage || lead.playbook_type || "");
+  if (stage === "SELFIE_PENDING") {
+    return english
+      ? "Great. Open the secure app link, choose live selfie, and keep your face centered in the camera."
+      : "बहुत अच्छा। Secure app link खोलिए, live selfie चुनिए, और face camera के center में रखिए।";
+  }
+  if (stage === "AADHAAR_PENDING") {
+    return english
+      ? "Great. Open the app and complete Aadhaar KYC through DigiLocker. Please do not share OTP on this call."
+      : "बहुत अच्छा। App खोलकर DigiLocker से Aadhaar KYC complete कीजिए। OTP इस call पर share मत कीजिए।";
+  }
+  if (stage === "PROFILE_PENDING") {
+    return english
+      ? "Great. Open the app and fill the pending profile field. It may be income, employer, PAN, or pincode."
+      : "बहुत अच्छा। App खोलकर pending profile field भरिए। यह income, employer, PAN या pincode हो सकता है।";
+  }
+  if (stage === "BANK_VERIFICATION_PENDING") {
+    return english
+      ? "Great. Open the app and complete bank verification using UPI or bank account details."
+      : "बहुत अच्छा। App खोलकर UPI या bank account details से bank verification complete कीजिए।";
+  }
+  if (stage === "E_SIGN_PENDING") {
+    return english
+      ? "Great. Review the amount and terms in the app, then e-sign only if you are comfortable."
+      : "बहुत अच्छा। App में amount और terms review कीजिए, comfortable हों तभी e-sign कीजिए।";
+  }
+  if (stage === "APPROVED_NOT_DISBURSED") {
+    return english
+      ? "Great. Tell me which screen you see in the app, and I will guide the next step."
+      : "बहुत अच्छा। App में कौन सा screen दिख रहा है बताइए, मैं next step guide कर दूँगा।";
+  }
+  return "";
+}
+
+function stageReasonReply(session = {}, english = false) {
+  const lead = session.lead || {};
+  const stage = String(lead.drop_stage || lead.playbook_type || "");
+  if (stage === "SELFIE_PENDING") {
+    return english
+      ? "The call is because your loan application cannot move ahead until live selfie is completed."
+      : "यह call इसलिए है क्योंकि live selfie complete हुए बिना application आगे नहीं बढ़ पाएगी।";
+  }
+  if (stage === "AADHAAR_PENDING") {
+    return english
+      ? "The call is because Aadhaar KYC is pending, and final eligibility needs that step."
+      : "यह call इसलिए है क्योंकि Aadhaar KYC pending है, और final eligibility के लिए यह step जरूरी है।";
+  }
+  if (stage === "BANK_VERIFICATION_PENDING") {
+    return english
+      ? "Your offer is ready, but bank verification is pending before agreement or disbursal can move ahead."
+      : "आपका offer ready है, लेकिन agreement या disbursal से पहले bank verification pending है।";
+  }
+  if (stage === "E_SIGN_PENDING") {
+    return english
+      ? "Your loan is at the final agreement step. E-sign is needed before disbursal can move ahead."
+      : "आपका loan final agreement step पर है। Disbursal आगे बढ़ाने के लिए e-sign जरूरी है।";
+  }
+  return "";
+}
+
+function productNameForLead(lead = {}) {
+  return lead.source_metadata?.productName || process.env.VOICEBOT_PRODUCT_NAME || "LoanConnect";
 }
 
 function parseVoicebotTexts(value) {
@@ -1550,17 +1704,94 @@ async function getPcmBase64(text, session = {}) {
   const volume = Number(process.env.VOICEBOT_TTS_VOLUME || 1.6);
   const ttsLanguageCode = ttsLanguageCodeForSession(session);
   const speechText = prepareTextForSpeech(text, session);
-  const cacheKey = `${sampleRate}:${volume}:${ttsLanguageCode}:${speechText}`;
-  if (pcmCache.has(cacheKey)) return pcmCache.get(cacheKey);
+  const speaker = process.env.SARVAM_TTS_SPEAKER || "shubh";
+  const model = process.env.SARVAM_TTS_MODEL || "bulbul:v2";
+  const charCount = charLength(speechText);
+  const cacheKey = buildAudioCacheKey({
+    text: speechText,
+    languageCode: ttsLanguageCode,
+    speaker,
+    model,
+    sampleRate,
+    volume
+  });
+  const memoryKey = `pcm:${cacheKey}`;
+
+  if (pcmCache.has(memoryKey)) {
+    trackTtsCacheHit(session, { charCount, cacheKey, source: "memory" });
+    return pcmCache.get(memoryKey);
+  }
+
+  if (AUDIO_CACHE_ENABLED) {
+    const cached = await getCachedAudio(cacheKey);
+    if (cached?.pcm_base64) {
+      const pcmBase64 = cached.pcm_base64;
+      trackTtsCacheHit(session, { charCount: Number(cached.char_count || charCount), cacheKey, source: "persistent" });
+      if (pcmCache.size < Number(process.env.VOICEBOT_PCM_CACHE_LIMIT || 50)) {
+        pcmCache.set(memoryKey, pcmBase64);
+      }
+      return pcmBase64;
+    }
+  }
+
+  trackTtsCacheMiss(session, { charCount, cacheKey });
 
   const speech = await synthesizeSpeech(speechText, { languageCode: ttsLanguageCode });
   if (speech.mode !== "audio") return null;
 
   const pcmBase64 = await toExotelPcmBase64(speech.audioBase64, { sampleRate, volume });
   if (pcmCache.size < Number(process.env.VOICEBOT_PCM_CACHE_LIMIT || 50)) {
-    pcmCache.set(cacheKey, pcmBase64);
+    pcmCache.set(memoryKey, pcmBase64);
   }
+  trackTtsDynamic(session, {
+    charCount: speech.charCount || charCount,
+    cacheKey,
+    model: speech.model || model,
+    speaker: speech.speaker || speaker,
+    languageCode: speech.languageCode || ttsLanguageCode
+  });
+  await saveCachedAudio({
+    cacheKey,
+    text: speechText,
+    languageCode: speech.languageCode || ttsLanguageCode,
+    speaker: speech.speaker || speaker,
+    model: speech.model || model,
+    sampleRate,
+    volume,
+    mimeType: "audio/pcm",
+    pcmBase64,
+    source: "dynamic_tts"
+  });
   return pcmBase64;
+}
+
+function trackTtsCacheHit(session, details = {}) {
+  session.ttsCharsCached = Number(session.ttsCharsCached || 0) + Number(details.charCount || 0);
+  session.ttsCacheHits = Number(session.ttsCacheHits || 0) + 1;
+  logVoicebotEvent(session, "tts_cache_hit", {
+    cacheKey: details.cacheKey,
+    source: details.source || "unknown",
+    charCount: Number(details.charCount || 0)
+  }).catch(() => {});
+}
+
+function trackTtsCacheMiss(session, details = {}) {
+  session.ttsCacheMisses = Number(session.ttsCacheMisses || 0) + 1;
+  logVoicebotEvent(session, "tts_cache_miss", {
+    cacheKey: details.cacheKey,
+    charCount: Number(details.charCount || 0)
+  }).catch(() => {});
+}
+
+function trackTtsDynamic(session, details = {}) {
+  session.ttsCharsDynamic = Number(session.ttsCharsDynamic || 0) + Number(details.charCount || 0);
+  logVoicebotEvent(session, "tts_generated", {
+    cacheKey: details.cacheKey,
+    charCount: Number(details.charCount || 0),
+    model: details.model || "",
+    speaker: details.speaker || "",
+    languageCode: details.languageCode || ""
+  }).catch(() => {});
 }
 
 function prepareTextForSpeech(text, session = {}) {
@@ -1568,6 +1799,7 @@ function prepareTextForSpeech(text, session = {}) {
   if (isEnglishSession(session)) {
     return base
       .replace(/\bLoanConnect\b/gi, "Loan Connect")
+      .replace(/\bTezCredit\b/gi, "Tez Credit")
       .replace(/\bCIBIL\b/gi, "SIBIL")
       .replace(/\bEMI\b/gi, "E M I")
       .replace(/\bKYC\b/gi, "K Y C")
@@ -1581,6 +1813,15 @@ function prepareTextForSpeech(text, session = {}) {
     .replace(/\bNamaste\b/gi, "नमस्ते")
     .replace(/\bAI assistant\b/gi, "ए आई असिस्टेंट")
     .replace(/\bLoanConnect\b/gi, "लोन कनेक्ट")
+    .replace(/\bTezCredit\b/gi, "तेज़ क्रेडिट")
+    .replace(/\bDigiLocker\b/gi, "डिजी लॉकर")
+    .replace(/\bAadhaar\b/gi, "आधार")
+    .replace(/\bPAN\b/gi, "पैन")
+    .replace(/\bUPI\b/gi, "यू पी आई")
+    .replace(/\be-sign\b/gi, "ई साइन")
+    .replace(/\besign\b/gi, "ई साइन")
+    .replace(/\bselfie\b/gi, "सेल्फी")
+    .replace(/\bdisbursal\b/gi, "डिस्बर्सल")
     .replace(/\bCIBIL\b/gi, "सिबिल")
     .replace(/\bEMI\b/gi, "ई एम आई")
     .replace(/\bKYC\b/gi, "के वाई सी")
@@ -1815,6 +2056,7 @@ async function markCallCompleted(session) {
      WHERE id=$1 AND status='streaming'`,
     [session.callId, durationSeconds]
   );
+  await persistCallMetrics(session, durationSeconds);
 }
 
 async function finalizeCall(session, { outcome, summary }) {
@@ -1833,6 +2075,190 @@ async function finalizeCall(session, { outcome, summary }) {
      WHERE id=$1`,
     [session.callId, outcome || null, summary || null, durationSeconds]
   );
+  await persistCallMetrics(session, durationSeconds);
+}
+
+async function persistCallMetrics(session, durationSeconds) {
+  if (!session.callId) return;
+  const metrics = buildCallMetrics(session, durationSeconds);
+  try {
+    await query(
+      `UPDATE calls
+       SET tts_chars_dynamic=$2,
+           tts_chars_cached=$3,
+           tts_cache_hits=$4,
+           tts_cache_misses=$5,
+           stt_audio_ms_sent=$6,
+           stt_audio_ms_wall=$7,
+           llm_calls_count=$8,
+           llm_input_tokens=$9,
+           llm_output_tokens=$10,
+           cache_hit_ratio=$11,
+           cost_estimate=$12,
+           cost_breakdown=$13::jsonb,
+           updated_at=NOW()
+       WHERE id=$1`,
+      [
+        session.callId,
+        metrics.ttsCharsDynamic,
+        metrics.ttsCharsCached,
+        metrics.ttsCacheHits,
+        metrics.ttsCacheMisses,
+        metrics.sttAudioMsSent,
+        metrics.sttAudioMsWall,
+        metrics.llmCallsCount,
+        metrics.llmInputTokens,
+        metrics.llmOutputTokens,
+        metrics.cacheHitRatio,
+        metrics.costEstimateInr,
+        JSON.stringify(metrics.costBreakdown)
+      ]
+    );
+  } catch (err) {
+    if (isMissingCostSchema(err)) {
+      logger.warn("voicebot_cost_metrics_schema_missing", { callId: session.callId, code: err.code });
+      return;
+    }
+    throw err;
+  }
+}
+
+function buildCallMetrics(session, durationSeconds) {
+  const sampleRate = Number(session.mediaSampleRate || 8000);
+  const ttsCharsDynamic = wholeNumber(session.ttsCharsDynamic);
+  const ttsCharsCached = wholeNumber(session.ttsCharsCached);
+  const totalTtsChars = ttsCharsDynamic + ttsCharsCached;
+  const sttAudioMsSent = pcmBytesToMs(session.sttAudioBytes, sampleRate);
+  const sttAudioMsWall = pcmBytesToMs(session.bytesReceived, sampleRate);
+  const llmInputTokens = wholeNumber(session.llmInputTokens);
+  const llmOutputTokens = wholeNumber(session.llmOutputTokens);
+  const costBreakdown = computeVoicebotCallCost({
+    durationSeconds,
+    sttAudioMsSent,
+    ttsCharsDynamic,
+    ttsCharsCached,
+    llmInputTokens,
+    llmOutputTokens
+  });
+
+  return {
+    ttsCharsDynamic,
+    ttsCharsCached,
+    ttsCacheHits: wholeNumber(session.ttsCacheHits),
+    ttsCacheMisses: wholeNumber(session.ttsCacheMisses),
+    sttAudioMsSent,
+    sttAudioMsWall,
+    llmCallsCount: wholeNumber(session.llmCallsCount),
+    llmInputTokens,
+    llmOutputTokens,
+    cacheHitRatio: totalTtsChars ? roundRatio(ttsCharsCached / totalTtsChars) : 0,
+    costEstimateInr: costBreakdown.totalInclGstInr,
+    costBreakdown
+  };
+}
+
+function computeVoicebotCallCost({ durationSeconds, sttAudioMsSent, ttsCharsDynamic, ttsCharsCached, llmInputTokens, llmOutputTokens }) {
+  const rates = voicebotCostRates();
+  const connectedMinutes = Math.max(0, Number(durationSeconds || 0) / 60);
+  const billableMinutes = connectedMinutes > 0 ? Math.max(1, Math.ceil(connectedMinutes)) : 0;
+  const sttHours = Math.max(0, Number(sttAudioMsSent || 0) / 3600000);
+  const llmTokens = wholeNumber(llmInputTokens) + wholeNumber(llmOutputTokens);
+
+  const exotelVoiceInr = roundMoney(billableMinutes * rates.exotelOutboundCostPerMinuteInr);
+  const exotelAttemptInr = roundMoney(rates.exotelAttemptCostInr);
+  const sarvamSttInr = roundMoney(sttHours * rates.sarvamSttCostPerHourInr);
+  const sarvamTtsInr = roundMoney((wholeNumber(ttsCharsDynamic) / 1000) * rates.sarvamTtsCostPer1kCharsInr);
+  const sarvamLlmInr = roundMoney((llmTokens / 1000) * rates.sarvamLlmCostPer1kTokensInr);
+  const infraInr = roundMoney(connectedMinutes * rates.infraCostPerMinuteInr);
+  const subtotalInr = roundMoney(exotelVoiceInr + exotelAttemptInr + sarvamSttInr + sarvamTtsInr + sarvamLlmInr + infraInr);
+  const gstInr = roundMoney(subtotalInr * rates.gstRate);
+  const totalInclGstInr = roundMoney(subtotalInr + gstInr);
+  const cachedTtsSavingsInr = roundMoney((wholeNumber(ttsCharsCached) / 1000) * rates.sarvamTtsCostPer1kCharsInr);
+
+  return {
+    model: "voicebot_direct_cost_v1",
+    currency: "INR",
+    usage: {
+      durationSeconds: wholeNumber(durationSeconds),
+      connectedMinutes: roundUsage(connectedMinutes),
+      billableMinutes,
+      sttAudioMsSent: wholeNumber(sttAudioMsSent),
+      ttsCharsDynamic: wholeNumber(ttsCharsDynamic),
+      ttsCharsCached: wholeNumber(ttsCharsCached),
+      llmInputTokens: wholeNumber(llmInputTokens),
+      llmOutputTokens: wholeNumber(llmOutputTokens)
+    },
+    rates,
+    components: {
+      exotelVoiceInr,
+      exotelAttemptInr,
+      sarvamSttInr,
+      sarvamTtsInr,
+      sarvamLlmInr,
+      infraInr,
+      gstInr
+    },
+    cachedTtsSavingsInr,
+    subtotalInr,
+    totalInclGstInr,
+    costPerConnectedMinuteInclGstInr: connectedMinutes ? roundMoney(totalInclGstInr / connectedMinutes) : totalInclGstInr
+  };
+}
+
+function voicebotCostRates() {
+  const exotelMinute = moneyEnv("EXOTEL_COST_PER_MINUTE_INR", 0.6);
+  return {
+    exotelOutboundCostPerMinuteInr: moneyEnv("EXOTEL_OUTBOUND_COST_PER_MINUTE_INR", exotelMinute),
+    exotelAttemptCostInr: moneyEnv("EXOTEL_ATTEMPT_COST_INR", 0.06),
+    sarvamSttCostPerHourInr: moneyEnv("SARVAM_STT_COST_PER_HOUR_INR", 30),
+    sarvamTtsCostPer1kCharsInr: moneyEnv("SARVAM_TTS_COST_PER_1K_CHARS_INR", 1.5),
+    sarvamLlmCostPer1kTokensInr: moneyEnv("SARVAM_LLM_COST_PER_1K_TOKENS_INR", 0.01),
+    infraCostPerMinuteInr: moneyEnv("INFRA_COST_PER_MINUTE_INR", 0.03),
+    gstRate: numberEnv("GST_RATE", 0.18)
+  };
+}
+
+function pcmBytesToMs(bytes, sampleRate) {
+  const rate = Number(sampleRate || 8000);
+  if (!Number.isFinite(rate) || rate <= 0) return 0;
+  return wholeNumber((Number(bytes || 0) / (rate * 2)) * 1000);
+}
+
+function wholeNumber(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number < 0) return 0;
+  return Math.round(number);
+}
+
+function moneyEnv(name, fallback = 0) {
+  const raw = process.env[name];
+  const value = Number(raw === undefined || raw === "" ? fallback : raw);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function numberEnv(name, fallback = 0) {
+  const raw = process.env[name];
+  const value = Number(raw === undefined || raw === "" ? fallback : raw);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function roundMoney(value) {
+  const number = Number(value || 0);
+  return Math.round((Number.isFinite(number) ? number : 0) * 100) / 100;
+}
+
+function roundUsage(value) {
+  const number = Number(value || 0);
+  return Math.round((Number.isFinite(number) ? number : 0) * 1000) / 1000;
+}
+
+function roundRatio(value) {
+  const number = Number(value || 0);
+  return Math.round(Math.min(Math.max(number, 0), 1) * 10000) / 10000;
+}
+
+function isMissingCostSchema(err) {
+  return ["42P01", "42703"].includes(err?.code);
 }
 
 function sendMark(ws, session, name) {
@@ -1866,6 +2292,7 @@ module.exports = {
     buildConversationState,
     buildScriptedReply,
     extractNameAnswer,
+    firstGreeting,
     invalidateAssistantTurn,
     isCurrentTurn,
     normalizeVoiceIntent,

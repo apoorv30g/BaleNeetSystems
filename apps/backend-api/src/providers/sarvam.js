@@ -5,7 +5,7 @@ async function synthesizeSpeech(text, options = {}) {
 
   const targetLanguageCode = options.languageCode || process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
   const speaker = process.env.SARVAM_TTS_SPEAKER || "shubh";
-  const model = process.env.SARVAM_TTS_MODEL || "bulbul:v3";
+  const model = process.env.SARVAM_TTS_MODEL || "bulbul:v2";
 
   const res = await fetch("https://api.sarvam.ai/text-to-speech", {
     method: "POST",
@@ -33,7 +33,11 @@ async function synthesizeSpeech(text, options = {}) {
   return {
     mode: "audio",
     audioBase64,
-    mimeType: data.mimeType || data.mime_type || "audio/wav"
+    mimeType: data.mimeType || data.mime_type || "audio/wav",
+    model,
+    speaker,
+    languageCode: targetLanguageCode,
+    charCount: [...String(text || "")].length
   };
 }
 

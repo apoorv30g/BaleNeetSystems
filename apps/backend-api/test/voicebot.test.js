@@ -191,3 +191,16 @@ test("voicebot allows later barge-in after speech grace period", () => {
   };
   assert.equal(_test.shouldCancelAssistantSpeech(state, { type: "SpeechStarted" }), true);
 });
+
+test("voicebot starts TezCredit bank verification calls with the pending step", () => {
+  const greeting = _test.firstGreeting({
+    language: "Hinglish",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "30000",
+    source_metadata: { productName: "TezCredit" }
+  });
+
+  assert.match(greeting, /TezCredit/);
+  assert.match(greeting, /bank verification/i);
+  assert.match(greeting, /30,000|30000/);
+});

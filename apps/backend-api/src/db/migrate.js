@@ -74,6 +74,7 @@ async function migrate() {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
       campaign_id UUID REFERENCES campaigns(id) ON DELETE CASCADE,
+      external_lead_id TEXT,
       name TEXT,
       phone TEXT NOT NULL,
       campaign_type TEXT,
@@ -83,6 +84,9 @@ async function migrate() {
       loan_amount NUMERIC,
       offer_amount NUMERIC,
       language TEXT DEFAULT 'Hinglish',
+      source_status TEXT,
+      source_reject_reason TEXT,
+      source_metadata JSONB DEFAULT '{}'::jsonb,
       status TEXT DEFAULT 'pending',
       attempt_count INTEGER DEFAULT 0,
       last_called_at TIMESTAMP,
@@ -108,6 +112,23 @@ async function migrate() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+  await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS external_lead_id TEXT;`);
+  await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_status TEXT;`);
+  await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_reject_reason TEXT;`);
+  await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_metadata JSONB DEFAULT '{}'::jsonb;`);
+
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS tts_chars_dynamic INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS tts_chars_cached INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS tts_cache_hits INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS tts_cache_misses INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS stt_audio_ms_sent INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS stt_audio_ms_wall INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS llm_calls_count INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS llm_input_tokens INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS llm_output_tokens INTEGER DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS cache_hit_ratio NUMERIC DEFAULT 0;`);
+  await query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS cost_breakdown JSONB DEFAULT '{}'::jsonb;`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS transcripts (
@@ -236,6 +257,62 @@ async function migrate() {
   `);
 
   await query(`
+    CREATE TABLE IF NOT EXISTS voice_audio_cache (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      cache_key TEXT UNIQUE NOT NULL,
+      text TEXT NOT NULL,
+      language_code TEXT NOT NULL,
+      speaker TEXT NOT NULL,
+      model TEXT NOT NULL,
+      sample_rate INTEGER NOT NULL,
+      volume NUMERIC NOT NULL,
+      mime_type TEXT NOT NULL DEFAULT 'audio/pcm',
+      pcm_base64 TEXT NOT NULL,
+      char_count INTEGER DEFAULT 0,
+      source TEXT DEFAULT 'dynamic_tts',
+      hit_count INTEGER DEFAULT 0,
+      is_active BOOLEAN DEFAULT true,
+      last_used_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS voice_response_templates (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+      playbook_type TEXT NOT NULL,
+      state_name TEXT NOT NULL,
+      trigger_intent TEXT DEFAULT '',
+      language TEXT DEFAULT 'Hinglish',
+      fragments JSONB NOT NULL DEFAULT '[]'::jsonb,
+      next_state TEXT,
+      is_terminal BOOLEAN DEFAULT false,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(tenant_id, playbook_type, state_name, trigger_intent, language)
+    );
+  `);
+
+  await query(`DROP TRIGGER IF EXISTS voice_audio_cache_set_updated_at ON voice_audio_cache;`);
+  await query(`
+    CREATE TRIGGER voice_audio_cache_set_updated_at
+      BEFORE UPDATE ON voice_audio_cache
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  `);
+
+  await query(`DROP TRIGGER IF EXISTS voice_response_templates_set_updated_at ON voice_response_templates;`);
+  await query(`
+    CREATE TRIGGER voice_response_templates_set_updated_at
+      BEFORE UPDATE ON voice_response_templates
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  `);
+
+  await query(`
     CREATE TABLE IF NOT EXISTS voicebot_events (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       call_sid TEXT,
@@ -261,11 +338,15 @@ async function migrate() {
   `);
 
   await query(`CREATE INDEX IF NOT EXISTS idx_leads_campaign_status ON leads(campaign_id, status);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_leads_drop_stage ON leads(campaign_id, drop_stage);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_leads_external_id ON leads(tenant_id, external_lead_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_calls_tenant_created ON calls(tenant_id, created_at DESC);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_dnc_phone ON dnc_list(tenant_id, phone);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_playbooks_tenant_key ON playbooks(tenant_id, key);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_audio_expires ON call_audio_cache(expires_at);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_voice_audio_cache_lookup ON voice_audio_cache(cache_key) WHERE is_active=true;`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_voice_response_templates_lookup ON voice_response_templates(tenant_id, playbook_type, state_name, trigger_intent, language) WHERE is_active=true;`);
   await query(`CREATE INDEX IF NOT EXISTS idx_stt_call ON call_stt_events(call_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_voicebot_events_created ON voicebot_events(created_at DESC);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_voicebot_events_call_sid ON voicebot_events(call_sid);`);
