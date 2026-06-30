@@ -38,6 +38,11 @@ export default function CampaignDetail() {
       apiFetch(`/campaigns/${campaignId}/queue-status`).catch(() => null)
     ]);
 
+    const leadRows = normalizeListResponse(leadData);
+    const callRows = normalizeListResponse(callData);
+    const transcriptRows = normalizeListResponse(transcriptData);
+    const playbookMap = playbookData && typeof playbookData === "object" && !Array.isArray(playbookData) ? playbookData : {};
+
     setCampaign(campaignData);
     setForm({
       name: campaignData.name || "",
@@ -49,12 +54,12 @@ export default function CampaignDetail() {
       maxAttempts: campaignData.max_attempts || 3,
       language: campaignData.language || "Hinglish"
     });
-    setLeads(leadData);
-    setCalls(callData);
-    setTranscripts(transcriptData);
-    setPlaybooks(playbookData);
+    setLeads(leadRows);
+    setCalls(callRows);
+    setTranscripts(transcriptRows);
+    setPlaybooks(playbookMap);
     setQueueStatus(queueData);
-    setSelected(current => current.filter(id => leadData.some(lead => lead.id === id)));
+    setSelected(current => current.filter(id => leadRows.some(lead => lead.id === id)));
   }
 
   useEffect(() => {
@@ -478,4 +483,12 @@ function formatStage(value) {
     .toLowerCase()
     .replace(/_/g, " ")
     .replace(/\b\w/g, letter => letter.toUpperCase());
+}
+
+function normalizeListResponse(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.data)) return value.data;
+  if (Array.isArray(value?.rows)) return value.rows;
+  if (Array.isArray(value?.items)) return value.items;
+  return [];
 }
