@@ -7,6 +7,7 @@ const OUTCOMES = [
   "WRONG_NUMBER",
   "VOICEMAIL",
   "CALL_SCREENING",
+  "JOURNEY_COMPLETED",
   "DISPUTE",
   "NOT_INTERESTED",
   "OPTED_OUT",
@@ -60,6 +61,7 @@ function summarizeOutcome({ outcome, userMessage, allUserText, playbookType }) {
   if (outcome === "WRONG_NUMBER") return `${base}. User indicated wrong number.`;
   if (outcome === "VOICEMAIL") return `${base}. Call reached voicemail or an answering machine.`;
   if (outcome === "CALL_SCREENING") return `${base}. Call was intercepted by phone screening before the user conversation.`;
+  if (outcome === "JOURNEY_COMPLETED") return `${base}. User confirmed the full TezCredit journey and disbursal are complete.`;
   if (outcome === "DISPUTE") return `${base}. User raised a dispute or issue requiring review.`;
   if (outcome === "INTERESTED") return `${base}. User showed interest or agreed to continue.`;
   if (outcome === "NOT_INTERESTED") return `${base}. User declined or showed no interest.`;
@@ -85,6 +87,7 @@ function outcomeReason(outcome, userMessage, playbookType) {
   const latest = String(userMessage || "").trim();
   if (outcome === "VOICEMAIL") return "Answering machine or voicemail prompt detected.";
   if (outcome === "CALL_SCREENING") return "Phone screening assistant intercepted the call.";
+  if (outcome === "JOURNEY_COMPLETED") return "User confirmed successful disbursal after completing the TezCredit journey.";
   if (outcome === "CALLBACK") return "User asked to be called later or said they were busy.";
   if (outcome === "WRONG_NUMBER") return "User indicated the phone number is not relevant.";
   if (outcome === "PROMISE_TO_PAY") return "User gave a payment commitment.";
@@ -99,7 +102,7 @@ function outcomeReason(outcome, userMessage, playbookType) {
 }
 
 function outcomeConfidence(outcome, allUserText) {
-  if (["VOICEMAIL", "CALL_SCREENING", "OPTED_OUT", "WRONG_NUMBER", "PAID", "CALLBACK"].includes(outcome)) return 0.95;
+  if (["VOICEMAIL", "CALL_SCREENING", "JOURNEY_COMPLETED", "OPTED_OUT", "WRONG_NUMBER", "PAID", "CALLBACK"].includes(outcome)) return 0.95;
   if (["PROMISE_TO_PAY", "NOT_INTERESTED", "DISPUTE"].includes(outcome)) return 0.88;
   if (outcome === "INTERESTED") return 0.72;
   if (outcome === "UNCLEAR") return 0.35;
@@ -116,6 +119,7 @@ function nextActionForOutcome(outcome) {
     WRONG_NUMBER: "Suppress this lead unless corrected contact data is available.",
     VOICEMAIL: "Retry later; do not count as a human conversation.",
     CALL_SCREENING: "Retry later or ask user to disable/accept screening for this number.",
+    JOURNEY_COMPLETED: "Stop journey reminders and reconcile final disbursal status.",
     DISPUTE: "Flag for manual review or app support follow-up.",
     NOT_INTERESTED: "Do not retry in the same campaign unless policy allows.",
     OPTED_OUT: "Add to DNC and stop future calls.",

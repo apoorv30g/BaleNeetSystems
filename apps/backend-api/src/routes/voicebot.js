@@ -22,6 +22,13 @@ const {
 const logger = require("../utils/logger");
 const config = require("../config");
 const { sendLeadLink } = require("../providers/notifications");
+const {
+  applyTezJourneyProgress,
+  buildTezJourneyTransitionReply,
+  detectTezJourneyProgress,
+  getTezJourneyStage,
+  tezJourneyContext
+} = require("../services/tezJourney");
 
 const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, LoanConnect se AI assistant. Kya aap mujhe sun paa rahe hain?";
 const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Okay.|Got it.|Sure.|Haan ji.|Theek hai.|Samjha.");
@@ -806,6 +813,14 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  const journeyProgress = detectTezJourneyProgress(session.lead, text, {
+    lastSpokenText: session.lastSpokenText
+  });
+  if (journeyProgress) {
+    await handleTezJourneyProgress(ws, session, text, journeyProgress);
+    return;
+  }
+
   if (isOptOut(text)) {
     session.ending = true;
     await query(
@@ -926,6 +941,68 @@ async function processUserTranscript(ws, session, event) {
   scheduleNoSpeechCheck(ws, session, "after_reply");
 }
 
+async function handleTezJourneyProgress(ws, session, text, progress) {
+  const english = isEnglishSession(session);
+  const updatedLead = applyTezJourneyProgress(session.lead, progress);
+  session.lead = updatedLead;
+  session.stageLineCounts = {};
+  session.stageGuidanceCount = 0;
+  session.linkInstructionGiven = false;
+  session.linkInstructionReason = "";
+
+  await query(
+    `UPDATE leads
+     SET drop_stage=$2,
+         playbook_type=$3,
+         source_status=$4,
+         source_metadata=$5::jsonb,
+         status=CASE WHEN $6::boolean THEN 'completed' ELSE status END
+     WHERE id=$1`,
+    [
+      updatedLead.id,
+      updatedLead.drop_stage,
+      updatedLead.playbook_type,
+      updatedLead.source_status || null,
+      JSON.stringify(updatedLead.source_metadata || {}),
+      Boolean(progress.journeyComplete)
+    ]
+  );
+
+  const reply = buildTezJourneyTransitionReply(progress, english);
+  const summary = progress.journeyComplete
+    ? `Customer confirmed TezCredit disbursal. Journey completed after ${progress.completedStages.length} stages.`
+    : `Customer completed ${progress.completedLabel}. Journey advanced to ${progress.nextLabel}.`;
+
+  await logVoicebotEvent(session, progress.journeyComplete ? "tez_journey_completed" : "tez_journey_stage_completed", {
+    userText: text,
+    completedStage: progress.completedStage,
+    nextStage: progress.nextStage,
+    completedStages: progress.completedStages,
+    reason: progress.reason
+  });
+
+  if (session.callId) {
+    await addTranscript(session.callId, "assistant", reply);
+    if (progress.journeyComplete) {
+      await finalizeCall(session, { outcome: "JOURNEY_COMPLETED", summary });
+    } else {
+      await query(
+        `UPDATE calls SET outcome='INTERESTED', summary=$2, updated_at=NOW() WHERE id=$1`,
+        [session.callId, summary]
+      );
+    }
+  }
+
+  if (progress.journeyComplete) {
+    session.ending = true;
+    await speakAndClose(ws, session, reply, "tez_journey_completed");
+    return;
+  }
+
+  await speakText(ws, session, reply, "tez_journey_stage_advanced");
+  scheduleNoSpeechCheck(ws, session, "after_journey_stage_advanced");
+}
+
 async function maybeSpeakDelayedAck(ws, session, replyPromise, ackText, turnSeq) {
   let settled = false;
   replyPromise.then(() => {
@@ -972,6 +1049,8 @@ function buildConversationState(session = {}) {
     screeningAnswered: Boolean(session.screeningAnswered),
     screeningHumanJoined: Boolean(session.screeningHumanJoined),
     stageGuidanceCount: Number(session.stageGuidanceCount || 0),
+    journeyStage: getTezJourneyStage(session.lead),
+    journeyCompletedStages: tezJourneyContext(session.lead)?.completedStages || [],
     recentAssistantReplies: (session.assistantReplyHistory || []).slice(-3)
   };
 }
@@ -1396,16 +1475,16 @@ function positiveFollowUpReply(session = {}, english = false) {
     return "बहुत अच्छा। Amount और terms review कीजिए। क्या e-sign button दिख रहा है या कोई error है?";
   }
   if (stage.includes("SELFIE")) {
-    if (english) return "Great. Are you on the live selfie screen now, or is the camera step not opening?";
-    return "बहुत अच्छा। क्या live selfie screen खुल गया है, या camera step open नहीं हो रहा?";
+    if (english) return "Great. Complete the live selfie with your face centered. Is the selfie completed now?";
+    return "बहुत अच्छा। Face center में रखकर live selfie कीजिए। क्या selfie complete हो गई?";
   }
   if (stage.includes("AADHAAR")) {
-    if (english) return "Great. Are you seeing DigiLocker Aadhaar KYC, OTP, or any error on the screen?";
-    return "बहुत अच्छा। Screen पर DigiLocker Aadhaar KYC, OTP, या कोई error दिख रहा है?";
+    if (english) return "Great. Complete Aadhaar KYC privately inside DigiLocker. Is the KYC completed now?";
+    return "बहुत अच्छा। DigiLocker में privately Aadhaar KYC कीजिए। क्या KYC complete हो गई?";
   }
   if (stage.includes("PROFILE")) {
-    if (english) return "Great. Which profile detail is pending on the screen: personal, employment, income, or address?";
-    return "बहुत अच्छा। Screen पर कौन सी profile detail pending है: personal, employment, income या address?";
+    if (english) return "Great. Fill the profile detail shown in the app. Is it saved successfully now?";
+    return "बहुत अच्छा। App में दिख रही profile detail भरिए। क्या profile successfully save हो गई?";
   }
 
   if (english) return "Great. Tell me what you see now: documents, KYC, bank verification, e-sign, final offer, or an error?";
@@ -1498,6 +1577,21 @@ function stageOpeningContinuation(session = {}, english = false, amountText = "e
       ? "Great. Please open the app and complete Aadhaar KYC through DigiLocker. Do not share OTP on this call."
       : "बहुत अच्छा। App में DigiLocker से Aadhaar KYC complete कीजिए। OTP इस call पर share मत कीजिए।";
   }
+  if (stage.includes("PROFILE")) {
+    return english
+      ? "Great. Open the app and tell me whether it asks for income, employment, PAN, pincode, or address."
+      : "बहुत अच्छा। App खोलकर बताइए income, employment, PAN, pincode या address में क्या pending है?";
+  }
+  if (stage.includes("E_SIGN")) {
+    return english
+      ? "Great. Open the agreement, review the amount and terms, and tell me whether the e-sign button is visible."
+      : "बहुत अच्छा। Agreement खोलकर amount और terms देखिए। क्या e-sign button दिख रहा है?";
+  }
+  if (stage.includes("APPROVED_NOT_DISBURSED")) {
+    return english
+      ? "Great. Open the app and tell me whether it shows approval, processing, a bank issue, or completed disbursal."
+      : "बहुत अच्छा। App खोलकर बताइए approval, processing, bank issue या completed disbursal में क्या दिख रहा है?";
+  }
   return english
     ? "Great. Please open the app and tell me which screen you see."
     : "बहुत अच्छा। App खोलिए और बताइए कौन सा screen दिख रहा है।";
@@ -1521,6 +1615,26 @@ function stageClarificationReply(session = {}, english = false, amountText = "el
       ? "Your loan is at the agreement step. Please review the terms in the app, then e-sign only if comfortable."
       : "आपका loan agreement step पर है। App में terms review करके comfortable हों तभी e-sign कीजिए।";
   }
+  if (stage.includes("SELFIE")) {
+    return english
+      ? "Only the live selfie is pending. Open the camera inside the app and keep your face centered."
+      : "सिर्फ live selfie pending है। App के अंदर camera खोलकर face center में रखिए।";
+  }
+  if (stage.includes("AADHAAR")) {
+    return english
+      ? "Aadhaar KYC is pending inside DigiLocker. Complete it in the app, but never tell me the OTP."
+      : "DigiLocker में Aadhaar KYC pending है। इसे app में complete कीजिए, लेकिन OTP मुझे मत बताइए।";
+  }
+  if (stage.includes("PROFILE")) {
+    return english
+      ? "One profile field is incomplete. The app will show whether it is income, employment, PAN, pincode, or address."
+      : "एक profile field अधूरी है। App बताएगा कि income, employment, PAN, pincode या address में क्या बाकी है।";
+  }
+  if (stage.includes("APPROVED_NOT_DISBURSED")) {
+    return english
+      ? "Your application is approved, but disbursal is not confirmed. Tell me the exact status shown in the app."
+      : "Application approved है, लेकिन disbursal confirm नहीं है। App में दिख रहा exact status बताइए।";
+  }
   return english
     ? "I am calling because one app step is pending. Open the app, and I will guide you simply."
     : "मैं इसलिए call कर रहा हूँ क्योंकि app में एक step pending है। App खोलिए, मैं simple guide कर दूँगा।";
@@ -1539,6 +1653,31 @@ function stageNextStepReply(session = {}, english = false) {
         "Next step safe bank verification है। मैं OTP, PIN या password नहीं पूछूँगा।"
       ]);
   }
+  if (stage.includes("SELFIE")) {
+    return english
+      ? "Open live selfie in the app, allow camera access, and keep your face inside the frame."
+      : "App में live selfie खोलिए, camera permission दीजिए, और face frame के अंदर रखिए।";
+  }
+  if (stage.includes("AADHAAR")) {
+    return english
+      ? "Open Aadhaar KYC through DigiLocker and complete it securely. Do not share the OTP on this call."
+      : "DigiLocker से Aadhaar KYC खोलकर securely complete कीजिए। OTP इस call पर share मत कीजिए।";
+  }
+  if (stage.includes("PROFILE")) {
+    return english
+      ? "Complete the profile field shown in the app. Then tell me which screen opens next."
+      : "App में दिख रही profile field complete कीजिए। फिर बताइए आगे कौन सा screen खुलता है।";
+  }
+  if (stage.includes("E_SIGN")) {
+    return english
+      ? "Review the agreement amount and terms first. If you agree, use the e-sign button inside the app."
+      : "पहले agreement का amount और terms देखिए। Agree हों तो app में e-sign button use कीजिए।";
+  }
+  if (stage.includes("APPROVED_NOT_DISBURSED")) {
+    return english
+      ? "Check the current disbursal status in the app and tell me whether it says processing, failed, or credited."
+      : "App में disbursal status देखिए और बताइए processing, failed या credited क्या लिखा है।";
+  }
   return english
     ? "The next step is shown in the app. Tell me the screen name, and I will guide you."
     : "Next step app में दिखेगा। Screen का नाम बताइए, मैं guide कर दूँगा।";
@@ -1549,12 +1688,42 @@ function stageScreenGuidanceReply(session = {}, text = "", english = false) {
   if (stage.includes("BANK_VERIFICATION")) {
     if (/(upi|यू पी आई|bank account|account|खाता|error|एरर|fail|failed)/.test(text)) {
       return english
-        ? "Good. Use only the in-app option. If it shows an error, retry once or check app support."
-        : "ठीक है। सिर्फ app के अंदर वाला option use कीजिए। Error आए तो एक बार retry करें या app support check करें।";
+        ? "Use only the in-app option and retry once if needed. Is bank verification successful now?"
+        : "सिर्फ app के अंदर वाला option use कीजिए; जरूरत हो तो एक बार retry करें। क्या bank verification successful हो गया?";
     }
     return english
       ? "Tell me what you see there: UPI, bank account, permission, or an error?"
       : "वहाँ क्या दिख रहा है: UPI, bank account, permission, या कोई error?";
+  }
+  if (stage.includes("SELFIE")) {
+    if (/(error|fail|camera|permission|एरर|फेल|कैमरा)/.test(text)) {
+      return english
+        ? "Allow camera access, use good light, and keep your full face inside the frame. What error remains?"
+        : "Camera permission दीजिए, अच्छी light रखिए, और पूरा face frame में रखिए। अब कौन सा error है?";
+    }
+    return english
+      ? "Center your face and follow the blink or movement instruction. Is the selfie completed now?"
+      : "Face center में रखकर blink या movement instruction follow कीजिए। क्या selfie complete हो गई?";
+  }
+  if (stage.includes("AADHAAR")) {
+    return english
+      ? "Enter any OTP privately inside DigiLocker and never say it aloud. Is Aadhaar KYC completed now?"
+      : "OTP सिर्फ DigiLocker में privately डालिए, call पर मत बोलिए। क्या Aadhaar KYC complete हो गई?";
+  }
+  if (stage.includes("PROFILE")) {
+    return english
+      ? "Fill the requested income, employer, PAN, pincode, or address field. Is the profile saved now?"
+      : "माँगी गई income, employer, PAN, pincode या address field भरिए। क्या profile save हो गई?";
+  }
+  if (stage.includes("E_SIGN")) {
+    return english
+      ? "Read the amount, tenure, EMI, and charges, then sign only if comfortable. Is e-sign completed now?"
+      : "Amount, tenure, EMI और charges पढ़कर comfortable हों तभी sign कीजिए। क्या e-sign complete हो गया?";
+  }
+  if (stage.includes("APPROVED_NOT_DISBURSED")) {
+    return english
+      ? "Please check the disbursal status. Has the loan amount been credited to your account?"
+      : "कृपया disbursal status देखिए। क्या loan amount आपके account में credit हो गया?";
   }
   return english
     ? "Tell me the exact screen or error, and I will guide the next step."
@@ -2083,33 +2252,33 @@ function stagePositiveReply(session = {}, english = false) {
   const stage = String(lead.drop_stage || lead.playbook_type || "");
   if (stage === "SELFIE_PENDING") {
     return english
-      ? "Great. Open the secure app link, choose live selfie, and keep your face centered in the camera."
-      : "बहुत अच्छा। Secure app link खोलिए, live selfie चुनिए, और face camera के center में रखिए।";
+      ? "Great. Open live selfie and keep your face centered. Is the selfie completed now?"
+      : "बहुत अच्छा। Live selfie खोलकर face center में रखिए। क्या selfie complete हो गई?";
   }
   if (stage === "AADHAAR_PENDING") {
     return english
-      ? "Great. Open the app and complete Aadhaar KYC through DigiLocker. Please do not share OTP on this call."
-      : "बहुत अच्छा। App खोलकर DigiLocker से Aadhaar KYC complete कीजिए। OTP इस call पर share मत कीजिए।";
+      ? "Great. Complete Aadhaar KYC through DigiLocker without sharing OTP. Is the KYC completed now?"
+      : "बहुत अच्छा। OTP share किए बिना DigiLocker से Aadhaar KYC कीजिए। क्या KYC complete हो गई?";
   }
   if (stage === "PROFILE_PENDING") {
     return english
-      ? "Great. Open the app and fill the pending profile field. It may be income, employer, PAN, or pincode."
-      : "बहुत अच्छा। App खोलकर pending profile field भरिए। यह income, employer, PAN या pincode हो सकता है।";
+      ? "Great. Fill the pending income, employer, PAN, or pincode field. Is the profile saved now?"
+      : "बहुत अच्छा। Pending income, employer, PAN या pincode field भरिए। क्या profile save हो गई?";
   }
   if (stage === "BANK_VERIFICATION_PENDING") {
     return english
-      ? "Great. Open the app and complete bank verification using UPI or bank account details."
-      : "बहुत अच्छा। App खोलकर UPI या bank account details से bank verification complete कीजिए।";
+      ? "Great. Verify your bank using UPI or account details in the app. Is verification successful now?"
+      : "बहुत अच्छा। App में UPI या account details से bank verify कीजिए। क्या verification successful हो गया?";
   }
   if (stage === "E_SIGN_PENDING") {
     return english
-      ? "Great. Review the amount and terms in the app, then e-sign only if you are comfortable."
-      : "बहुत अच्छा। App में amount और terms review कीजिए, comfortable हों तभी e-sign कीजिए।";
+      ? "Great. Review the amount and terms, then sign only if comfortable. Is e-sign completed now?"
+      : "बहुत अच्छा। Amount और terms देखकर comfortable हों तभी sign कीजिए। क्या e-sign complete हो गया?";
   }
   if (stage === "APPROVED_NOT_DISBURSED") {
     return english
-      ? "Great. Tell me which screen you see in the app, and I will guide the next step."
-      : "बहुत अच्छा। App में कौन सा screen दिख रहा है बताइए, मैं next step guide कर दूँगा।";
+      ? "Great. Please check the final disbursal status. Has the loan amount reached your account?"
+      : "बहुत अच्छा। Final disbursal status देखिए। क्या loan amount आपके account में आ गया?";
   }
   return "";
 }

@@ -1,5 +1,6 @@
 const config = require("../config");
 const { query } = require("../db/pool");
+const { tezJourneyContext, tezJourneyPromptNotes } = require("./tezJourney");
 
 const PLAYBOOKS = {
   SOFT_PAYMENT_REMINDER: {
@@ -382,7 +383,10 @@ function journeyContextNotes(lead = {}) {
   const meta = lead.source_metadata || {};
   const product = meta.productName || "the loan app";
   const stage = String(lead.drop_stage || lead.playbook_type || "");
-  const notes = [`- Product/application: ${product}.`];
+  const notes = [
+    `- Product/application: ${product}.`,
+    ...tezJourneyPromptNotes(lead)
+  ];
 
   if (stage === "SELFIE_PENDING") notes.push("- Pending step: live selfie. User must keep face centered and complete it in the app.");
   if (stage === "AADHAAR_PENDING") notes.push("- Pending step: Aadhaar KYC through DigiLocker inside the app.");
@@ -503,6 +507,7 @@ function conversationStateNotes(lead, conversationState = {}, lastUserMessage = 
   const notes = [];
   const capturedName = conversationState.capturedName || "";
   const nameConfirmed = Boolean(conversationState.confirmedName) || freshLeadNameProvided(lead, lastUserMessage);
+  const journey = tezJourneyContext(lead);
 
   if (nameConfirmed) {
     notes.push(`- Name/reference confirmation is already done${capturedName ? `: ${capturedName}` : ""}. Do not ask for the name again.`);
@@ -515,6 +520,11 @@ function conversationStateNotes(lead, conversationState = {}, lastUserMessage = 
 
   if (conversationState.lastSpokenText) {
     notes.push(`- Last assistant prompt: ${conversationState.lastSpokenText}`);
+  }
+
+  if (journey) {
+    notes.push(`- Continue from ${journey.current.label}; do not restart earlier TezCredit stages.`);
+    notes.push(`- Journey progress: ${journey.completedStages.length}/${journey.totalStages} stages completed.`);
   }
 
   return notes.join("\n");
