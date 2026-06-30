@@ -126,6 +126,17 @@ test("voicebot handles no human transfer", () => {
   assert.match(reply, /no human transfer/i);
 });
 
+test("voicebot answers iPhone screening with name and purpose", () => {
+  const reply = _test.callScreeningReply(session("English", {
+    source_metadata: { productName: "TezCredit" }
+  }));
+
+  assert.match(reply, /Raj from TezCredit/i);
+  assert.match(reply, /loan eligibility check/i);
+  assert.match(reply, /connect the call/i);
+  assert.doesNotMatch(reply, /Thank you/i);
+});
+
 test("voicebot advances after user agrees to an already-sent link", () => {
   const state = session("Hinglish", {}, { tenantId: null });
 

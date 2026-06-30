@@ -51,7 +51,7 @@ const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "
 const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 2500);
 const BARGE_IN_MIN_CHUNKS = Number(process.env.VOICEBOT_BARGE_IN_MIN_CHUNKS || 10);
 const INTRO_BARGE_IN_ENABLED = process.env.VOICEBOT_INTRO_BARGE_IN_ENABLED === "true";
-const SCREENING_RESPONSE_ENABLED = process.env.VOICEBOT_SCREENING_RESPONSE_ENABLED === "true";
+const SCREENING_RESPONSE_ENABLED = process.env.VOICEBOT_SCREENING_RESPONSE_ENABLED !== "false";
 const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
 const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
@@ -160,6 +160,9 @@ function attachVoicebot(server) {
       confirmedName: false,
       confirmedNameTurn: 0,
       capturedName: "",
+      screeningAnswered: false,
+      screeningTranscript: "",
+      screeningDetectedAt: 0,
       lastSpokenText: "",
       lastSpokenMark: "",
       activeSpeechMark: "",
@@ -732,18 +735,39 @@ async function processUserTranscript(ws, session, event) {
       [session.tenantId, session.callId, sttProvider, text, event.confidence]
     );
   }
-  session.userTurns++;
-  updateConversationMemory(session, text);
-
   const nonHumanOutcome = isVoicemail(text) ? "VOICEMAIL" : (isCallScreening(text) ? "CALL_SCREENING" : "");
   if (nonHumanOutcome) {
-    session.ending = true;
     const transcript = session.callId ? await getTranscript(session.callId) : [];
     const classification = classifyConversation({
       userMessage: text,
       transcript,
       playbookType: session.lead.playbook_type
     });
+
+    if (nonHumanOutcome === "CALL_SCREENING" && SCREENING_RESPONSE_ENABLED) {
+      if (session.screeningAnswered) {
+        await logVoicebotEvent(session, "call_screening_duplicate_ignored", { text });
+        scheduleNoSpeechCheck(ws, session, "after_call_screening_duplicate");
+        return;
+      }
+
+      session.screeningAnswered = true;
+      session.screeningTranscript = text;
+      session.screeningDetectedAt = Date.now();
+      const reply = callScreeningReply(session);
+      if (session.callId) await addTranscript(session.callId, "assistant", reply);
+      await logVoicebotEvent(session, "call_screening_answered", {
+        text,
+        reply,
+        reason: classification.reason,
+        nextAction: "Answered iPhone/assistant screening and kept the call open for the real user."
+      });
+      await speakText(ws, session, reply, "call_screening_answered");
+      scheduleNoSpeechCheck(ws, session, "after_call_screening_answer");
+      return;
+    }
+
+    session.ending = true;
     if (session.callId) {
       await finalizeCall(session, {
         outcome: nonHumanOutcome,
@@ -756,15 +780,12 @@ async function processUserTranscript(ws, session, event) {
       reason: classification.reason,
       nextAction: classification.nextAction
     });
-    if (nonHumanOutcome === "CALL_SCREENING" && SCREENING_RESPONSE_ENABLED) {
-      const reply = callScreeningReply(session);
-      if (session.callId) await addTranscript(session.callId, "assistant", reply);
-      await speakAndClose(ws, session, reply, "call_screening_close");
-    } else {
-      await closeQuietly(ws, session);
-    }
+    await closeQuietly(ws, session);
     return;
   }
+
+  session.userTurns++;
+  updateConversationMemory(session, text);
 
   const languageSwitch = detectLanguageSwitch(text);
   if (languageSwitch) {
@@ -1420,7 +1441,10 @@ function terminalClosingText(outcome, session = {}) {
 }
 
 function callScreeningReply(session = {}) {
-  return terminalClosingText("CALL_SCREENING", session);
+  const configured = process.env.VOICEBOT_SCREENING_RESPONSE_TEXT;
+  if (configured) return configured;
+  const product = productNameForLead(session.lead || {});
+  return `This is Raj from ${product}, calling about a loan eligibility check. Please connect the call if the customer is available.`;
 }
 
 async function speakAndClose(ws, session, text, markName) {
@@ -2262,16 +2286,28 @@ async function logVoicebotEvent(session, eventType, details = {}) {
 async function markCallCompleted(session) {
   if (!session.callId) return;
   const durationSeconds = Math.max(0, Math.round((Date.now() - session.startedAt) / 1000));
+  const screeningOnlyOutcome = session.screeningAnswered && Number(session.userTurns || 0) === 0 ? "CALL_SCREENING" : null;
+  const screeningOnlySummary = screeningOnlyOutcome
+    ? "Call reached iPhone or assistant call screening. The bot stated name and purpose, but no human response was captured."
+    : null;
   await query(
     `UPDATE calls
      SET status='completed',
+         outcome=CASE
+           WHEN $3::text IS NOT NULL AND (outcome IS NULL OR outcome='IN_PROGRESS') THEN $3
+           ELSE outcome
+         END,
+         summary=CASE
+           WHEN $4::text IS NOT NULL AND (summary IS NULL OR summary='') THEN $4
+           ELSE summary
+         END,
          duration_seconds=CASE
            WHEN duration_seconds IS NULL OR duration_seconds=0 THEN $2
            ELSE duration_seconds
          END,
          updated_at=NOW()
      WHERE id=$1 AND status='streaming'`,
-    [session.callId, durationSeconds]
+    [session.callId, durationSeconds, screeningOnlyOutcome, screeningOnlySummary]
   );
   await persistCallMetrics(session, durationSeconds);
 }
@@ -2517,6 +2553,7 @@ module.exports = {
     beginUserTurn,
     buildConversationState,
     buildScriptedReply,
+    callScreeningReply,
     extractNameAnswer,
     firstGreeting,
     invalidateAssistantTurn,
