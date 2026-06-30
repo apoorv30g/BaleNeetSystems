@@ -5,6 +5,39 @@ const { generateSarvamReply } = require("./sarvamChat");
 const DEFAULT_PRIMARY = "sarvam";
 const DEFAULT_FALLBACK = "gemini";
 
+// Simple circuit breaker — fast-fails a provider after THRESHOLD consecutive errors,
+// then re-allows after RESET_MS to let it recover.
+const CIRCUIT_THRESHOLD = Number(process.env.LLM_CIRCUIT_THRESHOLD || 5);
+const CIRCUIT_RESET_MS = Number(process.env.LLM_CIRCUIT_RESET_MS || 30000);
+const circuitState = {}; // { [provider]: { failures: number, openAt: number|null } }
+
+function getCircuit(provider) {
+  if (!circuitState[provider]) circuitState[provider] = { failures: 0, openAt: null };
+  return circuitState[provider];
+}
+
+function isCircuitOpen(provider) {
+  const c = getCircuit(provider);
+  if (c.openAt === null) return false;
+  if (Date.now() - c.openAt > CIRCUIT_RESET_MS) {
+    c.openAt = null; // half-open: allow one probe
+    return false;
+  }
+  return true;
+}
+
+function recordSuccess(provider) {
+  const c = getCircuit(provider);
+  c.failures = 0;
+  c.openAt = null;
+}
+
+function recordFailure(provider) {
+  const c = getCircuit(provider);
+  c.failures += 1;
+  if (c.failures >= CIRCUIT_THRESHOLD) c.openAt = Date.now();
+}
+
 async function generateReply(args) {
   const primary = normalizeProvider(process.env.LLM_PROVIDER || DEFAULT_PRIMARY);
   const fallback = normalizeProvider(process.env.LLM_FALLBACK_PROVIDER || DEFAULT_FALLBACK);
@@ -12,9 +45,16 @@ async function generateReply(args) {
   const errors = [];
 
   for (const provider of providers) {
+    if (isCircuitOpen(provider)) {
+      errors.push(`${provider}: circuit open (too many recent failures)`);
+      continue;
+    }
     try {
-      return await generateWithProvider(provider, args);
+      const result = await generateWithProvider(provider, args);
+      recordSuccess(provider);
+      return result;
     } catch (err) {
+      recordFailure(provider);
       errors.push(`${provider}: ${err.message}`);
     }
   }
@@ -49,7 +89,10 @@ function llmProviderStatus() {
     primaryConfigured: isConfigured(primary),
     fallbackConfigured: isConfigured(fallback),
     sarvamModel: process.env.SARVAM_CHAT_MODEL || "sarvam-30b",
-    geminiModel: config.ai.geminiModel
+    geminiModel: config.ai.geminiModel,
+    circuits: Object.fromEntries(
+      Object.entries(circuitState).map(([p, c]) => [p, { open: isCircuitOpen(p), failures: c.failures }])
+    )
   };
 }
 

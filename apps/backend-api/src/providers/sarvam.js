@@ -7,6 +7,7 @@ async function synthesizeSpeech(text, options = {}) {
   const speaker = process.env.SARVAM_TTS_SPEAKER || "shubh";
   const model = process.env.SARVAM_TTS_MODEL || "bulbul:v2";
 
+  const timeoutMs = Number(process.env.SARVAM_TTS_TIMEOUT_MS || 12000);
   const res = await fetch("https://api.sarvam.ai/text-to-speech", {
     method: "POST",
     headers: {
@@ -18,7 +19,8 @@ async function synthesizeSpeech(text, options = {}) {
       target_language_code: targetLanguageCode,
       speaker,
       model
-    })
+    }),
+    signal: AbortSignal.timeout(timeoutMs)
   });
 
   if (!res.ok) {

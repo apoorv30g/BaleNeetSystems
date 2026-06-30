@@ -12,6 +12,38 @@ function required(name, fallback = "") {
   return value;
 }
 
+// Parses a numeric env var, failing fast if the value is not a finite number.
+function requiredNum(name, defaultVal) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultVal;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`Env var ${name}="${raw}" must be a finite number`);
+  return n;
+}
+
+// Validate all numeric voicebot config at startup so NaN values are caught early.
+function validateVoicebotConfig() {
+  const numericVars = [
+    ["VOICEBOT_INTRO_DELAY_MS", 0],
+    ["VOICEBOT_ACK_DELAY_MS", 850],
+    ["VOICEBOT_FAST_ACK_DELAY_MS", 850],
+    ["VOICEBOT_NO_SPEECH_PROMPT_MS", 9000],
+    ["VOICEBOT_NO_SPEECH_END_MS", 22000],
+    ["VOICEBOT_MIN_TRANSCRIPT_CONFIDENCE", 0.62],
+    ["VOICEBOT_LOW_CONFIDENCE_MAX_WORDS", 3],
+    ["VOICEBOT_INTERIM_TRANSCRIPT_DELAY_MS", 1200],
+    ["VOICEBOT_INTERIM_TRANSCRIPT_FORCE_MS", 2600],
+    ["VOICEBOT_INTERIM_TRANSCRIPT_MIN_WORDS", 2],
+    ["VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS", 5],
+    ["VOICEBOT_BARGE_IN_GRACE_MS", 2500],
+    ["VOICEBOT_BARGE_IN_MIN_CHUNKS", 10],
+    ["VOICEBOT_TTS_PREROLL_MS", 300],
+    ["VOICEBOT_TTS_VOLUME", 1.6],
+    ["VOICEBOT_PCM_CACHE_MAX", 200],
+  ];
+  for (const [name, def] of numericVars) requiredNum(name, def);
+}
+
 const frontendUrls = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || (isProduction ? "https://app.baleneetsystems.in" : "http://localhost:3000"))
   .split(",")
   .map(url => url.trim())
@@ -60,3 +92,11 @@ module.exports = {
     deepgramApiKey: process.env.DEEPGRAM_API_KEY
   }
 };
+
+// Run at import time so misconfigured numeric vars fail the process immediately.
+try {
+  validateVoicebotConfig();
+} catch (err) {
+  console.error("[config] Invalid env var:", err.message);
+  process.exit(1);
+}

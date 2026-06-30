@@ -55,7 +55,27 @@ const SCREENING_RESPONSE_ENABLED = process.env.VOICEBOT_SCREENING_RESPONSE_ENABL
 const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
 const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
-const pcmCache = new Map();
+const PCM_CACHE_MAX = Number(process.env.VOICEBOT_PCM_CACHE_MAX || 200);
+
+// Bounded LRU cache — prevents unbounded memory growth over long server uptime.
+const pcmCache = (() => {
+  const map = new Map();
+  return {
+    get(key) {
+      if (!map.has(key)) return undefined;
+      const val = map.get(key);
+      map.delete(key);
+      map.set(key, val);
+      return val;
+    },
+    set(key, val) {
+      if (map.has(key)) map.delete(key);
+      else if (map.size >= PCM_CACHE_MAX) map.delete(map.keys().next().value);
+      map.set(key, val);
+    },
+    has(key) { return map.has(key); }
+  };
+})();
 
 function attachVoicebot(server) {
   const wss = new WebSocketServer({ noServer: true });
@@ -1059,11 +1079,15 @@ function buildScriptedReply(session, text) {
   }
 
   if (mentionsLinkReceived(normalized)) {
-    if (english) return "Great. Please open the same secure link and check your final offer. I am on the line.";
-    return "बहुत अच्छा। अब उसी link को खोलकर final offer check कर लीजिए। मैं line पर हूँ।";
+    markLinkInstruction(session, "link_received");
+    if (english) return "Great. Open it once and tell me which screen you see: documents, KYC, bank verification, e-sign, final offer, or an error.";
+    return "बहुत अच्छा। Link खोलिए और बताइए कौन सा screen दिख रहा है: documents, KYC, bank verification, e-sign, final offer या error?";
   }
 
   if (isPositiveAgreement(normalized)) {
+    if (hasRecentLinkInstruction(session)) {
+      return positiveFollowUpReply(session, english);
+    }
     const stageReply = stagePositiveReply(session, english);
     if (stageReply) {
       queueLeadLink(session, "stage_positive");
@@ -1259,6 +1283,7 @@ function normalizePreferredLanguage(language) {
 }
 
 function queueLeadLink(session, reason) {
+  markLinkInstruction(session, reason);
   if (!session.tenantId || !session.lead) return;
   sendLeadLink({
     tenantId: session.tenantId,
@@ -1268,6 +1293,51 @@ function queueLeadLink(session, reason) {
   })
     .then(event => logVoicebotEvent(session, "lead_link_queued", { reason, status: event.status, channel: event.channel }).catch(() => {}))
     .catch(err => logVoicebotEvent(session, "lead_link_failed", { reason, error: err.message }).catch(() => {}));
+}
+
+function markLinkInstruction(session, reason = "") {
+  if (!session) return;
+  session.linkInstructionGiven = true;
+  session.linkInstructionReason = reason;
+  session.linkInstructionCount = Number(session.linkInstructionCount || 0) + 1;
+}
+
+function hasRecentLinkInstruction(session = {}) {
+  return Boolean(session.linkInstructionGiven) || assistantAskedToOpenLink(session.lastSpokenText);
+}
+
+function assistantAskedToOpenLink(text = "") {
+  const normalized = normalizeVoiceIntent(text);
+  return /(secure link|same secure link|link भेज|link खोल|link open|लिंक खोल|सुरक्षित link|सुरक्षित लिंक|app खोल|ऐप खोल|final offer check|final eligibility|documents.*check|offer आगे)/.test(normalized);
+}
+
+function positiveFollowUpReply(session = {}, english = false) {
+  session.linkPositiveFollowups = Number(session.linkPositiveFollowups || 0) + 1;
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+
+  if (stage.includes("BANK_VERIFICATION")) {
+    if (english) return "Great. Are you seeing UPI verification, bank-account verification, or an error on the screen?";
+    return "बहुत अच्छा। Screen पर UPI verification, bank-account verification या कोई error दिख रहा है?";
+  }
+  if (stage.includes("E_SIGN")) {
+    if (english) return "Great. Please review the amount and terms. Are you seeing the e-sign button or any error?";
+    return "बहुत अच्छा। Amount और terms review कीजिए। क्या e-sign button दिख रहा है या कोई error है?";
+  }
+  if (stage.includes("SELFIE")) {
+    if (english) return "Great. Are you on the live selfie screen now, or is the camera step not opening?";
+    return "बहुत अच्छा। क्या live selfie screen खुल गया है, या camera step open नहीं हो रहा?";
+  }
+  if (stage.includes("AADHAAR")) {
+    if (english) return "Great. Are you seeing DigiLocker Aadhaar KYC, OTP, or any error on the screen?";
+    return "बहुत अच्छा। Screen पर DigiLocker Aadhaar KYC, OTP, या कोई error दिख रहा है?";
+  }
+  if (stage.includes("PROFILE")) {
+    if (english) return "Great. Which profile detail is pending on the screen: personal, employment, income, or address?";
+    return "बहुत अच्छा। Screen पर कौन सी profile detail pending है: personal, employment, income या address?";
+  }
+
+  if (english) return "Great. Tell me what you see now: documents, KYC, bank verification, e-sign, final offer, or an error?";
+  return "बहुत अच्छा। अब बताइए screen पर क्या दिख रहा है: documents, KYC, bank verification, e-sign, final offer या error?";
 }
 
 function terminalClosingText(outcome, session = {}) {

@@ -13,7 +13,19 @@ const config = require("../config");
 const router = express.Router();
 const FAST_EXOML_GREETING = "Namaste, LoanConnect se AI assistant bol raha hoon. Yeh ek test call hai. Dhanyavaad.";
 
-router.post("/exotel/status", async (req, res) => {
+// Validates EXOTEL_WEBHOOK_SECRET if configured. Exotel cannot sign payloads, so we
+// use a shared secret passed as a query param (?secret=...) or X-Webhook-Secret header.
+function webhookAuth(req, res, next) {
+  const secret = process.env.EXOTEL_WEBHOOK_SECRET;
+  if (!secret) return next(); // not configured — allow all (dev/test)
+  const provided = req.query.secret || req.headers["x-webhook-secret"] || "";
+  if (provided !== secret) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  next();
+}
+
+router.post("/exotel/status", webhookAuth, async (req, res) => {
   const body = bodyOf(req);
   const callSid = body.CallSid || body.Sid;
   const status = body.Status || body.CallStatus || "unknown";
@@ -39,7 +51,7 @@ router.post("/exotel/status", async (req, res) => {
   res.sendStatus(200);
 });
 
-router.all("/exotel/answer", async (req, res) => {
+router.all("/exotel/answer", webhookAuth, async (req, res) => {
   try {
     const body = bodyOf(req);
     const leadId = req.query.leadId || body.leadId;
@@ -71,7 +83,7 @@ router.all("/exotel/answer", async (req, res) => {
   }
 });
 
-router.all("/exotel/respond", async (req, res) => {
+router.all("/exotel/respond", webhookAuth, async (req, res) => {
   const body = bodyOf(req);
   const leadId = req.query.leadId || body.leadId;
   const lead = await findLead(leadId);
@@ -298,6 +310,14 @@ function normalizePhone(value) {
 }
 
 async function addTranscript(callId, speaker, text) {
+  // Deduplicate within a 5-second window to guard against retried webhook deliveries.
+  const existing = await query(
+    `SELECT id FROM transcripts
+     WHERE call_id=$1 AND speaker=$2 AND text=$3 AND created_at > NOW() - INTERVAL '5 seconds'
+     LIMIT 1`,
+    [callId, speaker, text]
+  );
+  if (existing.rows.length) return;
   await query(
     `INSERT INTO transcripts (call_id, speaker, text) VALUES ($1,$2,$3)`,
     [callId, speaker, text]

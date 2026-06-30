@@ -18,13 +18,13 @@ function inferOutcome(message) {
   if (isVoicemail(message)) return "VOICEMAIL";
   if (isCallScreening(message)) return "CALL_SCREENING";
   if (isOptOut(message)) return "OPTED_OUT";
-  if (/(wrong number|galat number|not my number|not my phone|गलत नंबर|मेरा नंबर नहीं|मेरा नंबर नही|मेरे लिए नहीं|मेरे लिए नही)/.test(text)) return "WRONG_NUMBER";
-  if (/(paid|payment done|already paid|kar diya|ho gaya|भुगतान हो गया|पेमेंट कर दिया|पेमेंट हो गया)/.test(text)) return "PAID";
-  if (/(call back|callback|call me|call later|phone later|busy|driving|in a meeting|meeting mein|baad mein call|kal call|tomorrow call|बाद में कॉल|कल कॉल|व्यस्त|बिजी|अभी नहीं|ड्राइव|गाड़ी चला|मीटिंग)/.test(text)) return "CALLBACK";
-  if (/(promise|will pay|pay tomorrow|tomorrow pay|kal pay|pay later|pay on|pay by|payment tomorrow|agle hafte pay|कल पे|कल pay|कल payment|कल कर दूंगा|कल कर दूंगी|बाद में पे|अगले हफ्ते pay|अगले हफ्ते पे)/.test(text)) return "PROMISE_TO_PAY";
-  if (/(dispute|issue|problem|wrong amount|not correct|समस्या|दिक्कत|गलत अमाउंट|गलत राशि)/.test(text)) return "DISPUTE";
+  if (/\b(wrong number|galat number|not my number|not my phone)\b/.test(text) || /(गलत नंबर|मेरा नंबर नहीं|मेरा नंबर नही|मेरे लिए नहीं|मेरे लिए नही)/.test(text)) return "WRONG_NUMBER";
+  if (/\b(paid|payment done|already paid|kar diya|ho gaya)\b/.test(text) || /(भुगतान हो गया|पेमेंट कर दिया|पेमेंट हो गया)/.test(text)) return "PAID";
+  if (/\b(call back|callback|call me later|call later|phone later|busy|driving|in a meeting|meeting mein|baad mein call|kal call|tomorrow call)\b/.test(text) || /(बाद में कॉल|कल कॉल|व्यस्त|बिजी|अभी नहीं|ड्राइव|गाड़ी चला|मीटिंग)/.test(text)) return "CALLBACK";
+  if (/\b(will pay|pay tomorrow|tomorrow pay|kal pay|pay later|pay on|pay by|payment tomorrow|agle hafte pay)\b/.test(text) || /\bpromise\b/.test(text) || /(कल पे|कल pay|कल payment|कल कर दूंगा|कल कर दूंगी|बाद में पे|अगले हफ्ते pay|अगले हफ्ते पे)/.test(text)) return "PROMISE_TO_PAY";
+  if (/\b(dispute|wrong amount|not correct)\b/.test(text) || /\b(issue|problem)\b/.test(text) && /\b(loan|payment|amount|emi)\b/.test(text) || /(समस्या|दिक्कत|गलत अमाउंट|गलत राशि)/.test(text)) return "DISPUTE";
   if (isDecline(message) || isGoodbye(message)) return "NOT_INTERESTED";
-  if (/(yes|haan|han|interested|bhej|send|continue|pay|payment|हाँ|हा|ठीक|भेज|जारी|कर दीजिए|कर दीजिये)/.test(text)) return "INTERESTED";
+  if (/\b(yes|haan|han|interested|bhej|send|continue|pay|payment)\b/.test(text) || /(हाँ|हा|ठीक|भेज|जारी|कर दीजिए|कर दीजिये)/.test(text)) return "INTERESTED";
   return "IN_PROGRESS";
 }
 

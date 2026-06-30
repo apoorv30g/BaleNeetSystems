@@ -351,6 +351,15 @@ async function migrate() {
   await query(`CREATE INDEX IF NOT EXISTS idx_voicebot_events_created ON voicebot_events(created_at DESC);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_voicebot_events_call_sid ON voicebot_events(call_sid);`);
 
+  // Additional indexes for production query patterns
+  await query(`CREATE INDEX IF NOT EXISTS idx_leads_created_at ON leads(campaign_id, created_at DESC);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_leads_last_called ON leads(tenant_id, last_called_at);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_calls_status_created ON calls(tenant_id, status, created_at DESC);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_calls_campaign_created ON calls(campaign_id, created_at DESC);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_transcripts_call ON transcripts(call_id, created_at ASC);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_dnc_created ON dnc_list(tenant_id, created_at DESC);`);
+
   console.log("Migration complete");
 }
 

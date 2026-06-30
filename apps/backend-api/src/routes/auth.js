@@ -56,10 +56,9 @@ function passwordMatches(user, password) {
 }
 
 function adminPasswordMatches(user, password) {
-  if (passwordMatches(user, password)) return true;
-  if (user?.email?.toLowerCase() !== PLATFORM_ADMIN_EMAIL) return false;
-  const envPassword = process.env.ADMIN_PASSWORD || "";
-  return Boolean(envPassword && password === envPassword);
+  // Plaintext ADMIN_PASSWORD env fallback removed — all passwords must be bcrypt-hashed in DB.
+  // To reset the platform admin password run: node src/db/seed.js
+  return passwordMatches(user, password);
 }
 
 module.exports = router;

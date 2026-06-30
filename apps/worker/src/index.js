@@ -1,4 +1,5 @@
 require("dotenv").config();
+const http = require("http");
 const { Worker } = require("bullmq");
 const config = require("./config");
 const { query } = require("./db");
@@ -67,10 +68,43 @@ const worker = new Worker("lead-calls", async (job) => {
   }
 }, { connection: { url: config.redisUrl }, concurrency: config.maxConcurrentCalls });
 
-worker.on("completed", job => console.log(`completed job ${job.id}`));
-worker.on("failed", (job, err) => console.error(`failed job ${job?.id}: ${err.message}`));
+let shuttingDown = false;
+let jobsCompleted = 0, jobsFailed = 0;
+worker.on("completed", job => { jobsCompleted++; console.log(`completed job ${job.id}`); });
+worker.on("failed", (job, err) => { jobsFailed++; console.error(`failed job ${job?.id}: ${err.message}`); });
 
 console.log(`Worker started with concurrency ${config.maxConcurrentCalls}`);
+
+// Minimal HTTP health server so container orchestrators can probe liveness
+const HEALTH_PORT = Number(process.env.WORKER_HEALTH_PORT || 4001);
+
+const healthServer = http.createServer(async (req, res) => {
+  if (req.url !== "/health") { res.writeHead(404); res.end(); return; }
+  let dbOk = true;
+  try { await query("SELECT 1"); } catch { dbOk = false; }
+  const ok = !shuttingDown && dbOk;
+  res.writeHead(ok ? 200 : 503, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok, shuttingDown, dbOk, jobsCompleted, jobsFailed, concurrency: config.maxConcurrentCalls }));
+});
+healthServer.listen(HEALTH_PORT, () => console.log(`Worker health server on :${HEALTH_PORT}`));
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[worker] Received ${signal} — draining queue worker...`);
+  try {
+    healthServer.close();
+    // Stop accepting new jobs; wait for running jobs to complete (up to 30s).
+    await worker.close(false);
+    console.log("[worker] Worker drained cleanly.");
+  } catch (err) {
+    console.error("[worker] Error during shutdown:", err.message);
+  }
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 async function holdDispatchSlot({ leadId, campaignId, callId, callSid, dryRun = false }) {
   if (dryRun) return;

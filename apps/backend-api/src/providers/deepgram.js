@@ -16,13 +16,15 @@ async function transcribeAudioUrl(audioUrl, options = {}) {
     language: options.language || process.env.DEEPGRAM_LANGUAGE || "multi"
   });
 
+  const timeoutMs = Number(process.env.DEEPGRAM_TIMEOUT_MS || 15000);
   const res = await fetch(`https://api.deepgram.com/v1/listen?${params.toString()}`, {
     method: "POST",
     headers: {
       Authorization: `Token ${config.ai.deepgramApiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ url: audioUrl })
+    body: JSON.stringify({ url: audioUrl }),
+    signal: AbortSignal.timeout(timeoutMs)
   });
 
   if (!res.ok) throw new Error(`Deepgram failed: ${await res.text()}`);

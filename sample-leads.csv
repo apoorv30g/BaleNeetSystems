@@ -1,4 +1,2 @@
-name,phone,campaignType,playbookType,dropStage,dueDate,loanAmount,offerAmount,language
-Rahul,9897817871,COLLECTION,SOFT_PAYMENT_REMINDER,EMI_DUE,6/1/2026,50000,,Hinglish
-Prasheel,8979082261,RETARGETING,UNAPPROVED_USERS,DOC_NOT_UPLOADED,,75000,60000,Hinglish
-Apoorv,8826522604,TARGETING,FRESH_LEAD,COLD_CALL,,,100000,Hindi
+Lead ID,Lead Date,Status,Reject Date,Reject Reason,UTM Campaign,UTM Source,Mobile Number,Name,Selfie,Aadhaar,Profession,Pan,PinCode,Penny Drop,E-sign,Loan Amount,Disbursed Amount,Disbursed Date
+fffd8624-4d64-43ad-9463-e24f078e37dd,5/30/2026,Approve,No Input,No Input,crednorth123,crednorth,8979082261,Prasheel,Yes,Yes,Yes,Yes,560070,No,No,18000,Not Disbursed,No Input

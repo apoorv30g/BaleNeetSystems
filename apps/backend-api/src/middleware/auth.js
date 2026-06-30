@@ -1,11 +1,13 @@
 const jwt = require("jsonwebtoken");
 const config = require("../config");
 
+const JWT_EXPIRY = process.env.JWT_EXPIRY || "8h";
+
 function signToken(user) {
   return jwt.sign(
     { userId: user.id, tenantId: user.tenant_id, role: user.role, email: user.email },
     config.jwtSecret,
-    { expiresIn: "7d" }
+    { expiresIn: JWT_EXPIRY }
   );
 }
 

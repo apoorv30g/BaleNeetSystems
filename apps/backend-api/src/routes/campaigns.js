@@ -13,7 +13,9 @@ const { parseLeadUpload } = require("../services/leadImport");
 const config = require("../config");
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const UPLOAD_MAX_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 50 * 1024 * 1024); // 50 MB
+const UPLOAD_MAX_ROWS = Number(process.env.UPLOAD_MAX_ROWS || 10000);
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: UPLOAD_MAX_BYTES } });
 router.use(requireAuth);
 
 function withTimeout(promise, ms, message) {
@@ -21,6 +23,25 @@ function withTimeout(promise, ms, message) {
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
   ]);
+}
+
+// Adds jobs in chunks to avoid single large bulk-write timeouts.
+async function addJobsInChunks(jobs, chunkSize = 200) {
+  for (let i = 0; i < jobs.length; i += chunkSize) {
+    const chunk = jobs.slice(i, i + chunkSize);
+    let lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await withTimeout(callQueue.addBulk(chunk), 10000, "Queue operation timed out");
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        await new Promise(r => setTimeout(r, 200 * 2 ** attempt)); // 200ms, 400ms, 800ms
+      }
+    }
+    if (lastErr) throw lastErr;
+  }
 }
 
 function csvEscape(value) {
@@ -66,7 +87,8 @@ async function enqueueLeads({ tenantId, campaignId, leadIds, resetAttempts = fal
     where += ` AND id = ANY($${params.length}::uuid[])`;
   }
 
-  const leads = await query(`SELECT * FROM leads WHERE ${where} LIMIT 1000`, params);
+  const enqueueLimit = Number(process.env.ENQUEUE_BATCH_LIMIT || 5000);
+  const leads = await query(`SELECT id, phone, tenant_id, campaign_id FROM leads WHERE ${where} LIMIT ${enqueueLimit}`, params);
   let queued = 0, blocked = 0;
   const jobs = [];
   const queuedLeadIds = [];
@@ -96,7 +118,7 @@ async function enqueueLeads({ tenantId, campaignId, leadIds, resetAttempts = fal
   }
 
   if (jobs.length) {
-    await withTimeout(callQueue.addBulk(jobs), 10000, "Queue operation timed out");
+    await addJobsInChunks(jobs);
     const updateSql = resetAttempts
       ? `UPDATE leads SET status='queued', attempt_count=0 WHERE id = ANY($1::uuid[])`
       : `UPDATE leads SET status='queued' WHERE id = ANY($1::uuid[])`;
@@ -203,13 +225,24 @@ router.delete("/:campaignId", async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/:campaignId/upload", upload.single("file"), async (req, res) => {
+router.post("/:campaignId/upload", (req, res, next) => {
+  upload.single("file")(req, res, err => {
+    if (err && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ error: `File exceeds maximum size of ${Math.round(UPLOAD_MAX_BYTES / 1024 / 1024)} MB` });
+    }
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "CSV or XLSX file required" });
 
   const campaign = await query(`SELECT * FROM campaigns WHERE id=$1 AND tenant_id=$2`, [req.params.campaignId, req.user.tenantId]);
   if (!campaign.rows[0]) return res.status(404).json({ error: "Campaign not found" });
 
   const rows = parseLeadUpload(req.file, campaign.rows[0]);
+  if (rows.length > UPLOAD_MAX_ROWS) {
+    return res.status(400).json({ error: `File exceeds maximum of ${UPLOAD_MAX_ROWS} rows (got ${rows.length})` });
+  }
   const playbooks = await listPlaybooks(req.user.tenantId);
   let inserted = 0, skipped = 0;
   const errors = [];
@@ -425,11 +458,23 @@ router.get("/:campaignId/queue-status", async (req, res) => {
 });
 
 router.get("/:campaignId/leads", async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 200, 500);
+  const cursor = req.query.cursor || null; // ISO timestamp for keyset pagination
+  const params = [req.user.tenantId, req.params.campaignId, limit + 1];
+  let cursorClause = "";
+  if (cursor) {
+    params.push(cursor);
+    cursorClause = `AND created_at < $${params.length}`;
+  }
   const result = await query(
-    `SELECT * FROM leads WHERE tenant_id=$1 AND campaign_id=$2 ORDER BY created_at DESC LIMIT 500`,
-    [req.user.tenantId, req.params.campaignId]
+    `SELECT * FROM leads WHERE tenant_id=$1 AND campaign_id=$2 ${cursorClause} ORDER BY created_at DESC LIMIT $3`,
+    params
   );
-  res.json(result.rows);
+  const rows = result.rows;
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? data[data.length - 1].created_at : null;
+  res.json({ data, nextCursor, hasMore });
 });
 
 router.get("/:campaignId/export/leads", async (req, res) => {

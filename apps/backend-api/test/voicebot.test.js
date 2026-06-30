@@ -126,6 +126,29 @@ test("voicebot handles no human transfer", () => {
   assert.match(reply, /no human transfer/i);
 });
 
+test("voicebot advances after user agrees to an already-sent link", () => {
+  const state = session("Hinglish", {}, { tenantId: null });
+
+  const first = _test.buildScriptedReply(state, "yes");
+  assert.match(first, /सुरक्षित link भेज/);
+  assert.equal(state.linkInstructionGiven, true);
+
+  const second = _test.buildScriptedReply(state, "OK");
+  assert.match(second, /screen/);
+  assert.doesNotMatch(second, /सुरक्षित link भेज|link भेज रहा/);
+});
+
+test("voicebot uses last spoken link prompt to avoid repeating in English", () => {
+  const state = session("English", {}, {
+    tenantId: null,
+    lastSpokenText: "Sure, I am sending the secure link. Please open it and check your documents and final eligibility."
+  });
+
+  const reply = _test.buildScriptedReply(state, "yes");
+  assert.match(reply, /what you see|which screen/i);
+  assert.doesNotMatch(reply, /sending the secure link/i);
+});
+
 test("voicebot captures explicit fresh-lead name and asks loan requirement next", () => {
   const state = session("English", { playbook_type: "FRESH_LEAD" }, {
     userTurns: 1,
