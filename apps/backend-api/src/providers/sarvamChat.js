@@ -80,10 +80,27 @@ function cleanReply(value) {
 function ensureCompleteReply(value, lead = {}) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
+  const repaired = repairMalformedCompleteReply(text, lead);
+  if (repaired) return repaired;
   if (/[.!?।]$/.test(text)) return text;
 
   if (isEnglishLead(lead)) return completeEnglishReply(text, lead);
   return completeHindiReply(text, lead);
+}
+
+function repairMalformedCompleteReply(text, lead = {}) {
+  if (isEnglishLead(lead)) {
+    if (/\bsecure[.!?]$/i.test(text)) return text.replace(/\bsecure[.!?]$/i, "secure link.");
+    if (/\bopen the[.!?]$/i.test(text)) return text.replace(/\bopen the[.!?]$/i, "open the secure link.");
+    return "";
+  }
+
+  if (/(ऐप|app) में सुरक्षित।$/.test(text)) {
+    return text.replace(/(ऐप|app) में सुरक्षित।$/, "$1 में सुरक्षित लिंक खोलिए।");
+  }
+  if (/सुरक्षित।$/.test(text)) return text.replace(/सुरक्षित।$/, "सुरक्षित लिंक खोलिए।");
+  if (/(लिंक|link) खोलकर।$/.test(text)) return text.replace(/(लिंक|link) खोलकर।$/, "$1 खोलकर स्क्रीन बताइए।");
+  return "";
 }
 
 function completeEnglishReply(text, lead = {}) {

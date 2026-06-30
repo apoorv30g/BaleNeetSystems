@@ -137,6 +137,18 @@ test("voicebot answers iPhone screening with name and purpose", () => {
   assert.doesNotMatch(reply, /Thank you/i);
 });
 
+test("voicebot handles hearing confirmation without malformed LLM text", () => {
+  const state = session("Hinglish", {}, {
+    tenantId: null,
+    lastSpokenText: "Namaste, mai Loan App se Raj bol raha hu. Kya aap mujhe sun paa rahe hain?"
+  });
+
+  const reply = _test.buildScriptedReply(state, "हाँ मैं सुन पा रहा हूँ।");
+  assert.match(reply, /सुरक्षित link भेज/);
+  assert.match(reply, /screen दिख रहा/);
+  assert.doesNotMatch(reply, /ऐप में सुरक्षित।/);
+});
+
 test("voicebot advances after user agrees to an already-sent link", () => {
   const state = session("Hinglish", {}, { tenantId: null });
 

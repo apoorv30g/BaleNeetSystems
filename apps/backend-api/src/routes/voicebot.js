@@ -1129,6 +1129,16 @@ function buildScriptedReply(session, text) {
     return "बहुत अच्छा। Link खोलिए और बताइए कौन सा screen दिख रहा है: documents, KYC, bank verification, e-sign, final offer या error?";
   }
 
+  if (confirmsCanHear(normalized)) {
+    queueLeadLink(session, "can_hear_confirmation");
+    if (lead.playbook_type === "SOFT_PAYMENT_REMINDER" || lead.playbook_type === "HARD_PAYMENT_REMINDER") {
+      if (english) return "Great. I am calling about your loan payment. Can you open the secure payment link now?";
+      return "बहुत अच्छा। मैं आपकी loan payment के बारे में call कर रहा हूँ। क्या आप secure payment link अभी खोल सकते हैं?";
+    }
+    if (english) return "Great. I am sending the secure link. Please open it and tell me which screen you see.";
+    return "बहुत अच्छा। मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर बताइए कौन सा screen दिख रहा है।";
+  }
+
   if (isConversationalBackchannel(normalized) && hasRecentLinkInstruction(session)) {
     return positiveFollowUpReply(session, english);
   }
@@ -1515,6 +1525,10 @@ function asksHumanSupport(text) {
 
 function mentionsLinkReceived(text) {
   return /(aa gaya|aagaya|mil gaya|मिल गया|आ गया|आगया|link मिला|लिंक मिला)/.test(text);
+}
+
+function confirmsCanHear(text) {
+  return /(i can hear|can hear you|able to hear|hearing you|sun pa|sun raha|sun rahi|सुन पा|सुन रहा|सुन रही|आवाज आ रही|आवाज़ आ रही)/.test(text);
 }
 
 function isPositiveAgreement(text) {
