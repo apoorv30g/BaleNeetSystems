@@ -28,3 +28,12 @@ test("Sarvam chat reply guard repairs malformed safe-link sentence", () => {
 
   assert.match(reply, /ऐप में सुरक्षित लिंक खोलिए।$/);
 });
+
+test("Sarvam chat reply guard repairs dangling complete sentence", () => {
+  const reply = _test.ensureCompleteReply(
+    "आपका लोन ऑफर तैयार है। क्या अभी ऐप में वेरिफिकेशन complete।",
+    { language: "Hinglish", playbook_type: "TEZ_BANK_VERIFICATION_PENDING" }
+  );
+
+  assert.match(reply, /वेरिफिकेशन complete कर सकते हैं\?$/);
+});

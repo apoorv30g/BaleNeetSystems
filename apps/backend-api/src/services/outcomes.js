@@ -168,7 +168,7 @@ function isVoicemail(message) {
 
 function isCallScreening(message) {
   const text = normalizeForIntent(message);
-  return /(state your name|say your name|name and reason|say your name and reason|state your name and reason|screening|call screening|checking for name|see if this person is available|please stay on the line|hold while i connect|google assistant|iphone|personal assistant)/.test(text)
+  return /(state your name|say your name|name and reason|say your name and reason|state your name and reason|screening|call screening|checking for name|see if this person is available|this person is available|person is available|please stay on the line|hold while i connect|google assistant|iphone|personal assistant)/.test(text)
     || /(नाम और कारण|लाइन पर रहें|उपलब्ध हैं या नहीं|नाम बताइए)/.test(String(message || ""));
 }
 

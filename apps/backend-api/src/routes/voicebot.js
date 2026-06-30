@@ -32,7 +32,7 @@ const NO_SPEECH_GOODBYE_TEXT = process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT || "I
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
 const FAST_ACK_ENABLED = process.env.VOICEBOT_FAST_ACK_ENABLED !== "false";
-const FAST_ACK_DELAY_MS = Number(process.env.VOICEBOT_FAST_ACK_DELAY_MS || process.env.VOICEBOT_ACK_DELAY_MS || 850);
+const FAST_ACK_DELAY_MS = Number(process.env.VOICEBOT_FAST_ACK_DELAY_MS || process.env.VOICEBOT_ACK_DELAY_MS || 650);
 const FAST_ACK_SCRIPTED_ENABLED = process.env.VOICEBOT_FAST_ACK_SCRIPTED_ENABLED === "true";
 const NO_SPEECH_TIMEOUT_ENABLED = process.env.VOICEBOT_NO_SPEECH_TIMEOUT_ENABLED !== "false";
 const NO_SPEECH_PROMPT_MS = Number(process.env.VOICEBOT_NO_SPEECH_PROMPT_MS || 9000);
@@ -44,11 +44,11 @@ const INTERIM_TRANSCRIPT_DELAY_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRI
 const INTERIM_TRANSCRIPT_FORCE_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_FORCE_MS || 2600);
 const INTERIM_TRANSCRIPT_MIN_WORDS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_WORDS || 2);
 const INTERIM_TRANSCRIPT_MIN_CHARS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS || 5);
-const STT_DURING_ASSISTANT_ENABLED = process.env.VOICEBOT_STT_DURING_ASSISTANT_ENABLED === "true";
+const STT_DURING_ASSISTANT_ENABLED = process.env.VOICEBOT_STT_DURING_ASSISTANT_ENABLED !== "false";
 const VAD_ENABLED = process.env.VOICEBOT_VAD_ENABLED !== "false";
 const AUDIO_CACHE_ENABLED = process.env.VOICEBOT_AUDIO_CACHE_ENABLED !== "false";
 const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "false";
-const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 2500);
+const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 900);
 const BARGE_IN_MIN_CHUNKS = Number(process.env.VOICEBOT_BARGE_IN_MIN_CHUNKS || 10);
 const INTRO_BARGE_IN_ENABLED = process.env.VOICEBOT_INTRO_BARGE_IN_ENABLED === "true";
 const SCREENING_RESPONSE_ENABLED = process.env.VOICEBOT_SCREENING_RESPONSE_ENABLED !== "false";
@@ -163,6 +163,8 @@ function attachVoicebot(server) {
       screeningAnswered: false,
       screeningTranscript: "",
       screeningDetectedAt: 0,
+      screeningHumanJoined: false,
+      screeningHumanWelcomed: false,
       lastSpokenText: "",
       lastSpokenMark: "",
       activeSpeechMark: "",
@@ -784,6 +786,7 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  noteHumanJoinedAfterScreening(session, text);
   session.userTurns++;
   updateConversationMemory(session, text);
 
@@ -833,7 +836,7 @@ async function processUserTranscript(ws, session, event) {
     if (session.callId) {
       await addTranscript(session.callId, "assistant", reply);
       const transcript = await getTranscript(session.callId);
-      const classification = classifyConversation({ userMessage: text, transcript, playbookType: session.lead.playbook_type });
+      const classification = classifyLiveConversation(session, text, transcript);
       await query(
         `UPDATE calls SET outcome=$1, summary=$2, updated_at=NOW() WHERE id=$3`,
         [classification.outcome === "NOT_INTERESTED" ? "IN_PROGRESS" : classification.outcome, classification.summary, session.callId]
@@ -850,11 +853,7 @@ async function processUserTranscript(ws, session, event) {
     const closingText = terminalClosingText(outcome, session);
     if (session.callId) {
       await addTranscript(session.callId, "assistant", closingText);
-      const classification = classifyConversation({
-        userMessage: text,
-        transcript: await getTranscript(session.callId),
-        playbookType: session.lead.playbook_type
-      });
+      const classification = classifyLiveConversation(session, text, await getTranscript(session.callId));
       await finalizeCall(session, {
         outcome: outcome === "IN_PROGRESS" ? classification.outcome : outcome,
         summary: classification.summary
@@ -889,7 +888,7 @@ async function processUserTranscript(ws, session, event) {
     await maybeSpeakDelayedAck(ws, session, replyPromise, ackText, turnSeq);
   }
 
-  const reply = await replyPromise;
+  let reply = await replyPromise;
   if (!scriptedReply) {
     session.llmOutputTokens += estimateTokens(reply);
   }
@@ -903,6 +902,9 @@ async function processUserTranscript(ws, session, event) {
     });
     return;
   }
+  reply = refineAssistantReply(session, text, reply, {
+    source: scriptedReply ? "scripted" : "llm"
+  });
 
   await logVoicebotEvent(session, "reply_ready", {
     elapsedMs: Date.now() - turnStartedAt,
@@ -913,7 +915,7 @@ async function processUserTranscript(ws, session, event) {
   if (session.callId) {
     await addTranscript(session.callId, "assistant", reply);
     const transcript = await getTranscript(session.callId);
-    const classification = classifyConversation({ userMessage: text, transcript, playbookType: session.lead.playbook_type });
+    const classification = classifyLiveConversation(session, text, transcript);
     await query(
       `UPDATE calls SET outcome=$1, summary=$2, updated_at=NOW() WHERE id=$3`,
       [classification.outcome, classification.summary, session.callId]
@@ -966,7 +968,11 @@ function buildConversationState(session = {}) {
     userTurns: session.userTurns || 0,
     linkInstructionGiven: Boolean(session.linkInstructionGiven),
     linkInstructionReason: session.linkInstructionReason || "",
-    linkPositiveFollowups: Number(session.linkPositiveFollowups || 0)
+    linkPositiveFollowups: Number(session.linkPositiveFollowups || 0),
+    screeningAnswered: Boolean(session.screeningAnswered),
+    screeningHumanJoined: Boolean(session.screeningHumanJoined),
+    stageGuidanceCount: Number(session.stageGuidanceCount || 0),
+    recentAssistantReplies: (session.assistantReplyHistory || []).slice(-3)
   };
 }
 
@@ -1108,6 +1114,10 @@ function buildScriptedReply(session, text) {
     return "माफ़ कीजिए, मैं गलत समझा। आप क्या जानना चाहते हैं: ब्याज दर, ई एम आई, amount, fees या link?";
   }
 
+  if (complainsAboutRepetition(normalized)) {
+    return antiRepeatReply(session, normalized);
+  }
+
   if (asksIdentity(normalized)) {
     if (english) return "I am LoanConnect's AI assistant, calling about your loan eligibility or offer. I will not ask for OTP or passwords.";
     return "मैं लोन कनेक्ट का AI assistant हूँ, आपकी loan eligibility या offer के बारे में call कर रहा हूँ। मैं ओ टी पी या password नहीं पूछूँगा।";
@@ -1138,6 +1148,9 @@ function buildScriptedReply(session, text) {
     if (english) return "Great. I am sending the secure link. Please open it and tell me which screen you see.";
     return "बहुत अच्छा। मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर बताइए कौन सा screen दिख रहा है।";
   }
+
+  const stageConversationalReply = buildStageConversationalReply(session, normalized, { amountText, english });
+  if (stageConversationalReply) return stageConversationalReply;
 
   if (isConversationalBackchannel(normalized) && hasRecentLinkInstruction(session)) {
     return positiveFollowUpReply(session, english);
@@ -1399,6 +1412,212 @@ function positiveFollowUpReply(session = {}, english = false) {
   return "बहुत अच्छा। अब बताइए screen पर क्या दिख रहा है: documents, KYC, bank verification, e-sign, final offer या error?";
 }
 
+function buildStageConversationalReply(session = {}, text = "", { amountText = "eligible amount", english = false } = {}) {
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  if (!stage) return "";
+
+  if (session.screeningAnswered && !session.screeningHumanWelcomed && isSimpleGreeting(text)) {
+    session.screeningHumanWelcomed = true;
+    if (stage.includes("BANK_VERIFICATION")) {
+      return stageLine(session, "screening_handoff_bank", english
+        ? [
+          "Hi. I am calling about your TezCredit offer. Bank verification is pending, so disbursal cannot move ahead yet.",
+          "Hello. Your TezCredit offer is active, but bank verification is still pending in the app."
+        ]
+        : [
+          "नमस्ते जी। TezCredit offer ready है, लेकिन bank verification pending है। क्या आप app खोल पाएँगे?",
+          "हाँ जी, मैं TezCredit offer के बारे में call कर रहा हूँ। सिर्फ bank verification बाकी है।"
+        ]);
+    }
+    return english
+      ? "Hi. I am calling about your loan application. Can I help you complete the pending app step?"
+      : "नमस्ते जी। मैं आपकी loan application के pending step में मदद करने के लिए call कर रहा हूँ।";
+  }
+
+  if (!isTezJourneyStage(stage)) return "";
+
+  if (isSimpleGreeting(text) || confirmsCanHear(text)) {
+    return stageOpeningContinuation(session, english, amountText);
+  }
+
+  if (asksRepeatOrClarify(text)) {
+    return stageClarificationReply(session, english, amountText);
+  }
+
+  if (mentionsOfferEcho(text) && stage.includes("BANK_VERIFICATION")) {
+    return stageLine(session, "bank_offer_echo", english
+      ? [
+        `Yes, the offer is showing around ${amountText}. Please confirm the exact amount in the app before accepting.`,
+        "Correct, the app will confirm the final amount. First, complete bank verification safely in the app."
+      ]
+      : [
+        `हाँ जी, offer लगभग ${amountText} दिख रहा है। Final amount accept करने से पहले app में confirm कर लीजिए।`,
+        "सही समझे। Final amount app में confirm होगा; अभी bank verification complete करना बाकी है।"
+      ]);
+  }
+
+  if (asksNextStep(text)) {
+    return stageNextStepReply(session, english);
+  }
+
+  if (mentionsCurrentScreen(text)) {
+    return stageScreenGuidanceReply(session, text, english);
+  }
+
+  if (isShortUnclearStageReply(text)) {
+    return stageGentleRedirectReply(session, english);
+  }
+
+  return "";
+}
+
+function isTezJourneyStage(stage = "") {
+  return /(SELFIE|AADHAAR|PROFILE|BANK_VERIFICATION|E_SIGN|APPROVED_NOT_DISBURSED|TEZ_)/.test(stage);
+}
+
+function stageOpeningContinuation(session = {}, english = false, amountText = "eligible amount") {
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  if (stage.includes("BANK_VERIFICATION")) {
+    return stageLine(session, "bank_opening_continue", english
+      ? [
+        "Great. Your offer is ready, but bank verification is pending. Can you open the app now?",
+        "Thanks. Please open the TezCredit app; I will guide bank verification step by step."
+      ]
+      : [
+        `बहुत अच्छा। आपका offer ${amountText} तक ready है, बस bank verification बाकी है। क्या app खोल सकते हैं?`,
+        "ठीक है। TezCredit app खोलिए, मैं bank verification step by step guide कर दूँगा।"
+      ]);
+  }
+  if (stage.includes("SELFIE")) {
+    return english
+      ? "Great. Please open the app and choose live selfie. Keep your face centered in the camera."
+      : "बहुत अच्छा। App खोलकर live selfie चुनिए और face camera के center में रखिए।";
+  }
+  if (stage.includes("AADHAAR")) {
+    return english
+      ? "Great. Please open the app and complete Aadhaar KYC through DigiLocker. Do not share OTP on this call."
+      : "बहुत अच्छा। App में DigiLocker से Aadhaar KYC complete कीजिए। OTP इस call पर share मत कीजिए।";
+  }
+  return english
+    ? "Great. Please open the app and tell me which screen you see."
+    : "बहुत अच्छा। App खोलिए और बताइए कौन सा screen दिख रहा है।";
+}
+
+function stageClarificationReply(session = {}, english = false, amountText = "eligible amount") {
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  if (stage.includes("BANK_VERIFICATION")) {
+    return stageLine(session, "bank_clarify", english
+      ? [
+        "I am saying your loan offer is ready, but bank verification is pending. Can you open the app?",
+        "The pending step is bank verification. You can use UPI or bank-account verification inside the app."
+      ]
+      : [
+        `मैं कह रहा हूँ कि आपका loan offer ${amountText} तक ready है, लेकिन bank verification pending है।`,
+        "Pending step bank verification है। App में UPI या bank account option से verify कर सकते हैं।"
+      ]);
+  }
+  if (stage.includes("E_SIGN")) {
+    return english
+      ? "Your loan is at the agreement step. Please review the terms in the app, then e-sign only if comfortable."
+      : "आपका loan agreement step पर है। App में terms review करके comfortable हों तभी e-sign कीजिए।";
+  }
+  return english
+    ? "I am calling because one app step is pending. Open the app, and I will guide you simply."
+    : "मैं इसलिए call कर रहा हूँ क्योंकि app में एक step pending है। App खोलिए, मैं simple guide कर दूँगा।";
+}
+
+function stageNextStepReply(session = {}, english = false) {
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  if (stage.includes("BANK_VERIFICATION")) {
+    return stageLine(session, "bank_next_step", english
+      ? [
+        "Next, open bank verification in the app. Choose UPI if available; otherwise use bank account details.",
+        "The next step is safe bank verification inside the app. I will not ask for OTP or PIN."
+      ]
+      : [
+        "अगला step app में bank verification है। UPI option दिखे तो उसे चुनिए, नहीं तो bank account details use कीजिए।",
+        "Next step safe bank verification है। मैं OTP, PIN या password नहीं पूछूँगा।"
+      ]);
+  }
+  return english
+    ? "The next step is shown in the app. Tell me the screen name, and I will guide you."
+    : "Next step app में दिखेगा। Screen का नाम बताइए, मैं guide कर दूँगा।";
+}
+
+function stageScreenGuidanceReply(session = {}, text = "", english = false) {
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  if (stage.includes("BANK_VERIFICATION")) {
+    if (/(upi|यू पी आई|bank account|account|खाता|error|एरर|fail|failed)/.test(text)) {
+      return english
+        ? "Good. Use only the in-app option. If it shows an error, retry once or check app support."
+        : "ठीक है। सिर्फ app के अंदर वाला option use कीजिए। Error आए तो एक बार retry करें या app support check करें।";
+    }
+    return english
+      ? "Tell me what you see there: UPI, bank account, permission, or an error?"
+      : "वहाँ क्या दिख रहा है: UPI, bank account, permission, या कोई error?";
+  }
+  return english
+    ? "Tell me the exact screen or error, and I will guide the next step."
+    : "Exact screen या error बताइए, मैं next step guide कर दूँगा।";
+}
+
+function stageGentleRedirectReply(session = {}, english = false) {
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  if (stage.includes("BANK_VERIFICATION")) {
+    return stageLine(session, "bank_gentle_redirect", english
+      ? [
+        "No worries. Please open the app once and tell me whether bank verification is visible.",
+        "Let us do it slowly. Open TezCredit and tell me the first screen you see."
+      ]
+      : [
+        "कोई बात नहीं। App खोलिए और बताइए bank verification दिख रहा है या नहीं।",
+        "आराम से करते हैं। TezCredit app खोलकर बताइए पहला screen क्या दिख रहा है।"
+      ]);
+  }
+  return english
+    ? "No worries. Tell me which app screen you see, and I will guide one step at a time."
+    : "कोई बात नहीं। कौन सा app screen दिख रहा है बताइए, मैं एक-एक step guide करूँगा।";
+}
+
+function stageLine(session = {}, key = "stage", lines = []) {
+  const usable = lines.filter(Boolean);
+  if (!usable.length) return "";
+  session.stageLineCounts = session.stageLineCounts || {};
+  const count = Number(session.stageLineCounts[key] || 0);
+  session.stageLineCounts[key] = count + 1;
+  session.stageGuidanceCount = Number(session.stageGuidanceCount || 0) + 1;
+  return usable[count % usable.length];
+}
+
+function isSimpleGreeting(text = "") {
+  return /^(hello|hi|hey|helo|हेलो|हैलो|नमस्ते|namaste|haan hello|हाँ hello|हाँ हेलो|जी hello|जी हेलो)$/.test(text);
+}
+
+function asksRepeatOrClarify(text = "") {
+  return /(what|sorry|pardon|repeat|again|samjha nahi|samajh nahi|kya bol|kya kaha|क्या बोल|क्या कहा|समझ नहीं|समझ नही|दोबारा|फिर से|है जी|haan ji kya|ये क्या|यह क्या|kya hai ye|what is this)/.test(text);
+}
+
+function asksNextStep(text = "") {
+  return /^(aur|और|then|next|आगे|फिर|ok aur|okay aur|और क्या|next kya|आगे क्या)$/.test(text)
+    || /(what next|next step|ab kya|अब क्या|आगे क्या करना|फिर क्या करना)/.test(text);
+}
+
+function mentionsOfferEcho(text = "") {
+  return /(loan offer|offer|0000|amount|ready|तैयार|ऑफर|अमाउंट|राशि)/.test(text)
+    && !asksAmount(text);
+}
+
+function mentionsCurrentScreen(text = "") {
+  return /(screen|upi|यू पी आई|bank account|account|खाता|permission|error|एरर|fail|failed|open ho gaya|खुल गया|दिख रहा)/.test(text);
+}
+
+function isShortUnclearStageReply(text = "") {
+  if (!text) return false;
+  if (asksQuestion(text) || asksReason(text) || asksIdentity(text) || asksHumanSupport(text)) return false;
+  if (isPositiveAgreement(text) || isBareNegative(text) || isConversationalBackchannel(text)) return false;
+  return text.split(/\s+/).filter(Boolean).length <= 7;
+}
+
 function isContextualNegativeReply(session = {}, text = "") {
   if (!hasRecentLinkInstruction(session)) return false;
   const normalized = normalizeVoiceIntent(text);
@@ -1457,6 +1676,148 @@ function callScreeningReply(session = {}) {
   return `This is Raj from ${product}, calling about a loan eligibility check. Please connect the call if the customer is available.`;
 }
 
+function noteHumanJoinedAfterScreening(session = {}, text = "") {
+  if (!session.screeningAnswered || session.screeningHumanJoined) return;
+  if (isCallScreening(text) || isVoicemail(text)) return;
+  session.screeningHumanJoined = true;
+}
+
+function classifyLiveConversation(session = {}, userMessage = "", transcript = []) {
+  const filteredTranscript = effectiveTranscriptForClassification(session, transcript);
+  const classification = classifyConversation({
+    userMessage,
+    transcript: filteredTranscript,
+    playbookType: session.lead?.playbook_type
+  });
+
+  if (classification.outcome === "CALL_SCREENING" && session.screeningHumanJoined) {
+    return {
+      ...classification,
+      outcome: "IN_PROGRESS",
+      summary: `Latest user response: "${String(userMessage || "").slice(0, 180)}". Conversation continued after phone screening.`
+    };
+  }
+
+  return classification;
+}
+
+function effectiveTranscriptForClassification(session = {}, transcript = []) {
+  if (!session.screeningAnswered || !session.screeningHumanJoined) return transcript;
+  return transcript.filter(item => !(item.speaker === "user" && isCallScreening(item.text)));
+}
+
+function refineAssistantReply(session = {}, userText = "", reply = "", { source = "" } = {}) {
+  const cleaned = completeSpokenReply(String(reply || "").replace(/\s+/g, " ").trim(), session);
+  if (!cleaned) return antiRepeatReply(session, userText);
+
+  if (isTooSimilarToRecentAssistant(session, cleaned)) {
+    const replacement = antiRepeatReply(session, userText);
+    logVoicebotEvent(session, "assistant_reply_rewritten", {
+      reason: "too_similar_to_recent_reply",
+      source,
+      original: cleaned,
+      replacement,
+      lastSpokenText: session.lastSpokenText || ""
+    }).catch(() => {});
+    return replacement;
+  }
+
+  return cleaned;
+}
+
+function completeSpokenReply(text = "", session = {}) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  if (/[.!?।]$/.test(value)) return value;
+  if (isEnglishSession(session)) return `${value}.`;
+  return `${value}।`;
+}
+
+function isTooSimilarToRecentAssistant(session = {}, reply = "") {
+  const candidates = [
+    session.lastSpokenText,
+    ...(session.assistantReplyHistory || []).slice(-3)
+  ].filter(Boolean);
+
+  return candidates.some(previous => assistantSimilarity(previous, reply) >= 0.74);
+}
+
+function assistantSimilarity(a = "", b = "") {
+  const left = assistantTokens(a);
+  const right = assistantTokens(b);
+  if (!left.length || !right.length) return 0;
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  const intersection = [...leftSet].filter(token => rightSet.has(token)).length;
+  const smaller = Math.min(leftSet.size, rightSet.size);
+  const contained = normalizeVoiceIntent(a).includes(normalizeVoiceIntent(b)) || normalizeVoiceIntent(b).includes(normalizeVoiceIntent(a));
+  return Math.max(intersection / Math.max(smaller, 1), contained ? 0.9 : 0);
+}
+
+function assistantTokens(value = "") {
+  return normalizeVoiceIntent(value)
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token => token && !assistantStopwords().has(token));
+}
+
+function assistantStopwords() {
+  return new Set([
+    "the", "a", "an", "is", "are", "to", "in", "on", "and", "or", "your", "you", "i", "it", "of",
+    "है", "हैं", "का", "की", "के", "को", "में", "से", "पर", "और", "या", "मैं", "आप", "अभी"
+  ]);
+}
+
+function antiRepeatReply(session = {}, userText = "") {
+  const english = isEnglishSession(session);
+  const normalized = normalizeVoiceIntent(userText);
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  const amount = session.lead?.offer_amount || session.lead?.loan_amount || "";
+  const amountText = amount ? formatLoanAmount(amount) : "eligible amount";
+
+  if (asksRepeatOrClarify(normalized) || asksConfused(normalized)) {
+    return stageClarificationReply(session, english, amountText);
+  }
+
+  if (asksNextStep(normalized) || isConversationalBackchannel(normalized)) {
+    return stageNextStepReply(session, english);
+  }
+
+  if (stage.includes("BANK_VERIFICATION")) {
+    return stageLine(session, "bank_anti_repeat", english
+      ? [
+        "Let me put it simply: open TezCredit, tap bank verification, and tell me if UPI or account option appears.",
+        "I will not repeat the full line. Just check whether bank verification is visible in the app."
+      ]
+      : [
+        "Simple रखता हूँ: TezCredit app खोलिए, bank verification tap कीजिए, और बताइए UPI या account option दिख रहा है?",
+        "मैं वही बात repeat नहीं करूँगा। बस app में देखिए bank verification दिख रहा है या नहीं।"
+      ]);
+  }
+
+  if (stage.includes("SELFIE")) {
+    return english
+      ? "Let us do one small step: open the app and check whether the live selfie screen opens."
+      : "एक छोटा step करते हैं: app खोलिए और देखिए live selfie screen खुल रहा है या नहीं।";
+  }
+
+  if (stage.includes("AADHAAR")) {
+    return english
+      ? "Let us keep it simple: open Aadhaar KYC in the app and tell me if DigiLocker opens."
+      : "Simple रखते हैं: app में Aadhaar KYC खोलिए और बताइए DigiLocker खुल रहा है या नहीं।";
+  }
+
+  if (stage.includes("E_SIGN")) {
+    return english
+      ? "Let us focus on the agreement screen. Do you see the e-sign button or any error?"
+      : "Agreement screen पर focus करते हैं। क्या e-sign button दिख रहा है या कोई error है?";
+  }
+
+  return english
+    ? "Let me say it differently. What exactly do you see in the app right now?"
+    : "मैं अलग तरह से बोलता हूँ। App में अभी exact क्या दिख रहा है?";
+}
+
 async function speakAndClose(ws, session, text, markName) {
   clearNoSpeechTimers(session);
   clearInterimTimer(session);
@@ -1511,6 +1872,10 @@ function mentionsWrongAnswer(text) {
   return /(ye nahi|ye nahin|यह नहीं|ये नहीं|यह नही|ये नही|not asked|did not ask|wrong answer|गलत जवाब|गलत समझ|nahi pucha|nahin pucha|नहीं पूछा|नही पूछा)/.test(text);
 }
 
+function complainsAboutRepetition(text) {
+  return /(repeat kar rahe|repeating|same thing|same line|bar bar|baar baar|बार बार|बार-बार|एक ही बात|same baat|वही बात|फिर वही|बस 1 ही|बस एक ही)/.test(text);
+}
+
 function asksIdentity(text) {
   return /(who are you|who is this|which company|company name|कौन बोल|कौन हो|किस company|किस कंपनी|कंपनी का नाम|company ka naam|कहाँ से बोल|kahan se bol|loanconnect kaun|लोन कनेक्ट कौन)/.test(text);
 }
@@ -1520,7 +1885,7 @@ function asksDataSource(text) {
 }
 
 function asksHumanSupport(text) {
-  return /(agent|human|person|representative|customer care|support se baat|talk to.*support|कस्टमर केयर|support से बात|सपोर्ट से बात|किसी आदमी|इंसान से बात|agent से बात)/.test(text);
+  return /(agent|human|representative|customer care|support se baat|talk to.*support|talk to (a )?person|speak to (a )?person|connect.*person|कस्टमर केयर|support से बात|सपोर्ट से बात|किसी आदमी|इंसान से बात|agent से बात)/.test(text);
 }
 
 function mentionsLinkReceived(text) {
@@ -1880,6 +2245,7 @@ function normalizeTranscript(text) {
 
 async function speakText(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
+  rememberAssistantReply(session, text);
   session.lastSpokenText = text;
   session.lastSpokenMark = markName;
   session.activeSpeechMark = markName;
@@ -1920,6 +2286,15 @@ async function speakText(ws, session, text, markName) {
       session.activeSpeechChunksSent = 0;
     }
   }
+}
+
+function rememberAssistantReply(session = {}, text = "") {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+  if (!value) return;
+  session.assistantReplyHistory = [
+    ...(session.assistantReplyHistory || []),
+    value
+  ].slice(-8);
 }
 
 function shouldCancelAssistantSpeech(session, status = {}) {
@@ -2589,8 +2964,10 @@ module.exports = {
     buildConversationState,
     buildScriptedReply,
     callScreeningReply,
+    classifyLiveConversation,
     extractNameAnswer,
     firstGreeting,
+    refineAssistantReply,
     invalidateAssistantTurn,
     contextualNegativeReply,
     isContextualNegativeReply,

@@ -284,3 +284,92 @@ test("voicebot starts TezCredit bank verification calls with the pending step", 
   assert.match(greeting, /bank verification/i);
   assert.match(greeting, /30,000|30000/);
 });
+
+test("voicebot treats iPhone available phrase as screening", () => {
+  const { isCallScreening } = require("../src/services/outcomes");
+  assert.equal(isCallScreening("This person is available."), true);
+});
+
+test("voicebot welcomes real user after call screening without human-transfer reply", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "18000",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    tenantId: null,
+    screeningAnswered: true,
+    screeningHumanJoined: true,
+    userTurns: 1
+  });
+
+  const reply = _test.buildScriptedReply(state, "Hello");
+  assert.match(reply, /TezCredit|bank verification/i);
+  assert.doesNotMatch(reply, /human transfer/i);
+});
+
+test("voicebot varies bank-verification clarification instead of repeating one sentence", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "18000",
+    source_metadata: { productName: "TezCredit" }
+  }, { tenantId: null });
+
+  const first = _test.buildScriptedReply(state, "है जी?");
+  const second = _test.buildScriptedReply(state, "और");
+
+  assert.match(first, /bank verification|offer/i);
+  assert.match(second, /अगला step|Next step|bank verification/i);
+  assert.notEqual(first, second);
+  assert.doesNotMatch(first, /complete।/);
+  assert.doesNotMatch(second, /complete।/);
+});
+
+test("voicebot classification ignores screening text once a human joins", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    screeningAnswered: true,
+    screeningHumanJoined: true
+  });
+
+  const result = _test.classifyLiveConversation(state, "Hello", [
+    { speaker: "user", text: "This person is available." },
+    { speaker: "assistant", text: "Please connect the call if the customer is available." },
+    { speaker: "user", text: "Hello" }
+  ]);
+
+  assert.notEqual(result.outcome, "CALL_SCREENING");
+});
+
+test("voicebot rewrites assistant replies that repeat the previous line", () => {
+  const repeated = "आपका loan offer ₹18,000 तक ready है, बस bank verification बाकी है। क्या app खोल सकते हैं?";
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "18000",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    lastSpokenText: repeated,
+    assistantReplyHistory: [repeated],
+    tenantId: null
+  });
+
+  const reply = _test.refineAssistantReply(state, "और", repeated, { source: "llm" });
+  assert.notEqual(reply, repeated);
+  assert.match(reply, /अगला step|bank verification|UPI|app/i);
+});
+
+test("voicebot handles user complaint that it is repeating", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "18000",
+    source_metadata: { productName: "TezCredit" }
+  }, { tenantId: null });
+
+  const reply = _test.buildScriptedReply(state, "आप बार बार एक ही बात बोल रहे हो");
+  assert.match(reply, /repeat नहीं|Simple|bank verification|app/i);
+});

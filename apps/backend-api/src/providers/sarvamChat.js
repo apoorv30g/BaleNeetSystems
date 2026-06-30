@@ -100,6 +100,12 @@ function repairMalformedCompleteReply(text, lead = {}) {
   }
   if (/सुरक्षित।$/.test(text)) return text.replace(/सुरक्षित।$/, "सुरक्षित लिंक खोलिए।");
   if (/(लिंक|link) खोलकर।$/.test(text)) return text.replace(/(लिंक|link) खोलकर।$/, "$1 खोलकर स्क्रीन बताइए।");
+  if (/(bank verification|verification|वेरिफिकेशन|KYC|के वाई सी|selfie|e-sign|profile)\s+complete[।.]$/i.test(text)) {
+    return text.replace(/(bank verification|verification|वेरिफिकेशन|KYC|के वाई सी|selfie|e-sign|profile)\s+complete[।.]$/i, "$1 complete कर सकते हैं?");
+  }
+  if (/\bcomplete[।.]$/i.test(text) && /(क्या|कृपया|please|can you|app|ऐप)/i.test(text)) {
+    return text.replace(/\bcomplete[।.]$/i, "complete कर सकते हैं?");
+  }
   return "";
 }
 
@@ -154,9 +160,9 @@ function fallbackReply(lead) {
 
 function responseInstruction(lead) {
   if (isEnglishLead(lead)) {
-    return "Respond now as spoken Indian English for TTS: one or two short complete sentences, maximum 24 words. End with punctuation. No bullet points.";
+    return "Respond now as spoken Indian English for TTS: one or two short complete sentences, maximum 24 words. Answer the latest user message first, do not repeat the previous assistant line, and end with punctuation.";
   }
-  return "Respond now as spoken Hindi for TTS: one or two short complete Devanagari sentences, maximum 24 words. End with punctuation. No bullet points.";
+  return "Respond now as spoken Hindi for TTS: one or two short complete Devanagari sentences, maximum 24 words. Answer the latest user message first, do not repeat the previous assistant line, and end with punctuation.";
 }
 
 function englishFallbackReply(lead = {}) {
