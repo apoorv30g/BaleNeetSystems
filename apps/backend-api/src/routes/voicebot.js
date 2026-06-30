@@ -802,6 +802,27 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  if (isContextualNegativeReply(session, text)) {
+    const reply = contextualNegativeReply(session);
+    await logVoicebotEvent(session, "contextual_negative_followup", {
+      text,
+      lastSpokenText: session.lastSpokenText || "",
+      linkInstructionReason: session.linkInstructionReason || ""
+    });
+    if (session.callId) {
+      await addTranscript(session.callId, "assistant", reply);
+      const transcript = await getTranscript(session.callId);
+      const classification = classifyConversation({ userMessage: text, transcript, playbookType: session.lead.playbook_type });
+      await query(
+        `UPDATE calls SET outcome=$1, summary=$2, updated_at=NOW() WHERE id=$3`,
+        [classification.outcome === "NOT_INTERESTED" ? "IN_PROGRESS" : classification.outcome, classification.summary, session.callId]
+      );
+    }
+    await speakText(ws, session, reply, "contextual_negative_played");
+    scheduleNoSpeechCheck(ws, session, "after_contextual_negative");
+    return;
+  }
+
   if (isTerminalIntent(text)) {
     session.ending = true;
     const outcome = terminalOutcome(text);
@@ -921,7 +942,10 @@ function buildConversationState(session = {}) {
     confirmedName: Boolean(session.confirmedName),
     capturedName: session.capturedName || "",
     lastSpokenText: session.lastSpokenText || "",
-    userTurns: session.userTurns || 0
+    userTurns: session.userTurns || 0,
+    linkInstructionGiven: Boolean(session.linkInstructionGiven),
+    linkInstructionReason: session.linkInstructionReason || "",
+    linkPositiveFollowups: Number(session.linkPositiveFollowups || 0)
   };
 }
 
@@ -1082,6 +1106,10 @@ function buildScriptedReply(session, text) {
     markLinkInstruction(session, "link_received");
     if (english) return "Great. Open it once and tell me which screen you see: documents, KYC, bank verification, e-sign, final offer, or an error.";
     return "बहुत अच्छा। Link खोलिए और बताइए कौन सा screen दिख रहा है: documents, KYC, bank verification, e-sign, final offer या error?";
+  }
+
+  if (isConversationalBackchannel(normalized) && hasRecentLinkInstruction(session)) {
+    return positiveFollowUpReply(session, english);
   }
 
   if (isPositiveAgreement(normalized)) {
@@ -1338,6 +1366,45 @@ function positiveFollowUpReply(session = {}, english = false) {
 
   if (english) return "Great. Tell me what you see now: documents, KYC, bank verification, e-sign, final offer, or an error?";
   return "बहुत अच्छा। अब बताइए screen पर क्या दिख रहा है: documents, KYC, bank verification, e-sign, final offer या error?";
+}
+
+function isContextualNegativeReply(session = {}, text = "") {
+  if (!hasRecentLinkInstruction(session)) return false;
+  const normalized = normalizeVoiceIntent(text);
+  return isBareNegative(normalized);
+}
+
+function contextualNegativeReply(session = {}) {
+  const english = isEnglishSession(session);
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+
+  if (stage.includes("BANK_VERIFICATION")) {
+    if (english) return "No problem. Is bank verification not opening, or are you unsure about entering bank details?";
+    return "कोई बात नहीं। Bank verification खुल नहीं रहा, या bank details डालने में doubt है?";
+  }
+  if (stage.includes("E_SIGN")) {
+    if (english) return "No problem. Are you not comfortable with the terms, or is the e-sign screen not opening?";
+    return "कोई बात नहीं। Terms comfortable नहीं हैं, या e-sign screen open नहीं हो रहा?";
+  }
+  if (stage.includes("SELFIE")) {
+    if (english) return "No problem. Is the camera not opening, or are you not able to take the selfie now?";
+    return "कोई बात नहीं। Camera open नहीं हो रहा, या अभी selfie नहीं कर पा रहे?";
+  }
+  if (stage.includes("AADHAAR")) {
+    if (english) return "No problem. Is DigiLocker not opening, or are you not comfortable with Aadhaar KYC?";
+    return "कोई बात नहीं। DigiLocker open नहीं हो रहा, या Aadhaar KYC को लेकर doubt है?";
+  }
+
+  if (english) return "No problem. What is stopping you right now: link not received, app not opening, documents, or not interested?";
+  return "कोई बात नहीं। अभी क्या दिक्कत है: link नहीं मिला, app नहीं खुला, documents, या interest नहीं है?";
+}
+
+function isBareNegative(text = "") {
+  return /^(no|nope|na|nahi|nahin|nhi|not now|नहीं|नही|ना|न|नाही)$/.test(text);
+}
+
+function isConversationalBackchannel(text = "") {
+  return /^(hmm|hm|umm|haan ji|han ji|ji|accha|achha|okay|ok|ओके|अच्छा|हम्म|हां जी|हाँ जी|जी)$/.test(text);
 }
 
 function terminalClosingText(outcome, session = {}) {
@@ -2453,6 +2520,8 @@ module.exports = {
     extractNameAnswer,
     firstGreeting,
     invalidateAssistantTurn,
+    contextualNegativeReply,
+    isContextualNegativeReply,
     isCurrentTurn,
     normalizeVoiceIntent,
     shouldCancelAssistantSpeech,

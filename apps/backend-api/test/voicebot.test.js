@@ -149,6 +149,27 @@ test("voicebot uses last spoken link prompt to avoid repeating in English", () =
   assert.doesNotMatch(reply, /sending the secure link/i);
 });
 
+test("voicebot treats hmm after a link prompt as a conversational follow-up", () => {
+  const state = session("Hinglish", {}, {
+    tenantId: null,
+    lastSpokenText: "ठीक है, मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर documents और final eligibility दो मिनट में check कर लीजिए।"
+  });
+
+  const reply = _test.buildScriptedReply(state, "हम्म");
+  assert.match(reply, /screen/);
+  assert.doesNotMatch(reply, /link भेज रहा/);
+});
+
+test("voicebot treats bare nahi after a link prompt as a blocker, not final rejection", () => {
+  const state = session("Hinglish", {}, {
+    tenantId: null,
+    lastSpokenText: "ठीक है, मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर documents और final eligibility दो मिनट में check कर लीजिए।"
+  });
+
+  assert.equal(_test.isContextualNegativeReply(state, "नाही"), true);
+  assert.match(_test.contextualNegativeReply(state), /दिक्कत|link|app/);
+});
+
 test("voicebot captures explicit fresh-lead name and asks loan requirement next", () => {
   const state = session("English", { playbook_type: "FRESH_LEAD" }, {
     userTurns: 1,

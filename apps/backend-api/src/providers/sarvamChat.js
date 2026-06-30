@@ -48,7 +48,7 @@ async function generateSarvamReply({ lead, lastUserMessage = "", transcript = []
     }
 
     const reply = data?.choices?.[0]?.message?.content || data?.output_text || data?.text || "";
-    return cleanReply(reply) || fallbackReply(lead);
+    return ensureCompleteReply(cleanReply(reply), lead) || fallbackReply(lead);
   } finally {
     clearTimeout(timeout);
   }
@@ -77,6 +77,45 @@ function cleanReply(value) {
   return words.slice(0, maxWords).join(" ");
 }
 
+function ensureCompleteReply(value, lead = {}) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/[.!?।]$/.test(text)) return text;
+
+  if (isEnglishLead(lead)) return completeEnglishReply(text, lead);
+  return completeHindiReply(text, lead);
+}
+
+function completeEnglishReply(text, lead = {}) {
+  const lower = text.toLowerCase();
+  if (/(to see|to check|to view|for checking|for seeing|for viewing|open|please open|click|use the link)$/.test(lower)) {
+    return `${text} the secure link.`;
+  }
+  if (/\b(to|for|with|and|or|the|your|our|in|on|at|by|of|please|kindly)$/.test(lower)) {
+    return `${text} in the app.`;
+  }
+  if (lead?.playbook_type === "SOFT_PAYMENT_REMINDER" || lead?.playbook_type === "HARD_PAYMENT_REMINDER") {
+    return `${text}. Please use the secure payment link.`;
+  }
+  return `${text}.`;
+}
+
+function completeHindiReply(text, lead = {}) {
+  if (/(देखने|चेक करने|जाँच करने|जांच करने|offer देखने|प्रस्ताव देखने|प्रस्ताव को देखने)$/.test(text)) {
+    return `${text} के लिए सुरक्षित लिंक खोलिए।`;
+  }
+  if (/(खोलकर|खोलने|करने|पूरा करने|आगे बढ़ाने)$/.test(text)) {
+    return `${text} के लिए app खोलिए।`;
+  }
+  if (/(कृपया|अपने|अपना|आपका|की|का|के|को|में|से|पर|और|या|लिए)$/.test(text)) {
+    return `${text} app में check कर लीजिए।`;
+  }
+  if (lead?.playbook_type === "SOFT_PAYMENT_REMINDER" || lead?.playbook_type === "HARD_PAYMENT_REMINDER") {
+    return `${text}। कृपया सुरक्षित payment link use कीजिए।`;
+  }
+  return `${text}।`;
+}
+
 function fallbackReply(lead) {
   if (isEnglishLead(lead)) return englishFallbackReply(lead);
   const name = firstName(lead?.name);
@@ -98,9 +137,9 @@ function fallbackReply(lead) {
 
 function responseInstruction(lead) {
   if (isEnglishLead(lead)) {
-    return "Respond now as spoken Indian English for TTS: one or two short sentences, maximum 24 words. No bullet points.";
+    return "Respond now as spoken Indian English for TTS: one or two short complete sentences, maximum 24 words. End with punctuation. No bullet points.";
   }
-  return "Respond now as spoken Hindi for TTS: one or two short Devanagari sentences, maximum 24 words. No bullet points.";
+  return "Respond now as spoken Hindi for TTS: one or two short complete Devanagari sentences, maximum 24 words. End with punctuation. No bullet points.";
 }
 
 function englishFallbackReply(lead = {}) {
@@ -129,4 +168,4 @@ function firstName(name) {
   return String(name || "").trim().split(/\s+/)[0] || "";
 }
 
-module.exports = { generateSarvamReply };
+module.exports = { generateSarvamReply, _test: { cleanReply, ensureCompleteReply } };
