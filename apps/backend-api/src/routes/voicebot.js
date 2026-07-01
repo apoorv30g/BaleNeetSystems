@@ -34,10 +34,11 @@ const {
 } = require("../services/tezJourney");
 
 const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, LoanConnect se AI assistant. Kya aap mujhe sun paa rahe hain?";
-const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Okay.|Got it.|Sure.|Haan ji.|Theek hai.|Samjha.");
+const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Haan ji, ek second.|Samjha, dekhte hain.|Theek hai, sure.|Hmm, bilkul.|Achha, okay.|Got it.|Haan, sure.");
 const FAST_ACK_TEXT = FAST_ACK_TEXTS[0] || "Haan ji.";
 const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?";
 const NO_SPEECH_PROMPT_TEXT = process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXT || "Hello, are you able to hear me? Main line par hoon.";
+const NO_SPEECH_PROMPT_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXTS || "Hello? Kya aap sun paa rahe hain?|Haan, main yahan hoon. Kya aap mujhe sun sakte hain?|Hello, koi hai? Main line par hoon.|Aap bol sakte hain, main sun raha hoon.");
 const NO_SPEECH_GOODBYE_TEXT = process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT || "I could not hear you, so I am ending this call. Thank you.";
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
@@ -620,6 +621,7 @@ function startStt(ws, session) {
         if (session.speaking && STT_DURING_ASSISTANT_ENABLED && shouldCancelAssistantSpeech(session, status)) {
           invalidateAssistantTurn(session, "barge_in_speech_started");
           cancelAssistantSpeech(ws, session, "barge_in_speech_started");
+          session.lastTurnWasBargeIn = true;
         }
       }
       if (status.type === "UtteranceEnd") {
@@ -921,6 +923,12 @@ async function processUserTranscript(ws, session, event) {
   session.userTurns++;
   updateConversationMemory(session, text);
 
+  if (session.lastTurnWasBargeIn) {
+    session.lastTurnWasBargeIn = false;
+    const bargeInAck = pickBargeInAck(session);
+    await speakText(ws, session, bargeInAck, "barge_in_ack_played");
+  }
+
   const languageSwitch = detectLanguageSwitch(text);
   if (languageSwitch) {
     session.preferredLanguage = languageSwitch.language;
@@ -1041,6 +1049,7 @@ async function processUserTranscript(ws, session, event) {
 
   const promptTranscript = session.callId ? await getTranscript(session.callId) : [];
   const scriptedReply = buildScriptedReply(session, text);
+  const whyQuestion = !scriptedReply && isWhyQuestion(text);
   if (!scriptedReply) {
     session.llmCallsCount++;
     session.llmInputTokens += estimateInputTokens({
@@ -1056,7 +1065,8 @@ async function processUserTranscript(ws, session, event) {
       lead: session.lead,
       lastUserMessage: text,
       transcript: promptTranscript,
-      conversationState: buildConversationState(session)
+      conversationState: buildConversationState(session),
+      isWhyQuestion: whyQuestion
     });
   const ackText = pickAckText(session);
   if (FAST_ACK_ENABLED && ackText && (!scriptedReply || FAST_ACK_SCRIPTED_ENABLED)) {
@@ -2656,7 +2666,7 @@ async function safeGenerateReply(session, args) {
   try {
     return await generateReply(args);
   } catch (err) {
-    await logVoicebotEvent(session, "llm_failed", { error: err.message });
+    await logVoicebotEvent(session, "llm_failed", { error: err.message, isWhyQuestion: args.isWhyQuestion });
     return "Samajh gaya. Main LoanConnect ka AI assistant hoon. Kya aap loan eligibility aur offer details ke liye ek minute de sakte hain?";
   }
 }
@@ -2977,6 +2987,29 @@ function pickAckText(session) {
   if (!FAST_ACK_TEXTS.length) return "";
   const index = Math.max((session.userTurns || 1) - 1, 0) % FAST_ACK_TEXTS.length;
   return FAST_ACK_TEXTS[index];
+}
+
+const BARGE_IN_ACK_TEXTS = parseVoicebotTexts(
+  process.env.VOICEBOT_BARGE_IN_ACK_TEXTS ||
+  "Haan, boliye.|Sorry, aap bol rahe the?|Haan ji, sunta hoon.|Zaroor, batayein.|Achha, aap keh rahe the?"
+);
+
+function pickBargeInAck(session) {
+  if (!BARGE_IN_ACK_TEXTS.length) return "Haan, boliye.";
+  const index = Math.max((session.userTurns || 1) - 1, 0) % BARGE_IN_ACK_TEXTS.length;
+  return BARGE_IN_ACK_TEXTS[index];
+}
+
+function isWhyQuestion(text = "") {
+  const normalized = text.toLowerCase();
+  return /\b(why|kyu|kyun|kyunki|kyon|kaise|kaisa|reason|wajah|matlab|samjhao|explain|bata|batao)\b/.test(normalized);
+}
+
+function pickNoSpeechPrompt(session) {
+  if (!NO_SPEECH_PROMPT_TEXTS.length) return NO_SPEECH_PROMPT_TEXT;
+  const index = Math.max((session.noSpeechPromptCount || 0), 0) % NO_SPEECH_PROMPT_TEXTS.length;
+  session.noSpeechPromptCount = (session.noSpeechPromptCount || 0) + 1;
+  return NO_SPEECH_PROMPT_TEXTS[index];
 }
 
 function scheduleSttFinalWatchdog(ws, session) {

@@ -259,7 +259,7 @@ async function seedDefaultPlaybooks(tenantId) {
   }
 }
 
-async function buildPrompt(lead, { transcript = [], lastUserMessage = "", conversationState = {} } = {}) {
+async function buildPrompt(lead, { transcript = [], lastUserMessage = "", conversationState = {}, isWhyQuestion = false } = {}) {
   const playbook = await getPlaybook(lead.tenant_id, lead.playbook_type);
   const amount = lead.offer_amount || lead.loan_amount || "eligible";
   const transcriptUserTurns = transcript.filter(item => item.speaker === "user").length;
@@ -351,7 +351,7 @@ Rules:
 - Use everyday words. Avoid internal terms like playbook, campaign, drop stage, trigger, cadence, UTM, or routing.
 - If the customer sounds busy or hesitant, make the ask smaller and offer a callback.
 - If the latest message is just a greeting, greet back briefly and move to the current playbook action.
-- Keep it short and human: usually 12 to 18 words, maximum two short sentences.
+- ${isWhyQuestion ? "The customer is asking WHY. Give a clear, honest reason in 2-3 short sentences (up to 40 words). Explain the reason simply, then guide them to the next step." : "Keep it short and human: usually 12 to 18 words, maximum two short sentences."}
 - Always finish the spoken response as a complete sentence with final punctuation. Never end mid-phrase.
 - Prefer one helpful sentence plus one clear next step over explaining every detail.
 - Use moderate pace.

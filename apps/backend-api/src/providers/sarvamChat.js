@@ -1,12 +1,12 @@
 const config = require("../config");
 const { buildPrompt } = require("../services/playbooks");
 
-async function generateSarvamReply({ lead, lastUserMessage = "", transcript = [], conversationState = {} }) {
+async function generateSarvamReply({ lead, lastUserMessage = "", transcript = [], conversationState = {}, isWhyQuestion = false }) {
   if (!config.ai.sarvamApiKey) {
     throw new Error("Sarvam API key is not configured");
   }
 
-  const prompt = await buildPrompt(lead, { transcript, lastUserMessage, conversationState });
+  const prompt = await buildPrompt(lead, { transcript, lastUserMessage, conversationState, isWhyQuestion });
   const body = {
     model: process.env.SARVAM_CHAT_MODEL || "sarvam-30b",
     messages: [
