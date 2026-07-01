@@ -73,6 +73,7 @@ const MAX_CALL_CLOSING_LEAD_SECONDS = Math.min(
 );
 const MAX_CALL_CLOSE_TEXT_EN = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_EN || "You can follow the pending steps now.";
 const MAX_CALL_CLOSE_TEXT_HI = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_HI || "अब आप बाकी चरण पूरे कर सकते हैं।";
+const VOICEBOT_AGENT_NAME = String(process.env.VOICEBOT_AGENT_NAME || "Raj").trim() || "Raj";
 
 // Bounded LRU cache — prevents unbounded memory growth over long server uptime.
 const pcmCache = (() => {
@@ -884,6 +885,24 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  if (isNamedCalleeDenial(session, text)) {
+    const reply = namedCalleeDenialReply(session);
+    await logVoicebotEvent(session, "named_callee_not_confirmed", {
+      text,
+      expectedName: conversationalLeadName(session.lead?.name)
+    });
+    if (session.callId) {
+      await addTranscript(session.callId, "assistant", reply);
+      await query(
+        `UPDATE calls SET outcome='IN_PROGRESS', summary=$2, updated_at=NOW() WHERE id=$1`,
+        [session.callId, `The respondent did not confirm they were ${conversationalLeadName(session.lead?.name) || "the intended customer"}.`]
+      );
+    }
+    await speakText(ws, session, reply, "named_callee_clarification");
+    scheduleNoSpeechCheck(ws, session, "after_named_callee_clarification");
+    return;
+  }
+
   const journeyProgress = detectTezJourneyProgress(session.lead, text, {
     lastSpokenText: session.lastSpokenText
   });
@@ -1160,7 +1179,26 @@ function updateConversationMemory(session, text) {
 
 function askedForNameRecently(text) {
   const normalized = normalizeVoiceIntent(text);
-  return /(your name|confirm.*name|name.*confirm|reference detail|naam|नाम|आपका नाम|नाम बत|नाम confirm|नाम कन्फर्म|नाम क्या)/.test(normalized);
+  return /(your name|confirm.*name|name.*confirm|reference detail|am i speaking (to|with)|am i talking (to|with)|speaking (to|with)|naam|नाम|आपका नाम|नाम बत|नाम confirm|नाम कन्फर्म|नाम क्या|क्या मेरी बात.*से हो रही)/.test(normalized);
+}
+
+function isNamedCalleeDenial(session = {}, text = "") {
+  if (!askedForNameRecently(session.lastSpokenText)) return false;
+  const normalized = normalizeVoiceIntent(text);
+  return isBareNegative(normalized)
+    || /^(no|nahi|nahin|नहीं|नही|ना)\b/.test(normalized) && !/(wrong number|गलत number|गलत नंबर)/.test(normalized);
+}
+
+function namedCalleeDenialReply(session = {}) {
+  const name = conversationalLeadName(session.lead?.name);
+  if (isEnglishSession(session)) {
+    return name
+      ? `Sorry about that. Is ${name} available, or is this a wrong number?`
+      : "Sorry about that. Is the applicant available, or is this a wrong number?";
+  }
+  return name
+    ? `माफ़ कीजिए। क्या ${name} जी उपलब्ध हैं, या यह गलत number है?`
+    : "माफ़ कीजिए। क्या applicant उपलब्ध हैं, या यह गलत number है?";
 }
 
 function extractNameAnswer(text) {
@@ -1568,20 +1606,7 @@ function buildStageConversationalReply(session = {}, text = "", { amountText = "
 
   if (session.screeningAnswered && !session.screeningHumanWelcomed && isSimpleGreeting(text)) {
     session.screeningHumanWelcomed = true;
-    if (stage.includes("BANK_VERIFICATION")) {
-      return stageLine(session, "screening_handoff_bank", english
-        ? [
-          "Hi. I am calling about your TezCredit offer. Bank verification is pending, so disbursal cannot move ahead yet.",
-          "Hello. Your TezCredit offer is active, but bank verification is still pending in the app."
-        ]
-        : [
-          "नमस्ते जी। TezCredit offer ready है, लेकिन bank verification pending है। क्या आप app खोल पाएँगे?",
-          "हाँ जी, मैं TezCredit offer के बारे में call कर रहा हूँ। सिर्फ bank verification बाकी है।"
-        ]);
-    }
-    return english
-      ? "Hi. I am calling about your loan application. Can I help you complete the pending app step?"
-      : "नमस्ते जी। मैं आपकी loan application के pending step में मदद करने के लिए call कर रहा हूँ।";
+    return namedCalleeGreeting(session.lead, english);
   }
 
   if (!isTezJourneyStage(stage)) return "";
@@ -1913,7 +1938,7 @@ function callScreeningReply(session = {}) {
   const configured = process.env.VOICEBOT_SCREENING_RESPONSE_TEXT;
   if (configured) return configured;
   const product = productNameForLead(session.lead || {});
-  return `This is Raj from ${product}, calling about a loan eligibility check. Please connect the call if the customer is available.`;
+  return `This is ${VOICEBOT_AGENT_NAME} from ${product}, calling about a loan eligibility check. Please connect the call if the customer is available.`;
 }
 
 function noteHumanJoinedAfterScreening(session = {}, text = "") {
@@ -2283,42 +2308,27 @@ function firstGreeting(lead) {
 
 function stageFirstGreeting(lead = {}) {
   const english = normalizePreferredLanguage(lead.language) === "English";
-  const product = productNameForLead(lead);
   const stage = String(lead.drop_stage || lead.playbook_type || "");
-  const amount = lead.offer_amount || lead.loan_amount;
-  const amountText = amount ? formatLoanAmount(amount) : "";
-
-  if (stage === "SELFIE_PENDING") {
-    return english
-      ? `Hi, this is ${product}'s AI assistant. Your loan application is pending at live selfie. Can you complete it now?`
-      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपकी loan application live selfie step पर pending है। क्या आप अभी complete कर सकते हैं?`;
-  }
-  if (stage === "AADHAAR_PENDING") {
-    return english
-      ? `Hi, this is ${product}'s AI assistant. Your Aadhaar DigiLocker KYC is pending in the app. Can you complete it now?`
-      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपकी Aadhaar DigiLocker KYC app में pending है। क्या आप अभी complete कर सकते हैं?`;
-  }
-  if (stage === "PROFILE_PENDING") {
-    return english
-      ? `Hi, this is ${product}'s AI assistant. A profile detail is pending before final eligibility. Can you open the app now?`
-      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। Final eligibility से पहले profile detail pending है। क्या आप अभी app खोल सकते हैं?`;
-  }
-  if (stage === "BANK_VERIFICATION_PENDING") {
-    return english
-      ? `Hi, this is ${product}'s AI assistant. Your${amountText ? ` ${amountText}` : ""} loan offer is ready, but bank verification is pending. Can you do it now?`
-      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपका${amountText ? ` ${amountText}` : ""} loan offer ready है, बस bank verification pending है। क्या अभी कर सकते हैं?`;
-  }
-  if (stage === "E_SIGN_PENDING") {
-    return english
-      ? `Hi, this is ${product}'s AI assistant. Your loan is at the final e-sign step. Can you review and e-sign in the app now?`
-      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपका loan final e-sign step पर है। क्या आप अभी app में review करके e-sign कर सकते हैं?`;
-  }
-  if (stage === "APPROVED_NOT_DISBURSED") {
-    return english
-      ? `Hi, this is ${product}'s AI assistant. Your approval is visible, but disbursal is not complete. Which app screen do you see?`
-      : `नमस्ते, ${product} से AI assistant बोल रहा हूँ। आपकी approval दिख रही है, लेकिन disbursal complete नहीं हुआ। App में कौन सा screen दिख रहा है?`;
-  }
+  if (isTezJourneyStage(stage)) return namedCalleeGreeting(lead, english);
   return "";
+}
+
+function namedCalleeGreeting(lead = {}, english = false) {
+  const name = conversationalLeadName(lead.name);
+  if (english) {
+    return name
+      ? `Hi, this is ${VOICEBOT_AGENT_NAME} calling from TezCredit. Am I speaking with ${name}?`
+      : `Hi, this is ${VOICEBOT_AGENT_NAME} calling from TezCredit. Am I speaking with the loan applicant?`;
+  }
+  return name
+    ? `नमस्ते, मैं TezCredit से ${VOICEBOT_AGENT_NAME} बोल रहा हूँ। क्या मेरी बात ${name} जी से हो रही है?`
+    : `नमस्ते, मैं TezCredit से ${VOICEBOT_AGENT_NAME} बोल रहा हूँ। क्या मेरी बात loan applicant से हो रही है?`;
+}
+
+function conversationalLeadName(value) {
+  const name = cleanNameCandidate(value);
+  if (!name || isGenericLeadName(name)) return "";
+  return name;
 }
 
 function stagePositiveReply(session = {}, english = false) {
@@ -3227,11 +3237,13 @@ module.exports = {
     invalidateAssistantTurn,
     contextualNegativeReply,
     isContextualNegativeReply,
+    isNamedCalleeDenial,
     isCurrentTurn,
     normalizeVoiceIntent,
     normalizeTezCreditReply,
     prepareTextForSpeech,
     maxCallClosingText,
+    namedCalleeDenialReply,
     shouldCancelAssistantSpeech,
     updateConversationMemory
   }

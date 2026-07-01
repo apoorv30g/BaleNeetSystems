@@ -272,17 +272,62 @@ test("voicebot allows later barge-in after speech grace period", () => {
   assert.equal(_test.shouldCancelAssistantSpeech(state, { type: "SpeechStarted" }), true);
 });
 
-test("voicebot starts TezCredit bank verification calls with the pending step", () => {
+test("voicebot greets TezCredit customer by the CSV name before discussing the journey", () => {
   const greeting = _test.firstGreeting({
-    language: "Hinglish",
+    name: "Apoorv Gupta",
+    language: "English",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
     drop_stage: "BANK_VERIFICATION_PENDING",
     offer_amount: "30000",
     source_metadata: { productName: "TezCredit" }
   });
 
-  assert.match(greeting, /TezCredit/);
-  assert.match(greeting, /bank verification/i);
-  assert.match(greeting, /30,000|30000/);
+  assert.equal(greeting, "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?");
+  assert.doesNotMatch(greeting, /bank verification|30,000|30000/i);
+});
+
+test("voicebot uses a polite Hindi named greeting for TezCredit", () => {
+  const greeting = _test.firstGreeting({
+    name: "Apoorv Gupta",
+    language: "Hinglish",
+    playbook_type: "TEZ_SELFIE_PENDING",
+    drop_stage: "SELFIE_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  });
+
+  assert.match(greeting, /नमस्ते/);
+  assert.match(greeting, /TezCredit से Raj/);
+  assert.match(greeting, /Apoorv Gupta जी/);
+});
+
+test("yes after the named greeting confirms the CSV identity", () => {
+  const state = session("English", {
+    name: "Apoorv Gupta",
+    playbook_type: "TEZ_SELFIE_PENDING",
+    drop_stage: "SELFIE_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    userTurns: 1,
+    lastSpokenText: "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?"
+  });
+
+  _test.updateConversationMemory(state, "yes");
+  assert.equal(state.confirmedName, true);
+  assert.equal(state.capturedName, "Apoorv Gupta");
+});
+
+test("no after the named greeting asks for the intended person instead of rejecting the loan", () => {
+  const state = session("English", {
+    name: "Apoorv Gupta",
+    playbook_type: "TEZ_SELFIE_PENDING",
+    drop_stage: "SELFIE_PENDING"
+  }, {
+    lastSpokenText: "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?"
+  });
+
+  assert.equal(_test.isNamedCalleeDenial(state, "no"), true);
+  assert.match(_test.namedCalleeDenialReply(state), /Apoorv Gupta available/i);
+  assert.match(_test.namedCalleeDenialReply(state), /wrong number/i);
 });
 
 test("TezCredit stage guidance sends the user through Apply Now on the website", () => {
