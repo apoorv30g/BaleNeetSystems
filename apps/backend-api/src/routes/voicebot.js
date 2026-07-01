@@ -178,6 +178,9 @@ function attachVoicebot(server) {
       confirmedName: false,
       confirmedNameTurn: 0,
       capturedName: "",
+      identityPrompted: false,
+      availabilityConfirmed: false,
+      availabilityConfirmedTurn: 0,
       screeningAnswered: false,
       screeningTranscript: "",
       screeningDetectedAt: 0,
@@ -563,6 +566,7 @@ async function speakIntro(ws, session) {
   }
 
   const text = firstGreeting(lead);
+  session.identityPrompted = isTezJourneyLead(lead);
   if (session.callId) await addTranscript(session.callId, "assistant", text);
 
   await speakText(ws, session, text, "intro_played");
@@ -903,6 +907,21 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  if (isAvailabilityDecline(session, text)) {
+    const reply = availabilityDeclineReply(session);
+    await logVoicebotEvent(session, "conversation_permission_declined", { text });
+    if (session.callId) {
+      await addTranscript(session.callId, "assistant", reply);
+      await query(
+        `UPDATE calls SET outcome='IN_PROGRESS', summary=$2, updated_at=NOW() WHERE id=$1`,
+        [session.callId, "Customer said it was not a good time; the bot asked for a preferred callback time."]
+      );
+    }
+    await speakText(ws, session, reply, "availability_callback_prompt");
+    scheduleNoSpeechCheck(ws, session, "after_availability_callback_prompt");
+    return;
+  }
+
   const journeyProgress = detectTezJourneyProgress(session.lead, text, {
     lastSpokenText: session.lastSpokenText
   });
@@ -1131,6 +1150,7 @@ function buildConversationState(session = {}) {
   return {
     confirmedName: Boolean(session.confirmedName),
     capturedName: session.capturedName || "",
+    availabilityConfirmed: Boolean(session.availabilityConfirmed),
     lastSpokenText: session.lastSpokenText || "",
     userTurns: session.userTurns || 0,
     linkInstructionGiven: Boolean(session.linkInstructionGiven),
@@ -1164,7 +1184,10 @@ function updateConversationMemory(session, text) {
 
   const askedName = askedForNameRecently(session.lastSpokenText);
   const extractedName = extractNameAnswer(text);
-  const confirmsKnownName = askedName && Boolean(session.lead.name) && isPositiveAgreement(normalizeVoiceIntent(text));
+  const normalized = normalizeVoiceIntent(text);
+  const confirmsKnownName = askedName
+    && isPositiveAgreement(normalized)
+    && (Boolean(session.lead.name) || isTezJourneyLead(session.lead));
   const shortName = askedName ? shortNameAnswer(text) : "";
 
   if (!session.confirmedName && (extractedName || confirmsKnownName || shortName)) {
@@ -1175,11 +1198,21 @@ function updateConversationMemory(session, text) {
       session.lead = { ...session.lead, name: session.capturedName };
     }
   }
+
+  if (!session.availabilityConfirmed && askedForAvailabilityRecently(session.lastSpokenText) && isPositiveAgreement(normalized)) {
+    session.availabilityConfirmed = true;
+    session.availabilityConfirmedTurn = session.userTurns || 0;
+  }
 }
 
 function askedForNameRecently(text) {
   const normalized = normalizeVoiceIntent(text);
   return /(your name|confirm.*name|name.*confirm|reference detail|am i speaking (to|with)|am i talking (to|with)|speaking (to|with)|naam|नाम|आपका नाम|नाम बत|नाम confirm|नाम कन्फर्म|नाम क्या|क्या मेरी बात.*से हो रही)/.test(normalized);
+}
+
+function askedForAvailabilityRecently(text) {
+  const normalized = normalizeVoiceIntent(text);
+  return /(is now a good time|good time to talk|can we talk|do you have two minutes|can you spare two minutes|अभी बात कर सकते|क्या अभी सही समय|क्या आपके पास दो मिनट|दो मिनट बात)/.test(normalized);
 }
 
 function isNamedCalleeDenial(session = {}, text = "") {
@@ -1199,6 +1232,15 @@ function namedCalleeDenialReply(session = {}) {
   return name
     ? `माफ़ कीजिए। क्या ${name} जी उपलब्ध हैं, या यह गलत number है?`
     : "माफ़ कीजिए। क्या applicant उपलब्ध हैं, या यह गलत number है?";
+}
+
+function isAvailabilityDecline(session = {}, text = "") {
+  return askedForAvailabilityRecently(session.lastSpokenText) && isBareNegative(normalizeVoiceIntent(text));
+}
+
+function availabilityDeclineReply(session = {}) {
+  if (isEnglishSession(session)) return "No problem. What time would be better for me to call you back?";
+  return "कोई बात नहीं। मैं आपको किस समय दोबारा call करूँ?";
 }
 
 function extractNameAnswer(text) {
@@ -1233,6 +1275,9 @@ function shortNameAnswer(text) {
   if (!candidate) return "";
 
   const normalized = normalizeVoiceIntent(candidate);
+  if (/^(hello|hi|hey|helo|yes|yeah|yep|no|nope|ok|okay|haan|han|ji|नमस्ते|हेलो|हैलो|हाँ|हां|जी|नहीं|नही|ना)$/.test(normalized)) {
+    return "";
+  }
   if (/(loan|amount|rate|interest|emi|fee|charge|link|offer|payment|due|callback|busy|not interested|लोन|पेमेंट|ब्याज|लिंक|ऑफर)/.test(normalized)) {
     return "";
   }
@@ -1273,6 +1318,9 @@ function buildScriptedReply(session, text) {
   const amount = lead.offer_amount || lead.loan_amount || "";
   const amountText = amount ? formatLoanAmount(amount) : "eligible amount";
   const english = isEnglishSession(session);
+
+  const identityGateReply = buildTezIdentityGateReply(session, normalized, english);
+  if (identityGateReply) return identityGateReply;
 
   if (lead.playbook_type === "FRESH_LEAD" && session.confirmedNameTurn === session.userTurns && isNameConfirmationTurn(normalized)) {
     if (english) return "Thanks. How much loan are you looking for right now?";
@@ -1508,6 +1556,53 @@ function buildScriptedReply(session, text) {
   }
 
   return "";
+}
+
+function buildTezIdentityGateReply(session = {}, text = "", english = false) {
+  if (!isTezJourneyLead(session.lead)) return "";
+  if (!session.identityPrompted && !askedForNameRecently(session.lastSpokenText)) return "";
+
+  if (!session.confirmedName) {
+    if (asksIdentity(text)) {
+      const name = conversationalLeadName(session.lead?.name);
+      return english
+        ? `This is ${VOICEBOT_AGENT_NAME} calling from TezCredit. Am I speaking with ${name || "the loan applicant"}?`
+        : `मैं TezCredit से ${VOICEBOT_AGENT_NAME} बोल रहा हूँ। क्या मेरी बात ${name ? `${name} जी` : "loan applicant"} से हो रही है?`;
+    }
+    return namedCalleeGreeting(session.lead, english);
+  }
+
+  if (!session.availabilityConfirmed) {
+    return availabilityQuestion(session, english);
+  }
+
+  if (session.availabilityConfirmedTurn === session.userTurns) {
+    return stagePurposeReply(session, english);
+  }
+
+  return "";
+}
+
+function availabilityQuestion(session = {}, english = false) {
+  const name = conversationalLeadName(session.lead?.name);
+  session.availabilityPrompted = true;
+  if (english) return `Thank you${name ? `, ${name}` : ""}. Is now a good time to talk for two minutes?`;
+  return `धन्यवाद${name ? `, ${name} जी` : ""}। क्या अभी दो मिनट बात कर सकते हैं?`;
+}
+
+function stagePurposeReply(session = {}, english = false) {
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  const purpose = {
+    SELFIE_PENDING: english ? "your live selfie is pending" : "आपकी live selfie pending है",
+    AADHAAR_PENDING: english ? "your Aadhaar KYC is pending" : "आपकी Aadhaar KYC pending है",
+    PROFILE_PENDING: english ? "one profile detail is pending" : "आपकी एक profile detail pending है",
+    BANK_VERIFICATION_PENDING: english ? "your bank verification is pending" : "आपका bank verification pending है",
+    E_SIGN_PENDING: english ? "your agreement e-sign is pending" : "आपका agreement e-sign pending है",
+    APPROVED_NOT_DISBURSED: english ? "your disbursal confirmation is pending" : "आपका disbursal confirmation pending है"
+  }[stage];
+
+  if (english) return `Thanks. ${purpose || "one TezCredit step is pending"}. Are you able to open the website now?`;
+  return `ठीक है। ${purpose || "TezCredit का एक step pending है"}। क्या आप अभी website खोल सकते हैं?`;
 }
 
 function detectLanguageSwitch(text) {
@@ -2187,6 +2282,8 @@ function isUnclearGreetingResponse(text = "") {
 
 function isPositiveAgreement(text) {
   return /^(haan|han|haa|yes|ok|okay|sure|ठीक|हाँ|हां|हा|ओके)$/.test(text)
+    || /^(yes|haan|han|हाँ|हां|जी)\s+(sure|ji|yes|हाँ|हां|जी)$/.test(text)
+    || /^(yes|haan|han|हाँ|हां|जी).*(speaking|this is|bol raha|bol rahi|मैं ही|बोल रहा|बोल रही)/.test(text)
     || /(kar dijiye|kar do|bhej do|bhej dijiye|send kar|continue|कर दीजिए|कर दीजिये|कर दो|भेज दो|भेज दीजिए|भेज दीजिये|आगे बढ़)/.test(text);
 }
 
@@ -3237,12 +3334,14 @@ module.exports = {
     invalidateAssistantTurn,
     contextualNegativeReply,
     isContextualNegativeReply,
+    isAvailabilityDecline,
     isNamedCalleeDenial,
     isCurrentTurn,
     normalizeVoiceIntent,
     normalizeTezCreditReply,
     prepareTextForSpeech,
     maxCallClosingText,
+    availabilityDeclineReply,
     namedCalleeDenialReply,
     shouldCancelAssistantSpeech,
     updateConversationMemory

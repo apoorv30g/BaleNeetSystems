@@ -316,6 +316,21 @@ test("yes after the named greeting confirms the CSV identity", () => {
   assert.equal(state.capturedName, "Apoorv Gupta");
 });
 
+test("natural speaking confirmation also confirms the CSV identity", () => {
+  const state = session("Hinglish", {
+    name: "Apoorv Gupta",
+    playbook_type: "TEZ_SELFIE_PENDING",
+    drop_stage: "SELFIE_PENDING"
+  }, {
+    identityPrompted: true,
+    userTurns: 1,
+    lastSpokenText: "क्या मेरी बात Apoorv Gupta जी से हो रही है?"
+  });
+
+  _test.updateConversationMemory(state, "हाँ जी, मैं ही बोल रहा हूँ");
+  assert.equal(state.confirmedName, true);
+});
+
 test("no after the named greeting asks for the intended person instead of rejecting the loan", () => {
   const state = session("English", {
     name: "Apoorv Gupta",
@@ -328,6 +343,72 @@ test("no after the named greeting asks for the intended person instead of reject
   assert.equal(_test.isNamedCalleeDenial(state, "no"), true);
   assert.match(_test.namedCalleeDenialReply(state), /Apoorv Gupta available/i);
   assert.match(_test.namedCalleeDenialReply(state), /wrong number/i);
+});
+
+test("hello after the named greeting does not confirm identity or start the journey", () => {
+  const state = session("English", {
+    name: "Apoorv Gupta",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    identityPrompted: true,
+    userTurns: 1,
+    lastSpokenText: "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?"
+  });
+
+  _test.updateConversationMemory(state, "hello");
+  const reply = _test.buildScriptedReply(state, "hello");
+  assert.equal(Boolean(state.confirmedName), false);
+  assert.match(reply, /Am I speaking with Apoorv Gupta/i);
+  assert.doesNotMatch(reply, /bank verification|Apply Now/i);
+});
+
+test("TezCredit opening waits for identity and availability before journey guidance", () => {
+  const state = session("English", {
+    name: "Apoorv Gupta",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    identityPrompted: true,
+    userTurns: 1,
+    lastSpokenText: "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?"
+  });
+
+  _test.updateConversationMemory(state, "yes");
+  const permission = _test.buildScriptedReply(state, "yes");
+  assert.match(permission, /good time to talk for two minutes/i);
+  assert.doesNotMatch(permission, /bank verification|Apply Now/i);
+
+  state.lastSpokenText = permission;
+  state.userTurns = 2;
+  _test.updateConversationMemory(state, "yes");
+  const purpose = _test.buildScriptedReply(state, "yes");
+  assert.match(purpose, /bank verification is pending/i);
+  assert.match(purpose, /open the website/i);
+  assert.doesNotMatch(purpose, /Apply Now/i);
+
+  state.lastSpokenText = purpose;
+  state.userTurns = 3;
+  _test.updateConversationMemory(state, "yes");
+  const guidance = _test.buildScriptedReply(state, "yes");
+  assert.match(guidance, /www\.tezcredit\.com/i);
+  assert.match(guidance, /Apply Now/i);
+});
+
+test("no after the availability question asks for a callback time", () => {
+  const state = session("English", {
+    name: "Apoorv Gupta",
+    playbook_type: "TEZ_SELFIE_PENDING",
+    drop_stage: "SELFIE_PENDING"
+  }, {
+    confirmedName: true,
+    lastSpokenText: "Thank you, Apoorv Gupta. Is now a good time to talk for two minutes?"
+  });
+
+  assert.equal(_test.isAvailabilityDecline(state, "no"), true);
+  assert.match(_test.availabilityDeclineReply(state), /what time.*call you back/i);
 });
 
 test("TezCredit stage guidance sends the user through Apply Now on the website", () => {
