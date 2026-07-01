@@ -33,7 +33,7 @@ const {
   tezJourneyContext
 } = require("../services/tezJourney");
 
-const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, LoanConnect se AI assistant. Kya aap mujhe sun paa rahe hain?";
+const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, main Sneha TezCredit se bol rahi hoon. Kya aap mujhe sun paa rahe hain?";
 const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Haan ji, ek second.|Samjha, dekhte hain.|Theek hai, sure.|Hmm, bilkul.|Achha, okay.|Got it.|Haan, sure.");
 const FAST_ACK_TEXT = FAST_ACK_TEXTS[0] || "Haan ji.";
 const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?";
@@ -75,7 +75,7 @@ const MAX_CALL_CLOSING_LEAD_SECONDS = Math.min(
 );
 const MAX_CALL_CLOSE_TEXT_EN = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_EN || "You can follow the pending steps now.";
 const MAX_CALL_CLOSE_TEXT_HI = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_HI || "अब आप बाकी चरण पूरे कर सकते हैं।";
-const VOICEBOT_AGENT_NAME = String(process.env.VOICEBOT_AGENT_NAME || "Raj").trim() || "Raj";
+const VOICEBOT_AGENT_NAME = String(process.env.VOICEBOT_AGENT_NAME || "Sneha").trim() || "Sneha";
 const TEZ_WEBSITE_NAME_TEXT_EN = "The website is TezCredit: www.tezcredit.com. Open it and click Apply Now.";
 const TEZ_WEBSITE_NAME_TEXT_HI = "Website का नाम TezCredit है। www.tezcredit.com खोलिए और Apply Now पर click कीजिए।";
 const WEBSITE_LOGIN_FIRST_CHECK_MS = Math.max(1000, Number(process.env.VOICEBOT_WEBSITE_FIRST_CHECK_MS || 20000));
@@ -580,7 +580,7 @@ async function speakIntro(ws, session) {
     await speakText(
       ws,
       session,
-      "Namaste, LoanConnect se AI assistant bol raha hoon. Kya aap abhi loan eligibility ke baare mein baat kar sakte hain?",
+      `Namaste, main ${VOICEBOT_AGENT_NAME} TezCredit se bol rahi hoon. Kya aap abhi loan application ke baare mein baat kar sakte hain?`,
       "generic_intro_played"
     );
     return;
@@ -588,7 +588,7 @@ async function speakIntro(ws, session) {
 
   const lead = session.lead || (await query(`SELECT * FROM leads WHERE id=$1`, [session.leadId])).rows[0];
   if (!lead) {
-    await speakText(ws, session, "Namaste, LoanConnect se AI assistant bol raha hoon. Kya aap abhi baat kar sakte hain?", "fallback_intro_played");
+    await speakText(ws, session, `Namaste, main ${VOICEBOT_AGENT_NAME} TezCredit se bol rahi hoon. Kya aap abhi baat kar sakte hain?`, "fallback_intro_played");
     return;
   }
 
@@ -856,7 +856,7 @@ async function processUserTranscript(ws, session, event) {
   }
 
   if (!session.lead) {
-    await speakText(ws, session, "Dhanyavaad. Main aapki baat note kar raha hoon. LoanConnect team aapki request process karegi.", "generic_reply_played");
+    await speakText(ws, session, "Dhanyavaad. Main aapki baat note kar rahi hoon. TezCredit team aapki request process karegi.", "generic_reply_played");
     return;
   }
 
@@ -1629,14 +1629,14 @@ function buildScriptedReply(session, text) {
   if (asksIdentity(normalized)) {
     return english
       ? stageLine(session, "identity_en", [
-        "I am LoanConnect's AI assistant, calling about your loan eligibility or offer. I will not ask for OTP or passwords.",
-        "Good question — I am an AI assistant from LoanConnect. I am here about your loan offer and will never ask for OTP or PIN.",
-        "I am LoanConnect's AI. I call about loan offers and eligibility only — never for OTP, passwords, or card details."
+        `I am ${VOICEBOT_AGENT_NAME}, calling from TezCredit about your loan application. I will not ask for an OTP or password.`,
+        `This is ${VOICEBOT_AGENT_NAME} from TezCredit. I am calling about your pending loan application step, never for an OTP or PIN.`,
+        `I am ${VOICEBOT_AGENT_NAME} from TezCredit, calling only about your loan application and pending steps.`
       ])
       : stageLine(session, "identity_hi", [
-        "मैं लोन कनेक्ट का AI assistant हूँ, आपकी loan eligibility या offer के बारे में call कर रहा हूँ। मैं ओ टी पी या password नहीं पूछूँगा।",
-        "अच्छा सवाल है — मैं लोन कनेक्ट का AI assistant हूँ। loan offer के बारे में बात करने के लिए call किया है, ओ टी पी या PIN कभी नहीं माँगूँगा।",
-        "मैं लोन कनेक्ट से हूँ। सिर्फ आपकी loan eligibility के बारे में बात करना है — ओ टी पी, password कुछ नहीं पूछूँगा।"
+        `मैं ${VOICEBOT_AGENT_NAME}, TezCredit से आपकी loan application के बारे में call कर रही हूँ। मैं ओ टी पी या password नहीं पूछूँगी।`,
+        `मैं ${VOICEBOT_AGENT_NAME}, TezCredit से बोल रही हूँ। आपकी pending loan application step के बारे में call किया है।`,
+        `मैं ${VOICEBOT_AGENT_NAME}, TezCredit से हूँ। सिर्फ आपकी loan application और pending step के बारे में बात करनी है।`
       ]);
   }
 
@@ -1907,13 +1907,21 @@ function buildTezIdentityGateReply(session = {}, text = "", english = false) {
   if (!isTezJourneyLead(session.lead)) return "";
   if (!session.identityPrompted && !askedForNameRecently(session.lastSpokenText)) return "";
 
-  if (!session.confirmedName) {
-    if (asksIdentity(text)) {
-      const name = conversationalLeadName(session.lead?.name);
+  if (asksIdentity(text)) {
+    const name = conversationalLeadName(session.lead?.name);
+    const identity = english
+      ? `I am ${VOICEBOT_AGENT_NAME}, calling from TezCredit about your pending loan application.`
+      : `मैं ${VOICEBOT_AGENT_NAME}, TezCredit से आपकी pending loan application के बारे में call कर रही हूँ।`;
+    if (!session.confirmedName) {
       return english
-        ? `This is ${VOICEBOT_AGENT_NAME} calling from TezCredit. Am I speaking with ${name || "the loan applicant"}?`
-        : `मैं TezCredit से ${VOICEBOT_AGENT_NAME} बोल रहा हूँ। क्या मेरी बात ${name ? `${name} जी` : "loan applicant"} से हो रही है?`;
+        ? `${identity} Am I speaking with ${name || "the loan applicant"}?`
+        : `${identity} क्या मेरी बात ${name ? `${name} जी` : "loan applicant"} से हो रही है?`;
     }
+    if (!session.availabilityConfirmed) return `${identity} ${availabilityQuestion(session, english)}`;
+    return identity;
+  }
+
+  if (!session.confirmedName) {
     return namedCalleeGreeting(session.lead, english);
   }
 
@@ -1979,7 +1987,7 @@ function detectLanguageSwitch(text) {
 function languageSwitchReply(language, lead = {}) {
   if (language === "English") {
     if (lead.playbook_type === "UNAPPROVED_USERS") {
-      return "Sure, I will speak in English. I am calling from LoanConnect to help you check your final loan offer. Can you spare two minutes?";
+      return `Sure, I will speak in English. I am ${VOICEBOT_AGENT_NAME} from TezCredit, calling about your loan application. Can you spare two minutes?`;
     }
     return "Sure, I will speak in English from now on. How can I help you with your loan today?";
   }
@@ -2408,7 +2416,7 @@ function isConversationalBackchannel(text = "") {
 function terminalClosingText(outcome, session = {}) {
   const english = isEnglishSession(session);
   if (outcome === "VOICEMAIL") return english ? "Reached voicemail. Ending this call." : "Voicemail मिला। Call close कर रहा हूँ।";
-  if (outcome === "CALL_SCREENING") return english ? "LoanConnect AI assistant calling about a loan enquiry. Thank you." : "लोन कनेक्ट AI assistant, loan enquiry के बारे में call कर रहा हूँ। धन्यवाद।";
+  if (outcome === "CALL_SCREENING") return english ? `${VOICEBOT_AGENT_NAME} from TezCredit, calling about a loan application. Thank you.` : `${VOICEBOT_AGENT_NAME}, TezCredit से loan application के बारे में call कर रही हूँ। धन्यवाद।`;
   if (outcome === "PAID") return english ? "Thanks, I have noted that you already paid. Please keep the payment receipt handy." : "धन्यवाद, मैं note कर रहा हूँ कि आपने payment कर दिया है। Receipt संभाल कर रखिए।";
   if (outcome === "PROMISE_TO_PAY") return english ? "Thanks, I have noted your payment commitment. Please pay from the secure link before the time you mentioned." : "धन्यवाद, मैं आपका payment commitment note कर रहा हूँ। बताए हुए समय से पहले secure link से payment कर दीजिए।";
   if (outcome === "CALLBACK") return english ? "Sure, we will contact you later. Thank you." : "ठीक है, हम बाद में संपर्क करेंगे। धन्यवाद।";
@@ -2829,7 +2837,7 @@ async function safeGenerateReply(session, args) {
     return await generateReply(args);
   } catch (err) {
     await logVoicebotEvent(session, "llm_failed", { error: err.message, isWhyQuestion: args.isWhyQuestion });
-    return "Samajh gaya. Main LoanConnect ka AI assistant hoon. Kya aap loan eligibility aur offer details ke liye ek minute de sakte hain?";
+    return `माफ़ कीजिए। मैं ${VOICEBOT_AGENT_NAME}, TezCredit से call कर रही हूँ। क्या आप अपनी loan application के लिए एक मिनट दे सकते हैं?`;
   }
 }
 
@@ -2868,7 +2876,7 @@ function complainsAboutRepetition(text) {
 }
 
 function asksIdentity(text) {
-  return /(who are you|who is this|which company|company name|कौन बोल|कौन हो|किस company|किस कंपनी|कंपनी का नाम|company ka naam|कहाँ से बोल|kahan se bol|loanconnect kaun|लोन कनेक्ट कौन)/.test(text);
+  return /(who are you|who is this|which company|company name|where are you calling from|where.*calling|calling from where|where are you from|कौन बोल|कौन हो|किस company|किस कंपनी|कंपनी का नाम|company ka naam|कहाँ से बोल|कहां से बोल|किधर से बोल|कहाँ से call|कहां से call|कहाँ से कॉल|कहां से कॉल|किधर से call|kahan se bol|kaha se bol|kidhar se bol|kahan se call|kaha se call|tezcredit kaun|tez credit kaun|तेज़ क्रेडिट कौन)/.test(text);
 }
 
 function asksDataSource(text) {
@@ -3061,8 +3069,8 @@ function namedCalleeGreeting(lead = {}, english = false) {
       : `Hi, this is ${VOICEBOT_AGENT_NAME} calling from TezCredit. Am I speaking with the loan applicant?`;
   }
   return name
-    ? `नमस्ते, मैं TezCredit से ${VOICEBOT_AGENT_NAME} बोल रहा हूँ। क्या मेरी बात ${name} जी से हो रही है?`
-    : `नमस्ते, मैं TezCredit से ${VOICEBOT_AGENT_NAME} बोल रहा हूँ। क्या मेरी बात loan applicant से हो रही है?`;
+    ? `नमस्ते, मैं ${VOICEBOT_AGENT_NAME}, TezCredit से बोल रही हूँ। क्या मेरी बात ${name} जी से हो रही है?`
+    : `नमस्ते, मैं ${VOICEBOT_AGENT_NAME}, TezCredit से बोल रही हूँ। क्या मेरी बात loan applicant से हो रही है?`;
 }
 
 function conversationalLeadName(value) {
@@ -3134,7 +3142,7 @@ function stageReasonReply(session = {}, english = false) {
 }
 
 function productNameForLead(lead = {}) {
-  return lead.source_metadata?.productName || process.env.VOICEBOT_PRODUCT_NAME || "LoanConnect";
+  return lead.source_metadata?.productName || process.env.VOICEBOT_PRODUCT_NAME || "TezCredit";
 }
 
 function parseVoicebotTexts(value) {
@@ -3544,7 +3552,7 @@ function prepareTextForSpeech(text, session = {}) {
   if (isEnglishSession(session)) {
     return base
       .replace(/(?:https?:\/\/)?www\.tezcredit\.com/gi, "double u double u double u dot Tez Credit dot com")
-      .replace(/\bLoanConnect\b/gi, "Loan Connect")
+      .replace(/\bLoanConnect\b/gi, "Tez Credit")
       .replace(/\bTezCredit\b/gi, "Tez Credit")
       .replace(/\bCIBIL\b/gi, "SIBIL")
       .replace(/\bEMI\b/gi, "E M I")
@@ -3560,10 +3568,10 @@ function prepareTextForSpeech(text, session = {}) {
 
   return base
     .replace(/(?:https?:\/\/)?www\.tezcredit\.com/gi, "डब्ल्यू डब्ल्यू डब्ल्यू डॉट तेज़ क्रेडिट डॉट कॉम")
-    .replace(/Namaste,\s*LoanConnect se AI assistant\.?\s*Kya aap mujhe sun paa rahe hain\?/i, "नमस्ते, लोन कनेक्ट से ए आई असिस्टेंट। क्या आप मुझे सुन पा रहे हैं?")
+    .replace(/Namaste,\s*main Sneha TezCredit se bol rahi hoon\.?\s*Kya aap mujhe sun paa rahe hain\?/i, "नमस्ते, मैं स्नेहा तेज़ क्रेडिट से बोल रही हूँ। क्या आप मुझे सुन पा रहे हैं?")
     .replace(/\bNamaste\b/gi, "नमस्ते")
     .replace(/\bAI assistant\b/gi, "ए आई असिस्टेंट")
-    .replace(/\bLoanConnect\b/gi, "लोन कनेक्ट")
+    .replace(/\bLoanConnect\b/gi, "तेज़ क्रेडिट")
     .replace(/\bTezCredit\b/gi, "तेज़ क्रेडिट")
     .replace(/\bDigiLocker\b/gi, "डिजी लॉकर")
     .replace(/\bAadhaar\b/gi, "आधार")
@@ -3607,7 +3615,9 @@ function prepareTextForSpeech(text, session = {}) {
 
 function normalizeTezCreditReply(session = {}, text = "") {
   const website = String(config.tezCreditUrl || "https://www.tezcredit.com").replace(/^https?:\/\//i, "");
-  return normalizeTezCreditSurfaceText(session.lead, text, website);
+  return normalizeTezCreditSurfaceText(session.lead, text, website)
+    .replace(/\bLoanConnect(?:\s+AI)?\b/gi, "TezCredit")
+    .replace(/लोन\s*कनेक्ट(?:\s*ए\s*आई)?/gi, "TezCredit");
 }
 
 function leadJourneyUrl(lead = {}) {

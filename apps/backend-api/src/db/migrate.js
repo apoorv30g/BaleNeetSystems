@@ -182,7 +182,7 @@ async function migrate() {
       call_window_end INTEGER DEFAULT 20,
       max_call_attempts INTEGER DEFAULT 3,
       retry_delay_minutes INTEGER DEFAULT 360,
-      ai_disclosure TEXT DEFAULT 'This is an AI-assisted call from LoanConnect.',
+      ai_disclosure TEXT DEFAULT 'This is Sneha calling from TezCredit about your loan application.',
       sms_webhook_url TEXT,
       whatsapp_webhook_url TEXT,
       updated_at TIMESTAMP DEFAULT NOW()

@@ -11,7 +11,7 @@ const { getTenantSettings } = require("../services/settings");
 const config = require("../config");
 
 const router = express.Router();
-const FAST_EXOML_GREETING = "Namaste, LoanConnect se AI assistant bol raha hoon. Yeh ek test call hai. Dhanyavaad.";
+const FAST_EXOML_GREETING = "Namaste, main Sneha TezCredit se bol rahi hoon. Yeh ek test call hai. Dhanyavaad.";
 
 // Validates EXOTEL_WEBHOOK_SECRET if configured. Exotel cannot sign payloads, so we
 // use a shared secret passed as a query param (?secret=...) or X-Webhook-Secret header.
@@ -198,7 +198,7 @@ router.all("/exotel/voicebot-url", async (req, res) => {
 
 router.get("/exotel/tts-health", async (req, res) => {
   try {
-    const speech = await synthesizeSpeech("Namaste, LoanConnect se AI assistant bol raha hoon.");
+    const speech = await synthesizeSpeech("Namaste, main Sneha TezCredit se bol rahi hoon.");
     let pcmBytes = 0;
     let pcmStats = null;
     if (speech.mode === "audio") {

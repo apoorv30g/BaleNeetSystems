@@ -17,7 +17,7 @@ async function getTenantSettings(tenantId) {
     callWindowEnd: config.callWindowEnd,
     maxCallAttempts: config.maxCallAttempts,
     retryDelayMinutes: config.retryDelayMinutes,
-    aiDisclosure: "This is an AI-assisted call from LoanConnect.",
+    aiDisclosure: "This is Sneha calling from TezCredit about your loan application.",
     smsWebhookUrl: "",
     whatsappWebhookUrl: ""
   };
@@ -30,10 +30,18 @@ function normalize(row) {
     callWindowEnd: Number(row.call_window_end),
     maxCallAttempts: Number(row.max_call_attempts),
     retryDelayMinutes: Number(row.retry_delay_minutes),
-    aiDisclosure: row.ai_disclosure || "",
+    aiDisclosure: normalizeAiDisclosure(row.ai_disclosure),
     smsWebhookUrl: row.sms_webhook_url || "",
     whatsappWebhookUrl: row.whatsapp_webhook_url || ""
   };
+}
+
+function normalizeAiDisclosure(value) {
+  const disclosure = String(value || "").trim();
+  if (!disclosure || /LoanConnect/i.test(disclosure)) {
+    return "This is Sneha calling from TezCredit about your loan application.";
+  }
+  return disclosure;
 }
 
 module.exports = { getTenantSettings };

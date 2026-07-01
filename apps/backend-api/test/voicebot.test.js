@@ -45,8 +45,36 @@ test("voicebot answers fee and charge questions safely", () => {
 
 test("voicebot explains identity without asking sensitive details", () => {
   const reply = _test.buildScriptedReply(session(), "कौन बोल रहा है?");
-  assert.match(reply, /लोन कनेक्ट/);
+  assert.match(reply, /Sneha/);
+  assert.match(reply, /TezCredit/);
   assert.match(reply, /ओ टी पी/);
+});
+
+test("voicebot answers where are you calling from with TezCredit", () => {
+  const reply = _test.buildScriptedReply(session("English"), "Where are you calling from?");
+  assert.match(reply, /Sneha/);
+  assert.match(reply, /calling from TezCredit/i);
+  assert.doesNotMatch(reply, /LoanConnect/i);
+});
+
+test("TezCredit identity question is answered after callee confirmation", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    identityPrompted: true,
+    confirmedName: true,
+    userTurns: 2,
+    lastSpokenText: "धन्यवाद, Prasheel जी। क्या अभी दो मिनट बात कर सकते हैं?"
+  });
+
+  const reply = _test.buildScriptedReply(state, "आप कहाँ से call कर रही हैं?");
+  assert.match(reply, /Sneha/);
+  assert.match(reply, /TezCredit/);
+  assert.match(reply, /क्या अभी दो मिनट बात कर सकते हैं/);
+  assert.doesNotMatch(reply, /LoanConnect|लोन कनेक्ट/i);
 });
 
 test("voicebot explains where the number came from", () => {
@@ -131,7 +159,7 @@ test("voicebot answers iPhone screening with name and purpose", () => {
     source_metadata: { productName: "TezCredit" }
   }));
 
-  assert.match(reply, /Raj from TezCredit/i);
+  assert.match(reply, /Sneha from TezCredit/i);
   assert.match(reply, /loan eligibility check/i);
   assert.match(reply, /connect the call/i);
   assert.doesNotMatch(reply, /Thank you/i);
@@ -141,7 +169,7 @@ test("voicebot handles hearing confirmation without malformed LLM text", () => {
   const state = session("Hinglish", {}, {
     userTurns: 1,
     tenantId: null,
-    lastSpokenText: "Namaste, mai Loan App se Raj bol raha hu. Kya aap mujhe sun paa rahe hain?"
+    lastSpokenText: "Namaste, main Sneha TezCredit se bol rahi hoon. Kya aap mujhe sun paa rahe hain?"
   });
 
   const reply = _test.buildScriptedReply(state, "हाँ मैं सुन पा रहा हूँ।");
@@ -154,7 +182,7 @@ test("voicebot moves unclear first response after greeting to safe link flow", (
   const state = session("Hinglish", {}, {
     userTurns: 1,
     tenantId: null,
-    lastSpokenText: "Namaste, mai Loan App se Raj bol raha hu. Kya aap mujhe sun paa rahe hain?"
+    lastSpokenText: "Namaste, main Sneha TezCredit se bol rahi hoon. Kya aap mujhe sun paa rahe hain?"
   });
 
   const reply = _test.buildScriptedReply(state, "तो ते मैं ही बोलेगी।");
@@ -282,7 +310,7 @@ test("voicebot greets TezCredit customer by the CSV name before discussing the j
     source_metadata: { productName: "TezCredit" }
   });
 
-  assert.equal(greeting, "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?");
+  assert.equal(greeting, "Hi, this is Sneha calling from TezCredit. Am I speaking with Apoorv Gupta?");
   assert.doesNotMatch(greeting, /bank verification|30,000|30000/i);
 });
 
@@ -296,7 +324,7 @@ test("voicebot uses a polite Hindi named greeting for TezCredit", () => {
   });
 
   assert.match(greeting, /नमस्ते/);
-  assert.match(greeting, /TezCredit से Raj/);
+  assert.match(greeting, /Sneha, TezCredit से/);
   assert.match(greeting, /Apoorv Gupta जी/);
 });
 
@@ -308,7 +336,7 @@ test("yes after the named greeting confirms the CSV identity", () => {
     source_metadata: { productName: "TezCredit" }
   }, {
     userTurns: 1,
-    lastSpokenText: "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?"
+    lastSpokenText: "Hi, this is Sneha calling from TezCredit. Am I speaking with Apoorv Gupta?"
   });
 
   _test.updateConversationMemory(state, "yes");
@@ -340,7 +368,7 @@ test("natural Hindi identity confirmation from production advances to availabili
   }, {
     identityPrompted: true,
     userTurns: 1,
-    lastSpokenText: "नमस्ते, मैं TezCredit से Raj बोल रहा हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
+    lastSpokenText: "नमस्ते, मैं Sneha, TezCredit से बोल रही हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
   });
 
   _test.updateConversationMemory(state, "हां जी हो रही है।");
@@ -356,7 +384,7 @@ test("no after the named greeting asks for the intended person instead of reject
     playbook_type: "TEZ_SELFIE_PENDING",
     drop_stage: "SELFIE_PENDING"
   }, {
-    lastSpokenText: "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?"
+    lastSpokenText: "Hi, this is Sneha calling from TezCredit. Am I speaking with Apoorv Gupta?"
   });
 
   assert.equal(_test.isNamedCalleeDenial(state, "no"), true);
@@ -373,7 +401,7 @@ test("hello after the named greeting does not confirm identity or start the jour
   }, {
     identityPrompted: true,
     userTurns: 1,
-    lastSpokenText: "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?"
+    lastSpokenText: "Hi, this is Sneha calling from TezCredit. Am I speaking with Apoorv Gupta?"
   });
 
   _test.updateConversationMemory(state, "hello");
@@ -392,7 +420,7 @@ test("TezCredit opening waits for identity and availability before journey guida
   }, {
     identityPrompted: true,
     userTurns: 1,
-    lastSpokenText: "Hi, this is Raj calling from TezCredit. Am I speaking with Apoorv Gupta?"
+    lastSpokenText: "Hi, this is Sneha calling from TezCredit. Am I speaking with Apoorv Gupta?"
   });
 
   _test.updateConversationMemory(state, "yes");
@@ -870,7 +898,7 @@ test("known TezCredit identity is not confirmed by conversational filler", () =>
   }, {
     identityPrompted: true,
     userTurns: 1,
-    lastSpokenText: "नमस्ते, मैं TezCredit से Raj बोल रहा हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
+    lastSpokenText: "नमस्ते, मैं Sneha, TezCredit से बोल रही हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
   });
 
   _test.updateConversationMemory(state, "हूं भाई।");
@@ -887,7 +915,7 @@ test("Punjabi-script haan ji confirms a known customer after Sarvam transliterat
   }, {
     identityPrompted: true,
     userTurns: 1,
-    lastSpokenText: "नमस्ते, मैं TezCredit से Raj बोल रहा हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
+    lastSpokenText: "नमस्ते, मैं Sneha, TezCredit से बोल रही हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
   });
 
   _test.updateConversationMemory(state, "ਹਾਂਜੀ");
@@ -903,7 +931,7 @@ test("an explicitly different name never confirms the CSV customer", () => {
   }, {
     identityPrompted: true,
     userTurns: 1,
-    lastSpokenText: "Hi, this is Raj from TezCredit. Am I speaking with Prasheel?"
+    lastSpokenText: "Hi, this is Sneha from TezCredit. Am I speaking with Prasheel?"
   });
 
   _test.updateConversationMemory(state, "I am Rahul");

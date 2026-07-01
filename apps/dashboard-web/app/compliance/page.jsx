@@ -128,7 +128,7 @@ export default function Compliance() {
             <input className="input" type="number" min="1" placeholder="Max attempts, e.g. 3" aria-label="Maximum call attempts" title="Maximum call attempts" value={settingsForm?.maxCallAttempts || 3} onChange={e => setSettingsForm({ ...settingsForm, maxCallAttempts: Number(e.target.value) })} />
             <input className="input" type="number" min="1" placeholder="Retry delay minutes, e.g. 360" aria-label="Retry delay in minutes" title="Retry delay in minutes" value={settingsForm?.retryDelayMinutes || 360} onChange={e => setSettingsForm({ ...settingsForm, retryDelayMinutes: Number(e.target.value) })} />
           </div>
-          <textarea className="input mt-3 min-h-24" value={settingsForm?.aiDisclosure || ""} onChange={e => setSettingsForm({ ...settingsForm, aiDisclosure: e.target.value })} placeholder="AI disclosure, e.g. This is an AI assistant calling from LoanConnect." />
+          <textarea className="input mt-3 min-h-24" value={settingsForm?.aiDisclosure || ""} onChange={e => setSettingsForm({ ...settingsForm, aiDisclosure: e.target.value })} placeholder="Call disclosure, e.g. This is Sneha calling from TezCredit about your loan application." />
           <input className="input mt-3" value={settingsForm?.smsWebhookUrl || ""} onChange={e => setSettingsForm({ ...settingsForm, smsWebhookUrl: e.target.value })} placeholder="SMS webhook URL, e.g. https://example.com/sms" />
           <input className="input mt-3" value={settingsForm?.whatsappWebhookUrl || ""} onChange={e => setSettingsForm({ ...settingsForm, whatsappWebhookUrl: e.target.value })} placeholder="WhatsApp webhook URL, e.g. https://example.com/whatsapp" />
           <button className="btn mt-4 w-full">Save Settings</button>
