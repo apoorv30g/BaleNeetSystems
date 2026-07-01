@@ -1,5 +1,6 @@
 const WebSocket = require("ws");
 const config = require("../config");
+const { buildTtsPayload } = require("./sarvam");
 
 let cachedHealth = null;
 let cachedAt = 0;
@@ -232,12 +233,7 @@ async function checkChat() {
 async function checkTts() {
   const timeoutMs = Number(process.env.SARVAM_PREFLIGHT_TTS_TIMEOUT_MS || process.env.SARVAM_PREFLIGHT_TIMEOUT_MS || 2500);
   const startedAt = Date.now();
-  const body = {
-    text: process.env.SARVAM_PREFLIGHT_TTS_TEXT || "Namaste.",
-    target_language_code: process.env.SARVAM_TTS_LANGUAGE || "hi-IN",
-    speaker: process.env.SARVAM_TTS_SPEAKER || "shubh",
-    model: process.env.SARVAM_TTS_MODEL || "bulbul:v3"
-  };
+  const body = buildTtsPayload(process.env.SARVAM_PREFLIGHT_TTS_TEXT || "Namaste.");
   const { ok, status, text, data } = await fetchJsonWithTimeout("https://api.sarvam.ai/text-to-speech", {
     method: "POST",
     headers: {

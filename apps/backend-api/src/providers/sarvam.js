@@ -1,13 +1,33 @@
 const config = require("../config");
 
+function isBulbulV3(model) {
+  return /^bulbul:v3(?:$|[-.])/i.test(String(model || "").trim());
+}
+
+function buildTtsPayload(text, options = {}) {
+  const targetLanguageCode = options.languageCode || process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
+  const speaker = options.speaker || process.env.SARVAM_TTS_SPEAKER || "shubh";
+  const model = options.model || process.env.SARVAM_TTS_MODEL || "bulbul:v3";
+  const pace = Number(options.pace ?? process.env.SARVAM_TTS_PACE ?? 1.0);
+  const loudness = Number(options.loudness ?? process.env.SARVAM_TTS_LOUDNESS ?? 1.5);
+  const payload = {
+    text,
+    target_language_code: targetLanguageCode,
+    speaker,
+    model,
+    enable_preprocessing: true
+  };
+
+  if (Number.isFinite(pace)) payload.pace = pace;
+  if (!isBulbulV3(model) && Number.isFinite(loudness)) payload.loudness = loudness;
+
+  return payload;
+}
+
 async function synthesizeSpeech(text, options = {}) {
   if (!config.ai.sarvamApiKey) return { mode: "text_only", text };
 
-  const targetLanguageCode = options.languageCode || process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
-  const speaker = process.env.SARVAM_TTS_SPEAKER || "shubh";
-  const model = process.env.SARVAM_TTS_MODEL || "bulbul:v3";
-  const pace = Number(process.env.SARVAM_TTS_PACE || 1.0);
-  const loudness = Number(process.env.SARVAM_TTS_LOUDNESS || 1.5);
+  const payload = buildTtsPayload(text, options);
 
   const timeoutMs = Number(process.env.SARVAM_TTS_TIMEOUT_MS || 12000);
   const res = await fetch("https://api.sarvam.ai/text-to-speech", {
@@ -16,15 +36,7 @@ async function synthesizeSpeech(text, options = {}) {
       "Content-Type": "application/json",
       "api-subscription-key": config.ai.sarvamApiKey
     },
-    body: JSON.stringify({
-      text,
-      target_language_code: targetLanguageCode,
-      speaker,
-      model,
-      pace,
-      loudness,
-      enable_preprocessing: true
-    }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs)
   });
 
@@ -41,11 +53,11 @@ async function synthesizeSpeech(text, options = {}) {
     mode: "audio",
     audioBase64,
     mimeType: data.mimeType || data.mime_type || "audio/wav",
-    model,
-    speaker,
-    languageCode: targetLanguageCode,
+    model: payload.model,
+    speaker: payload.speaker,
+    languageCode: payload.target_language_code,
     charCount: [...String(text || "")].length
   };
 }
 
-module.exports = { synthesizeSpeech };
+module.exports = { synthesizeSpeech, buildTtsPayload, _test: { isBulbulV3 } };
