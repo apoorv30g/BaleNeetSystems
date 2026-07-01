@@ -55,6 +55,7 @@ const INTERIM_TRANSCRIPT_FORCE_MS = Number(process.env.VOICEBOT_INTERIM_TRANSCRI
 const INTERIM_TRANSCRIPT_MIN_WORDS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_WORDS || 2);
 const INTERIM_TRANSCRIPT_MIN_CHARS = Number(process.env.VOICEBOT_INTERIM_TRANSCRIPT_MIN_CHARS || 5);
 const STT_DURING_ASSISTANT_ENABLED = process.env.VOICEBOT_STT_DURING_ASSISTANT_ENABLED !== "false";
+const STT_FINAL_WATCHDOG_MS = Math.max(500, Number(process.env.VOICEBOT_STT_FINAL_WATCHDOG_MS || 1200));
 const VAD_ENABLED = process.env.VOICEBOT_VAD_ENABLED !== "false";
 const AUDIO_CACHE_ENABLED = process.env.VOICEBOT_AUDIO_CACHE_ENABLED !== "false";
 const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "false";
@@ -177,6 +178,11 @@ function attachVoicebot(server) {
       interimCount: 0,
       pendingTranscript: null,
       lastProcessedTranscript: null,
+      transcriptSeq: 0,
+      sttUtteranceSeq: 0,
+      activeSttUtterance: null,
+      sttFinalWatchdogTimer: null,
+      sttMissingFinalCount: 0,
       confirmedName: false,
       confirmedNameTurn: 0,
       capturedName: "",
@@ -221,6 +227,7 @@ function attachVoicebot(server) {
       if (session.introTimer) clearTimeout(session.introTimer);
       clearMaxCallTimer(session);
       clearWebsiteLoginChecks(session);
+      clearSttFinalWatchdog(session);
       clearInterimTimer(session);
       clearNoSpeechTimers(session);
       session.stt?.close();
@@ -591,11 +598,22 @@ function startStt(ws, session) {
     onClose: details => logVoicebotEvent(session, "stt_closed", details).catch(() => {}),
     onStatus: status => {
       if (status.type === "SpeechStarted") {
+        clearSttFinalWatchdog(session);
+        session.sttUtteranceSeq = Number(session.sttUtteranceSeq || 0) + 1;
+        session.activeSttUtterance = {
+          seq: session.sttUtteranceSeq,
+          transcriptSeqAtStart: Number(session.transcriptSeq || 0),
+          startedDuringAssistant: Boolean(session.speaking),
+          startedAt: Date.now()
+        };
         clearNoSpeechTimers(session);
         if (session.speaking && STT_DURING_ASSISTANT_ENABLED && shouldCancelAssistantSpeech(session, status)) {
           invalidateAssistantTurn(session, "barge_in_speech_started");
           cancelAssistantSpeech(ws, session, "barge_in_speech_started");
         }
+      }
+      if (status.type === "UtteranceEnd") {
+        scheduleSttFinalWatchdog(ws, session);
       }
       if ([
         "ConnectAttempt",
@@ -706,6 +724,9 @@ function applyVad(session, audio) {
 async function handleTranscript(ws, session, event) {
   const text = event.transcript.trim();
   if (!text) return;
+  clearSttFinalWatchdog(session);
+  session.activeSttUtterance = null;
+  session.transcriptSeq = Number(session.transcriptSeq || 0) + 1;
   clearNoSpeechTimers(session);
   if (session.websiteWaitActive && websiteLoginConfirmed(text, {
     allowBareAgreement: session.websiteCheckCount > 0
@@ -2390,6 +2411,7 @@ function antiRepeatReply(session = {}, userText = "") {
 async function speakAndClose(ws, session, text, markName) {
   clearMaxCallTimer(session);
   clearWebsiteLoginChecks(session);
+  clearSttFinalWatchdog(session);
   clearNoSpeechTimers(session);
   clearInterimTimer(session);
   await speakText(ws, session, text, markName);
@@ -2400,6 +2422,7 @@ async function speakAndClose(ws, session, text, markName) {
 async function closeQuietly(ws, session) {
   clearMaxCallTimer(session);
   clearWebsiteLoginChecks(session);
+  clearSttFinalWatchdog(session);
   clearNoSpeechTimers(session);
   clearInterimTimer(session);
   await sleep(Number(process.env.VOICEBOT_NON_HUMAN_CLOSE_GRACE_MS || 100));
@@ -2727,6 +2750,55 @@ function pickAckText(session) {
   if (!FAST_ACK_TEXTS.length) return "";
   const index = Math.max((session.userTurns || 1) - 1, 0) % FAST_ACK_TEXTS.length;
   return FAST_ACK_TEXTS[index];
+}
+
+function scheduleSttFinalWatchdog(ws, session) {
+  clearSttFinalWatchdog(session);
+  const utterance = session.activeSttUtterance;
+  if (!utterance || utterance.startedDuringAssistant) return;
+  if (utterance.transcriptSeqAtStart !== Number(session.transcriptSeq || 0)) return;
+
+  const expectedUtteranceSeq = utterance.seq;
+  const expectedTranscriptSeq = utterance.transcriptSeqAtStart;
+  session.sttFinalWatchdogTimer = setTimeout(() => {
+    session.sttFinalWatchdogTimer = null;
+    recoverMissingSttFinal(ws, session, expectedUtteranceSeq, expectedTranscriptSeq).catch(err => {
+      logger.warn("voicebot_stt_final_recovery_failed", { error: err.message, callId: session.callId });
+      scheduleNoSpeechCheck(ws, session, "after_stt_final_recovery_failure");
+    });
+  }, STT_FINAL_WATCHDOG_MS);
+}
+
+async function recoverMissingSttFinal(ws, session, utteranceSeq, transcriptSeq) {
+  if (ws.readyState !== ws.OPEN || !shouldRecoverMissingSttFinal(session, utteranceSeq, transcriptSeq)) return;
+
+  session.activeSttUtterance = null;
+  session.sttMissingFinalCount = Number(session.sttMissingFinalCount || 0) + 1;
+  await logVoicebotEvent(session, "stt_final_missing", {
+    utteranceSeq,
+    delayMs: STT_FINAL_WATCHDOG_MS,
+    recoveryCount: session.sttMissingFinalCount
+  });
+  if (session.callId) await addTranscript(session.callId, "assistant", FAST_CLARIFY_TEXT);
+  await speakText(ws, session, FAST_CLARIFY_TEXT, "stt_final_recovery");
+  scheduleNoSpeechCheck(ws, session, "after_stt_final_recovery");
+}
+
+function shouldRecoverMissingSttFinal(session = {}, utteranceSeq, transcriptSeq) {
+  return !session.closed
+    && !session.ending
+    && !session.speaking
+    && Number(session.transcriptSeq || 0) === transcriptSeq
+    && session.activeSttUtterance?.seq === utteranceSeq;
+}
+
+function clearSttFinalWatchdog(session = {}) {
+  if (session.sttFinalWatchdogTimer) clearTimeout(session.sttFinalWatchdogTimer);
+  session.sttFinalWatchdogTimer = null;
+}
+
+function sttFinalWatchdogConfig() {
+  return { delayMs: STT_FINAL_WATCHDOG_MS, recoveryText: FAST_CLARIFY_TEXT };
 }
 
 function scheduleNoSpeechCheck(ws, session, stage) {
@@ -3567,6 +3639,8 @@ module.exports = {
     websiteLoginConfirmed,
     websiteLoginCheckText,
     websiteLoginCheckDelays,
+    sttFinalWatchdogConfig,
+    shouldRecoverMissingSttFinal,
     availabilityDeclineReply,
     namedCalleeDenialReply,
     shouldCancelAssistantSpeech,

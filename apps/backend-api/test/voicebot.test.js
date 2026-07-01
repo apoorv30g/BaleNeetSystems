@@ -573,6 +573,22 @@ test("voicebot limits calls to five minutes by default", () => {
   });
 });
 
+test("missing Sarvam finals recover after a short watchdog instead of a long silence", () => {
+  assert.deepEqual(_test.sttFinalWatchdogConfig(), {
+    delayMs: 1200,
+    recoveryText: "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?"
+  });
+
+  const state = {
+    transcriptSeq: 3,
+    activeSttUtterance: { seq: 7 }
+  };
+  assert.equal(_test.shouldRecoverMissingSttFinal(state, 7, 3), true);
+  assert.equal(_test.shouldRecoverMissingSttFinal({ ...state, transcriptSeq: 4 }, 7, 3), false);
+  assert.equal(_test.shouldRecoverMissingSttFinal({ ...state, speaking: true }, 7, 3), false);
+  assert.equal(_test.shouldRecoverMissingSttFinal(state, 8, 3), false);
+});
+
 test("TezCredit website wait checks at 20 seconds and closes at 30 seconds total", () => {
   assert.deepEqual(_test.websiteLoginCheckDelays(), {
     firstCheckMs: 20000,
