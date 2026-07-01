@@ -22,11 +22,14 @@ const {
 const logger = require("../utils/logger");
 const config = require("../config");
 const { sendLeadLink } = require("../providers/notifications");
+const { expandCurrencyForSpeech } = require("../services/speechText");
 const {
   applyTezJourneyProgress,
   buildTezJourneyTransitionReply,
   detectTezJourneyProgress,
   getTezJourneyStage,
+  isTezJourneyLead,
+  normalizeTezCreditSurfaceText,
   tezJourneyContext
 } = require("../services/tezJourney");
 
@@ -1440,7 +1443,7 @@ function queueLeadLink(session, reason) {
     tenantId: session.tenantId,
     lead: session.lead,
     channel: "sms",
-    link: config.loanAppUrl
+    link: leadJourneyUrl(session.lead)
   })
     .then(event => logVoicebotEvent(session, "lead_link_queued", { reason, status: event.status, channel: event.channel }).catch(() => {}))
     .catch(err => logVoicebotEvent(session, "lead_link_failed", { reason, error: err.message }).catch(() => {}));
@@ -1559,42 +1562,42 @@ function stageOpeningContinuation(session = {}, english = false, amountText = "e
   if (stage.includes("BANK_VERIFICATION")) {
     return stageLine(session, "bank_opening_continue", english
       ? [
-        "Great. Your offer is ready, but bank verification is pending. Can you open the app now?",
-        "Thanks. Please open the TezCredit app; I will guide bank verification step by step."
+        "Your offer is ready, but bank verification is pending. Open www.tezcredit.com and click Apply Now.",
+        "Open www.tezcredit.com, click Apply Now, and sign in. I will guide bank verification step by step."
       ]
       : [
-        `बहुत अच्छा। आपका offer ${amountText} तक ready है, बस bank verification बाकी है। क्या app खोल सकते हैं?`,
-        "ठीक है। TezCredit app खोलिए, मैं bank verification step by step guide कर दूँगा।"
+        `आपका offer ${amountText} तक ready है, बस bank verification बाकी है। www.tezcredit.com पर Apply Now click कीजिए।`,
+        "www.tezcredit.com खोलकर Apply Now पर click और sign in कीजिए। मैं bank verification guide कर दूँगा।"
       ]);
   }
   if (stage.includes("SELFIE")) {
     return english
-      ? "Great. Please open the app and choose live selfie. Keep your face centered in the camera."
-      : "बहुत अच्छा। App खोलकर live selfie चुनिए और face camera के center में रखिए।";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Choose live selfie and keep your face centered."
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। Live selfie में face center में रखिए।";
   }
   if (stage.includes("AADHAAR")) {
     return english
-      ? "Great. Please open the app and complete Aadhaar KYC through DigiLocker. Do not share OTP on this call."
-      : "बहुत अच्छा। App में DigiLocker से Aadhaar KYC complete कीजिए। OTP इस call पर share मत कीजिए।";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Complete Aadhaar KYC without sharing OTP."
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। Aadhaar KYC कीजिए; OTP share मत कीजिए।";
   }
   if (stage.includes("PROFILE")) {
     return english
-      ? "Great. Open the app and tell me whether it asks for income, employment, PAN, pincode, or address."
-      : "बहुत अच्छा। App खोलकर बताइए income, employment, PAN, pincode या address में क्या pending है?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Which profile detail is pending?"
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। कौन सी profile detail pending है?";
   }
   if (stage.includes("E_SIGN")) {
     return english
-      ? "Great. Open the agreement, review the amount and terms, and tell me whether the e-sign button is visible."
-      : "बहुत अच्छा। Agreement खोलकर amount और terms देखिए। क्या e-sign button दिख रहा है?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Review the agreement before e-signing."
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। E-sign से पहले agreement review कीजिए।";
   }
   if (stage.includes("APPROVED_NOT_DISBURSED")) {
     return english
-      ? "Great. Open the app and tell me whether it shows approval, processing, a bank issue, or completed disbursal."
-      : "बहुत अच्छा। App खोलकर बताइए approval, processing, bank issue या completed disbursal में क्या दिख रहा है?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. What disbursal status is showing?"
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। कौन सा disbursal status दिख रहा है?";
   }
   return english
-    ? "Great. Please open the app and tell me which screen you see."
-    : "बहुत अच्छा। App खोलिए और बताइए कौन सा screen दिख रहा है।";
+    ? "Open www.tezcredit.com, click Apply Now, and sign in. Tell me which screen you see."
+    : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। कौन सा screen दिख रहा है?";
 }
 
 function stageClarificationReply(session = {}, english = false, amountText = "eligible amount") {
@@ -1876,8 +1879,9 @@ function effectiveTranscriptForClassification(session = {}, transcript = []) {
 }
 
 function refineAssistantReply(session = {}, userText = "", reply = "", { source = "" } = {}) {
-  const cleaned = completeSpokenReply(String(reply || "").replace(/\s+/g, " ").trim(), session);
-  if (!cleaned) return antiRepeatReply(session, userText);
+  const surfaceCorrected = normalizeTezCreditReply(session, reply);
+  const cleaned = completeSpokenReply(String(surfaceCorrected || "").replace(/\s+/g, " ").trim(), session);
+  if (!cleaned) return normalizeTezCreditReply(session, antiRepeatReply(session, userText));
 
   if (isTooSimilarToRecentAssistant(session, cleaned)) {
     const replacement = antiRepeatReply(session, userText);
@@ -1888,7 +1892,7 @@ function refineAssistantReply(session = {}, userText = "", reply = "", { source 
       replacement,
       lastSpokenText: session.lastSpokenText || ""
     }).catch(() => {});
-    return replacement;
+    return normalizeTezCreditReply(session, replacement);
   }
 
   return cleaned;
@@ -2252,33 +2256,33 @@ function stagePositiveReply(session = {}, english = false) {
   const stage = String(lead.drop_stage || lead.playbook_type || "");
   if (stage === "SELFIE_PENDING") {
     return english
-      ? "Great. Open live selfie and keep your face centered. Is the selfie completed now?"
-      : "बहुत अच्छा। Live selfie खोलकर face center में रखिए। क्या selfie complete हो गई?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Complete the selfie with your face centered. Is it done?"
+      : "www.tezcredit.com खोलकर Apply Now पर click और sign in कीजिए। Face center में रखकर selfie complete हुई?";
   }
   if (stage === "AADHAAR_PENDING") {
     return english
-      ? "Great. Complete Aadhaar KYC through DigiLocker without sharing OTP. Is the KYC completed now?"
-      : "बहुत अच्छा। OTP share किए बिना DigiLocker से Aadhaar KYC कीजिए। क्या KYC complete हो गई?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Complete Aadhaar KYC privately. Is it done?"
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। Aadhaar KYC privately complete हुई?";
   }
   if (stage === "PROFILE_PENDING") {
     return english
-      ? "Great. Fill the pending income, employer, PAN, or pincode field. Is the profile saved now?"
-      : "बहुत अच्छा। Pending income, employer, PAN या pincode field भरिए। क्या profile save हो गई?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Fill the pending profile field. Is it saved now?"
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। Pending profile field save हो गई?";
   }
   if (stage === "BANK_VERIFICATION_PENDING") {
     return english
-      ? "Great. Verify your bank using UPI or account details in the app. Is verification successful now?"
-      : "बहुत अच्छा। App में UPI या account details से bank verify कीजिए। क्या verification successful हो गया?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Complete bank verification there. Is it successful now?"
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। Bank verification successful हो गया?";
   }
   if (stage === "E_SIGN_PENDING") {
     return english
-      ? "Great. Review the amount and terms, then sign only if comfortable. Is e-sign completed now?"
-      : "बहुत अच्छा। Amount और terms देखकर comfortable हों तभी sign कीजिए। क्या e-sign complete हो गया?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Review the terms before e-signing. Is it completed now?"
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। Terms देखकर e-sign complete हो गया?";
   }
   if (stage === "APPROVED_NOT_DISBURSED") {
     return english
-      ? "Great. Please check the final disbursal status. Has the loan amount reached your account?"
-      : "बहुत अच्छा। Final disbursal status देखिए। क्या loan amount आपके account में आ गया?";
+      ? "Open www.tezcredit.com, click Apply Now, and sign in. Has the loan amount reached your account?"
+      : "www.tezcredit.com पर Apply Now click करके sign in कीजिए। क्या loan amount account में आ गया?";
   }
   return "";
 }
@@ -2414,8 +2418,9 @@ function normalizeTranscript(text) {
 
 async function speakText(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
-  rememberAssistantReply(session, text);
-  session.lastSpokenText = text;
+  const correctedText = normalizeTezCreditReply(session, text);
+  rememberAssistantReply(session, correctedText);
+  session.lastSpokenText = correctedText;
   session.lastSpokenMark = markName;
   session.activeSpeechMark = markName;
   session.activeSpeechMediaStartedAt = 0;
@@ -2427,7 +2432,7 @@ async function speakText(ws, session, text, markName) {
   const startedAt = Date.now();
   const stopKeepalive = SILENCE_KEEPALIVE_ENABLED ? startSilenceKeepalive(ws, session, markName) : () => {};
   try {
-    const pcmBase64 = await getPcmBase64(text, session);
+    const pcmBase64 = await getPcmBase64(correctedText, session);
     stopKeepalive();
 
     if (pcmBase64) {
@@ -2615,9 +2620,11 @@ function trackTtsDynamic(session, details = {}) {
 }
 
 function prepareTextForSpeech(text, session = {}) {
-  const base = String(text || "");
+  const language = isEnglishSession(session) ? "English" : "Hindi";
+  const base = expandCurrencyForSpeech(normalizeTezCreditReply(session, text), language);
   if (isEnglishSession(session)) {
     return base
+      .replace(/(?:https?:\/\/)?www\.tezcredit\.com/gi, "double u double u double u dot Tez Credit dot com")
       .replace(/\bLoanConnect\b/gi, "Loan Connect")
       .replace(/\bTezCredit\b/gi, "Tez Credit")
       .replace(/\bCIBIL\b/gi, "SIBIL")
@@ -2629,6 +2636,7 @@ function prepareTextForSpeech(text, session = {}) {
   }
 
   return base
+    .replace(/(?:https?:\/\/)?www\.tezcredit\.com/gi, "डब्ल्यू डब्ल्यू डब्ल्यू डॉट तेज़ क्रेडिट डॉट कॉम")
     .replace(/Namaste,\s*LoanConnect se AI assistant\.?\s*Kya aap mujhe sun paa rahe hain\?/i, "नमस्ते, लोन कनेक्ट से ए आई असिस्टेंट। क्या आप मुझे सुन पा रहे हैं?")
     .replace(/\bNamaste\b/gi, "नमस्ते")
     .replace(/\bAI assistant\b/gi, "ए आई असिस्टेंट")
@@ -2668,6 +2676,15 @@ function prepareTextForSpeech(text, session = {}) {
     .replace(/\baap\b/gi, "आप")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeTezCreditReply(session = {}, text = "") {
+  const website = String(config.tezCreditUrl || "https://www.tezcredit.com").replace(/^https?:\/\//i, "");
+  return normalizeTezCreditSurfaceText(session.lead, text, website);
+}
+
+function leadJourneyUrl(lead = {}) {
+  return isTezJourneyLead(lead) ? config.tezCreditUrl : config.loanAppUrl;
 }
 
 function ttsLanguageCodeForSession(session = {}) {
@@ -3142,6 +3159,8 @@ module.exports = {
     isContextualNegativeReply,
     isCurrentTurn,
     normalizeVoiceIntent,
+    normalizeTezCreditReply,
+    prepareTextForSpeech,
     shouldCancelAssistantSpeech,
     updateConversationMemory
   }

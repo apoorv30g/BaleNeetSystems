@@ -1,6 +1,6 @@
 const config = require("../config");
 const { query } = require("../db/pool");
-const { tezJourneyContext, tezJourneyPromptNotes } = require("./tezJourney");
+const { isTezJourneyLead, tezJourneyContext, tezJourneyPromptNotes } = require("./tezJourney");
 
 const PLAYBOOKS = {
   SOFT_PAYMENT_REMINDER: {
@@ -85,12 +85,12 @@ const PLAYBOOKS = {
     task: "Bring back users who stopped at live selfie.",
     trigger: "User has entered basic details but selfie is not completed.",
     cadence: "Call once soon after drop-off, then retry as per campaign policy.",
-    goal: "Get the user to open the app and complete the live selfie correctly.",
+    goal: "Get the user to open the TezCredit website and complete the live selfie correctly.",
     steps: [
       "Say their TezCredit loan application is almost ready but live selfie is pending",
       "Explain the selfie takes under one minute and the face must stay centered",
-      "Send or mention the secure app link",
-      "Ask them to open the app now while you stay on the line",
+      "Send or mention www.tezcredit.com",
+      "Ask them to open www.tezcredit.com, click Apply Now, and sign in with their registered mobile number while you stay on the line",
       "If they are busy, capture a callback time"
     ]
   },
@@ -103,10 +103,10 @@ const PLAYBOOKS = {
     goal: "Get the user to complete Aadhaar KYC through DigiLocker.",
     steps: [
       "Say their TezCredit application is pending only at Aadhaar KYC",
-      "Clarify that KYC happens inside the secure app through DigiLocker",
+      "Clarify that KYC happens through the secure TezCredit website and DigiLocker",
       "Reassure that you will never ask for OTP on the call",
-      "Ask them to open the app and complete Aadhaar KYC now",
-      "If there is a mismatch or app issue, note the issue and point to app support"
+      "Ask them to open www.tezcredit.com, click Apply Now, sign in, and complete Aadhaar KYC now",
+      "If there is a mismatch or website issue, note the issue and point to website support"
     ]
   },
   TEZ_PROFILE_PENDING: {
@@ -115,11 +115,11 @@ const PLAYBOOKS = {
     task: "Help users finish income, employer, PAN or pincode details.",
     trigger: "Profile details are incomplete before final eligibility.",
     cadence: "Retarget until profile completion or decline.",
-    goal: "Get the user to complete pending profile details in the app.",
+    goal: "Get the user to complete pending profile details on the TezCredit website.",
     steps: [
       "Say their TezCredit application is stuck at profile details",
-      "Mention PAN, income, employer or pincode may be pending in the app",
-      "Ask them to open the secure app and finish the pending field",
+      "Mention PAN, income, employer or pincode may be pending on the website",
+      "Ask them to open www.tezcredit.com, click Apply Now, sign in, and finish the pending field",
       "Explain final eligibility can be checked only after this",
       "If they are confused, ask which screen they see and guide simply"
     ]
@@ -133,10 +133,10 @@ const PLAYBOOKS = {
     goal: "Get the user to verify bank details so the loan can move to agreement/disbursal.",
     steps: [
       "Say their TezCredit loan offer is ready but bank verification is pending",
-      "Mention they can verify using UPI or bank account details in the app",
-      "Ask them to complete bank verification now from the secure app",
+      "Mention they can verify using UPI or bank account details on the website",
+      "Ask them to open www.tezcredit.com, click Apply Now, sign in, and complete bank verification",
       "Reassure that no OTP, PIN or card details are needed on the call",
-      "If they face failure, ask them to retry in the app or use app support"
+      "If they face failure, ask them to retry on the website or use website support"
     ]
   },
   TEZ_ESIGN_PENDING: {
@@ -148,7 +148,7 @@ const PLAYBOOKS = {
     goal: "Get the user to review and e-sign the loan agreement.",
     steps: [
       "Say their TezCredit loan is at the final agreement step",
-      "Ask them to review the loan amount and terms in the app",
+      "Ask them to open www.tezcredit.com, click Apply Now, sign in, and review the loan amount and terms",
       "Tell them to e-sign only if they are comfortable with the terms",
       "Mention disbursal can proceed after successful e-sign and final checks",
       "If they have a doubt, answer briefly and return to e-sign"
@@ -160,10 +160,10 @@ const PLAYBOOKS = {
     task: "Help approved users complete the remaining step before disbursal.",
     trigger: "User is approved but no disbursal is recorded.",
     cadence: "High priority retargeting until disbursed, declined or expired.",
-    goal: "Find the blocker and guide the user to the next app step.",
+    goal: "Find the blocker and guide the user to the next website step.",
     steps: [
       "Say their TezCredit approval is visible but disbursal is not complete",
-      "Ask what screen they currently see in the app",
+      "Ask them to open www.tezcredit.com, click Apply Now, sign in, and report the screen shown",
       "Guide to the pending step: bank verification, e-sign, or final review",
       "Reassure that you will not ask for OTP, PIN or password",
       "Close with a clear next action or callback"
@@ -273,6 +273,7 @@ async function buildPrompt(lead, { transcript = [], lastUserMessage = "", conver
   const stateNotes = conversationStateNotes(lead, conversationState, lastUserMessage);
   const journeyNotes = journeyContextNotes(lead);
   const suggestedLines = suggestedVoiceLines(lead);
+  const journeyUrl = isTezJourneyLead(lead) ? config.tezCreditUrl : config.loanAppUrl;
 
   return `
 You are a warm Hindi-English AI loan assistant for a phone call.
@@ -358,7 +359,7 @@ Rules:
 - If user is interested, tell them secure link will be shared.
 - If user declines, ask for one short reason only once, then close politely.
 - There is no live human transfer in this call. If the playbook says route to support, capture the issue and mention help is available in the app/support channel.
-- Loan app link: ${config.loanAppUrl}
+- Customer journey URL: ${journeyUrl}
 - Payment link base: ${config.paymentLinkBase}
 - Support phone: ${config.supportPhone || "available in app"}
 
@@ -388,12 +389,12 @@ function journeyContextNotes(lead = {}) {
     ...tezJourneyPromptNotes(lead)
   ];
 
-  if (stage === "SELFIE_PENDING") notes.push("- Pending step: live selfie. User must keep face centered and complete it in the app.");
-  if (stage === "AADHAAR_PENDING") notes.push("- Pending step: Aadhaar KYC through DigiLocker inside the app.");
+  if (stage === "SELFIE_PENDING") notes.push("- Pending step: live selfie. User must keep face centered and complete it at www.tezcredit.com.");
+  if (stage === "AADHAAR_PENDING") notes.push("- Pending step: Aadhaar KYC through DigiLocker from the TezCredit website.");
   if (stage === "PROFILE_PENDING") notes.push("- Pending step: profile details such as income, employer, PAN or pincode.");
   if (stage === "BANK_VERIFICATION_PENDING") notes.push("- Pending step: bank verification / penny drop using UPI or bank account details.");
   if (stage === "E_SIGN_PENDING") notes.push("- Pending step: review and e-sign the loan agreement.");
-  if (stage === "APPROVED_NOT_DISBURSED") notes.push("- Pending step: approval exists but disbursal is not complete; discover current app screen.");
+  if (stage === "APPROVED_NOT_DISBURSED") notes.push("- Pending step: approval exists but disbursal is not complete; discover the current website screen.");
 
   if (meta.utmCampaign) notes.push(`- UTM campaign: ${meta.utmCampaign}. Do not say this to the customer.`);
   if (meta.rejectReason) notes.push(`- Internal reject reason: ${meta.rejectReason}. Do not call rejected users unless explicitly uploaded.`);
@@ -474,7 +475,9 @@ function suggestedVoiceLines(lead = {}) {
       ]
   }[stage] || [];
 
-  return lines.length ? lines.map((line, index) => `${index + 1}. ${line}`).join("\n") : "- No stage-specific line. Keep the response short and helpful.";
+  return lines.length
+    ? lines.map((line, index) => `${index + 1}. ${normalizeTezCreditPlaybookText(line)}`).join("\n")
+    : "- No stage-specific line. Keep the response short and helpful.";
 }
 
 function formatAmountForPrompt(value) {
@@ -559,7 +562,7 @@ function rowsToMap(rows) {
 }
 
 function rowToPlaybook(row) {
-  return {
+  const playbook = {
     category: row.category,
     title: row.title,
     task: row.task || "",
@@ -568,6 +571,23 @@ function rowToPlaybook(row) {
     goal: row.goal || "",
     steps: Array.isArray(row.steps) ? row.steps : []
   };
+  if (!String(row.key || "").startsWith("TEZ_")) return playbook;
+  return {
+    ...playbook,
+    task: normalizeTezCreditPlaybookText(playbook.task),
+    trigger: normalizeTezCreditPlaybookText(playbook.trigger),
+    cadence: normalizeTezCreditPlaybookText(playbook.cadence),
+    goal: normalizeTezCreditPlaybookText(playbook.goal),
+    steps: playbook.steps.map(normalizeTezCreditPlaybookText)
+  };
+}
+
+function normalizeTezCreditPlaybookText(value) {
+  return String(value || "")
+    .replace(/\bsecure app link\b/gi, "secure TezCredit website link")
+    .replace(/\bapp support\b/gi, "website support")
+    .replace(/\bapp\b/gi, "website")
+    .replace(/ऐप/g, "website");
 }
 
 function normalizeKey(value) {

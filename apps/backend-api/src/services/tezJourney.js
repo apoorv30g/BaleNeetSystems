@@ -47,6 +47,17 @@ function isTezJourneyLead(lead = {}) {
     || product.includes("tezcredit");
 }
 
+function normalizeTezCreditSurfaceText(lead = {}, text = "", websiteUrl = "www.tezcredit.com") {
+  if (!isTezJourneyLead(lead)) return String(text || "");
+  return String(text || "")
+    .replace(/\bsecure app link\b/gi, `secure TezCredit website, ${websiteUrl}`)
+    .replace(/\bapp link\b/gi, `TezCredit website link, ${websiteUrl}`)
+    .replace(/\bapp support\b/gi, "website support")
+    .replace(/\bmobile app\b/gi, "website")
+    .replace(/\bapp\b/gi, "website")
+    .replace(/ऐप/g, "website");
+}
+
 function getTezJourneyStage(lead = {}) {
   const metadataStage = normalizeStage(lead.source_metadata?.journeyProgress?.currentStage);
   const dropStage = normalizeStage(lead.drop_stage);
@@ -173,8 +184,8 @@ function buildTezJourneyTransitionReply(progress = {}, english = false) {
       ? "Perfect, the selfie is done. Has the Aadhaar KYC screen opened now?"
       : "बहुत बढ़िया, selfie हो गई। क्या अब Aadhaar KYC का screen खुला है?",
     PROFILE_PENDING: english
-      ? "Great, Aadhaar KYC is done. Which profile detail is the app asking for now?"
-      : "बहुत अच्छा, Aadhaar KYC हो गई। अब app कौन सी profile detail माँग रहा है?",
+      ? "Great, Aadhaar KYC is done. Which profile detail is the website asking for now?"
+      : "बहुत अच्छा, Aadhaar KYC हो गई। अब website कौन सी profile detail माँग रही है?",
     BANK_VERIFICATION_PENDING: english
       ? "Good, your profile is complete. Can you see the bank-verification option now?"
       : "ठीक है, profile complete है। क्या अब bank verification का option दिख रहा है?",
@@ -182,13 +193,13 @@ function buildTezJourneyTransitionReply(progress = {}, english = false) {
       ? "Excellent, bank verification is done. Do you see the agreement and e-sign button?"
       : "बहुत बढ़िया, bank verification हो गया। क्या agreement और e-sign button दिख रहा है?",
     APPROVED_NOT_DISBURSED: english
-      ? "Great, the agreement is signed. Is the app showing approval or disbursal processing now?"
-      : "बहुत अच्छा, agreement sign हो गया। क्या app में approval या disbursal processing दिख रही है?"
+      ? "Great, the agreement is signed. Is the website showing approval or disbursal processing now?"
+      : "बहुत अच्छा, agreement sign हो गया। क्या website पर approval या disbursal processing दिख रही है?"
   };
 
   return replies[progress.nextStage] || (english
-    ? "Great, that step is complete. Tell me what the app shows next."
-    : "बहुत अच्छा, यह step complete है। अब app में आगे क्या दिख रहा है?");
+    ? "Great, that step is complete. Tell me what the website shows next."
+    : "बहुत अच्छा, यह step complete है। अब website पर आगे क्या दिख रहा है?");
 }
 
 function tezJourneyPromptNotes(lead = {}) {
@@ -201,7 +212,9 @@ function tezJourneyPromptNotes(lead = {}) {
     `- Current pending stage: ${context.current.label} (${context.current.stage}).`,
     `- Already completed stages: ${completed}. Never take the customer back to them.`,
     `- Remaining journey in order: ${remaining}.`,
-    `- Advance only after the customer clearly confirms the current stage is complete or reports the next app screen.`
+    `- Use only the TezCredit website at www.tezcredit.com. Never call it an app.`,
+    `- Canonical action: ask the customer to open www.tezcredit.com, click Apply Now, and sign in with their registered mobile number to resume the pending journey stage. Never ask them to say the OTP.`,
+    `- Advance only after the customer clearly confirms the current stage is complete or reports the next website screen.`
   ];
 }
 
@@ -289,6 +302,7 @@ module.exports = {
   detectTezJourneyProgress,
   getTezJourneyStage,
   isTezJourneyLead,
+  normalizeTezCreditSurfaceText,
   tezJourneyContext,
   tezJourneyPromptNotes
 };

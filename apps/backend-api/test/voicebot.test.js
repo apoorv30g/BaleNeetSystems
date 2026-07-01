@@ -285,6 +285,45 @@ test("voicebot starts TezCredit bank verification calls with the pending step", 
   assert.match(greeting, /30,000|30000/);
 });
 
+test("TezCredit stage guidance sends the user through Apply Now on the website", () => {
+  const state = session("English", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "1800",
+    source_metadata: { productName: "TezCredit" }
+  }, { tenantId: null });
+
+  const reply = _test.buildScriptedReply(state, "yes");
+  assert.match(reply, /www\.tezcredit\.com/i);
+  assert.match(reply, /Apply Now/i);
+  assert.doesNotMatch(reply, /\bapp\b/i);
+});
+
+test("TezCredit speech says 1800 as words and never calls the website an app", () => {
+  const state = session("English", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  });
+
+  const spoken = _test.prepareTextForSpeech("Open the app. Your offer is ₹1,800.", state);
+  assert.match(spoken, /website/i);
+  assert.match(spoken, /one thousand eight hundred rupees/i);
+  assert.doesNotMatch(spoken, /₹|1,800|\bapp\b/i);
+});
+
+test("TezCredit Hindi speech says 1800 in Hindi words", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  });
+
+  const spoken = _test.prepareTextForSpeech("आपका offer ₹1,800 है।", state);
+  assert.match(spoken, /एक हज़ार आठ सौ रुपये/);
+  assert.doesNotMatch(spoken, /₹|1,800/);
+});
+
 test("voicebot treats iPhone available phrase as screening", () => {
   const { isCallScreening } = require("../src/services/outcomes");
   assert.equal(isCallScreening("This person is available."), true);
