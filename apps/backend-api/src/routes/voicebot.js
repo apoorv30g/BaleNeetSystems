@@ -75,6 +75,8 @@ const MAX_CALL_CLOSING_LEAD_SECONDS = Math.min(
 const MAX_CALL_CLOSE_TEXT_EN = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_EN || "You can follow the pending steps now.";
 const MAX_CALL_CLOSE_TEXT_HI = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_HI || "अब आप बाकी चरण पूरे कर सकते हैं।";
 const VOICEBOT_AGENT_NAME = String(process.env.VOICEBOT_AGENT_NAME || "Raj").trim() || "Raj";
+const TEZ_WEBSITE_NAME_TEXT_EN = "The website is TezCredit: www.tezcredit.com. Open it and click Apply Now.";
+const TEZ_WEBSITE_NAME_TEXT_HI = "Website का नाम TezCredit है। www.tezcredit.com खोलिए और Apply Now पर click कीजिए।";
 const WEBSITE_LOGIN_FIRST_CHECK_MS = Math.max(1000, Number(process.env.VOICEBOT_WEBSITE_FIRST_CHECK_MS || 20000));
 const WEBSITE_LOGIN_SECOND_CHECK_MS = Math.max(1000, Number(process.env.VOICEBOT_WEBSITE_SECOND_CHECK_MS || 30000));
 
@@ -107,6 +109,14 @@ function attachVoicebot(server) {
   prewarmAudio(FAST_CLARIFY_TEXT).catch(err => logger.warn("voicebot_clarify_prewarm_failed", { error: err.message }));
   prewarmAudio(NO_SPEECH_PROMPT_TEXT).catch(err => logger.warn("voicebot_no_speech_prompt_prewarm_failed", { error: err.message }));
   prewarmAudio(NO_SPEECH_GOODBYE_TEXT).catch(err => logger.warn("voicebot_no_speech_goodbye_prewarm_failed", { error: err.message }));
+  prewarmAudio(TEZ_WEBSITE_NAME_TEXT_HI).catch(err => logger.warn("voicebot_tez_website_prewarm_failed", { error: err.message, language: "Hindi" }));
+  prewarmAudio(TEZ_WEBSITE_NAME_TEXT_EN, { preferredLanguage: "English" }).catch(err => logger.warn("voicebot_tez_website_prewarm_failed", { error: err.message, language: "English" }));
+  for (const item of coreVoicePrewarmItems()) {
+    prewarmAudio(item.text, item.session).catch(err => logger.warn("voicebot_core_prompt_prewarm_failed", {
+      error: err.message,
+      prompt: item.name
+    }));
+  }
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
@@ -823,7 +833,7 @@ async function processUserTranscript(ws, session, event) {
     source: event.source || "final"
   });
 
-  if (isLikelyMisheardTranscript(text, event)) {
+  if (isLikelyMisheardTranscript(text, event, session)) {
     await logVoicebotEvent(session, "transcript_low_confidence", {
       text,
       confidence: event.confidence,
@@ -856,7 +866,9 @@ async function processUserTranscript(ws, session, event) {
       [session.tenantId, session.callId, sttProvider, text, event.confidence]
     );
   }
-  const nonHumanOutcome = isVoicemail(text) ? "VOICEMAIL" : (isCallScreening(text) ? "CALL_SCREENING" : "");
+  const nonHumanOutcome = isVoicemail(text)
+    ? "VOICEMAIL"
+    : (shouldTreatAsCallScreening(session, text) ? "CALL_SCREENING" : "");
   if (nonHumanOutcome) {
     const transcript = session.callId ? await getTranscript(session.callId) : [];
     const classification = classifyConversation({
@@ -1336,12 +1348,14 @@ function updateConversationMemory(session, text) {
   const askedName = askedForNameRecently(session.lastSpokenText);
   const extractedName = extractNameAnswer(text);
   const normalized = normalizeVoiceIntent(text);
+  const knownLeadName = conversationalLeadName(session.lead.name);
+  const extractedNameMatches = !knownLeadName || !extractedName || namesReferToSamePerson(knownLeadName, extractedName);
   const confirmsKnownName = askedName
     && confirmsIdentityResponse(normalized)
-    && (Boolean(session.lead.name) || isTezJourneyLead(session.lead));
-  const shortName = askedName ? shortNameAnswer(text) : "";
+    && (Boolean(knownLeadName) || isTezJourneyLead(session.lead));
+  const shortName = askedName && !knownLeadName ? shortNameAnswer(text) : "";
 
-  if (!session.confirmedName && (extractedName || confirmsKnownName || shortName)) {
+  if (!session.confirmedName && extractedNameMatches && (extractedName || confirmsKnownName || shortName)) {
     session.confirmedName = true;
     session.confirmedNameTurn = session.userTurns || 0;
     session.capturedName = extractedName || shortName || session.lead.name || "";
@@ -1383,8 +1397,12 @@ function askedForAvailabilityRecently(text) {
 function isNamedCalleeDenial(session = {}, text = "") {
   if (!askedForNameRecently(session.lastSpokenText)) return false;
   const normalized = normalizeVoiceIntent(text);
+  const expectedName = conversationalLeadName(session.lead?.name);
+  const statedName = extractNameAnswer(text);
+  if (expectedName && statedName && !namesReferToSamePerson(expectedName, statedName)) return true;
   return isBareNegative(normalized)
-    || /^(no|nahi|nahin|नहीं|नही|ना)\b/.test(normalized) && !/(wrong number|गलत number|गलत नंबर)/.test(normalized);
+    || /^(no|nahi|nahin|नहीं|नही|ना|not me|i am not|मैं नहीं|मैं नही)\b/.test(normalized)
+      && !/(wrong number|गलत number|गलत नंबर)/.test(normalized);
 }
 
 function namedCalleeDenialReply(session = {}) {
@@ -1454,12 +1472,30 @@ function shortNameAnswer(text) {
   if (/^(hello|hi|hey|helo|yes|yeah|yep|no|nope|ok|okay|haan|han|ji|नमस्ते|हेलो|हैलो|हाँ|हां|जी|नहीं|नही|ना)$/.test(normalized)) {
     return "";
   }
+  if (/(भाई|भैया|सर|मैडम|बोलो|बताओ|सुनो|हूँ|हूं|हु|speaking|talking|bolo|bhai|sir|madam)/.test(normalized)) {
+    return "";
+  }
   if (/(loan|amount|rate|interest|emi|fee|charge|link|offer|payment|due|callback|busy|not interested|लोन|पेमेंट|ब्याज|लिंक|ऑफर)/.test(normalized)) {
     return "";
   }
 
   const wordCount = candidate.split(/\s+/).filter(Boolean).length;
   return wordCount >= 1 && wordCount <= 4 ? candidate : "";
+}
+
+function namesReferToSamePerson(expected = "", stated = "") {
+  const expectedParts = normalizePersonName(expected);
+  const statedParts = normalizePersonName(stated);
+  if (!expectedParts.length || !statedParts.length) return false;
+  return statedParts.every(part => expectedParts.includes(part))
+    || expectedParts.every(part => statedParts.includes(part));
+}
+
+function normalizePersonName(value = "") {
+  return normalizeVoiceIntent(value)
+    .split(/\s+/)
+    .map(part => part.trim())
+    .filter(part => part && !/^(ji|जी|mr|mrs|ms|श्री)$/.test(part));
 }
 
 function cleanNameCandidate(value) {
@@ -1763,6 +1799,14 @@ function buildTezIdentityGateReply(session = {}, text = "", english = false) {
     return namedCalleeGreeting(session.lead, english);
   }
 
+  if (asksWebsiteName(text)) {
+    if (session.availabilityConfirmed) return english ? TEZ_WEBSITE_NAME_TEXT_EN : TEZ_WEBSITE_NAME_TEXT_HI;
+    const websiteName = english
+      ? "The website is TezCredit: www.tezcredit.com."
+      : "Website का नाम TezCredit है: www.tezcredit.com।";
+    return `${websiteName} ${availabilityQuestion(session, english)}`;
+  }
+
   if (!session.availabilityConfirmed) {
     if (asksReason(text)) {
       const reason = stageReasonReply(session, english)
@@ -1930,6 +1974,12 @@ function buildStageConversationalReply(session = {}, text = "", { amountText = "
 
   if (mentionsCurrentScreen(text)) {
     return stageScreenGuidanceReply(session, text, english);
+  }
+
+  if (isBareWebsiteReference(text)) {
+    return english
+      ? "The TezCredit website is www.tezcredit.com. Is it open now?"
+      : "TezCredit website www.tezcredit.com है। क्या यह अभी खुल गई है?";
   }
 
   if (isShortUnclearStageReply(text)) {
@@ -2187,6 +2237,10 @@ function mentionsCurrentScreen(text = "") {
   return /(screen|upi|यू पी आई|bank account|account|खाता|permission|error|एरर|fail|failed|open ho gaya|खुल गया|दिख रहा)/.test(text);
 }
 
+function isBareWebsiteReference(text = "") {
+  return /^(website|web site|site|app|वेबसाइट|साइट)$/.test(normalizeVoiceIntent(text));
+}
+
 function isShortUnclearStageReply(text = "") {
   if (!text) return false;
   if (asksQuestion(text) || asksReason(text) || asksIdentity(text) || asksHumanSupport(text)) return false;
@@ -2252,6 +2306,11 @@ function callScreeningReply(session = {}) {
   return `This is ${VOICEBOT_AGENT_NAME} from ${product}, calling about a loan eligibility check. Please connect the call if the customer is available.`;
 }
 
+function shouldTreatAsCallScreening(session = {}, text = "") {
+  if (session.screeningHumanJoined || session.userTurns > 0 || session.confirmedName || session.availabilityConfirmed) return false;
+  return isCallScreening(text);
+}
+
 function noteHumanJoinedAfterScreening(session = {}, text = "") {
   if (!session.screeningAnswered || session.screeningHumanJoined) return;
   if (isCallScreening(text) || isVoicemail(text)) return;
@@ -2280,6 +2339,20 @@ function classifyLiveConversation(session = {}, userMessage = "", transcript = [
     };
   }
 
+  if (isTezJourneyLead(session.lead)
+      && classification.outcome === "INTERESTED"
+      && !hasTezInterestEvidence(session, userMessage)) {
+    return {
+      ...classification,
+      outcome: "IN_PROGRESS",
+      intent: "IN_PROGRESS",
+      confidence: 0.75,
+      reason: "Customer has not yet confirmed login, a visible journey option, or an explicit intent to continue.",
+      nextAction: "Answer the latest question and confirm the next TezCredit journey action.",
+      summary: `Latest user response: "${String(userMessage || "").slice(0, 180)}". TezCredit conversation is active, but meaningful journey engagement is not confirmed yet.`
+    };
+  }
+
   if (classification.outcome === "CALL_SCREENING" && session.screeningHumanJoined) {
     return {
       ...classification,
@@ -2291,6 +2364,12 @@ function classifyLiveConversation(session = {}, userMessage = "", transcript = [
   return classification;
 }
 
+function hasTezInterestEvidence(session = {}, userMessage = "") {
+  if (session.websiteLoginConfirmed || session.bankVerificationOptionSeen || Number(session.linkPositiveFollowups || 0) > 0) return true;
+  const normalized = normalizeVoiceIntent(userMessage);
+  return /(i am interested|interested|continue|send (the )?link|apply now|logged in|login ho gaya|login हो गया|login कर लिया|लॉगिन हो गया|खोल लिया|खुल गया|website खुल|upi|यू पी आई|bank account|verification successful|successful हो गया|complete हो गया|पूरा हो गया)/.test(normalized);
+}
+
 function effectiveTranscriptForClassification(session = {}, transcript = []) {
   if (!session.screeningAnswered || !session.screeningHumanJoined) return transcript;
   return transcript.filter(item => !(item.speaker === "user" && isCallScreening(item.text)));
@@ -2298,7 +2377,10 @@ function effectiveTranscriptForClassification(session = {}, transcript = []) {
 
 function refineAssistantReply(session = {}, userText = "", reply = "", { source = "" } = {}) {
   const surfaceCorrected = normalizeTezCreditReply(session, reply);
-  const cleaned = completeSpokenReply(String(surfaceCorrected || "").replace(/\s+/g, " ").trim(), session);
+  const groundedReply = source === "llm"
+    ? groundGeneratedAssistantReply(session, userText, surfaceCorrected)
+    : surfaceCorrected;
+  const cleaned = completeSpokenReply(String(groundedReply || "").replace(/\s+/g, " ").trim(), session);
   if (!cleaned) return normalizeTezCreditReply(session, antiRepeatReply(session, userText));
   if (isConversationGatePrompt(cleaned)) return cleaned;
 
@@ -2315,6 +2397,129 @@ function refineAssistantReply(session = {}, userText = "", reply = "", { source 
   }
 
   return cleaned;
+}
+
+function groundGeneratedAssistantReply(session = {}, userText = "", reply = "") {
+  const issues = assistantGroundingIssues(session, reply);
+  if (!issues.length) return reply;
+  const replacement = groundingFallbackReply(session, userText);
+  session.groundedReplyCount = Number(session.groundedReplyCount || 0) + 1;
+  logVoicebotEvent(session, "assistant_reply_grounded", {
+    issues,
+    original: String(reply || "").slice(0, 500),
+    replacement,
+    groundingCount: session.groundedReplyCount
+  }).catch(() => {});
+  return replacement;
+}
+
+function assistantGroundingIssues(session = {}, reply = "") {
+  const text = String(reply || "");
+  const normalized = normalizeVoiceIntent(text);
+  const issues = [];
+  const allowedHosts = allowedAssistantHosts(session);
+  for (const host of extractAssistantHosts(text)) {
+    if (!allowedHosts.has(host)) issues.push(`unsupported_url:${host}`);
+  }
+
+  const knownAmounts = new Set([session.lead?.offer_amount, session.lead?.loan_amount]
+    .map(value => Number(String(value || "").replace(/,/g, "")))
+    .filter(value => Number.isFinite(value) && value > 0)
+    .map(value => Math.round(value)));
+  for (const amount of extractCurrencyAmounts(text)) {
+    if (!knownAmounts.has(amount)) issues.push(`unsupported_amount:${amount}`);
+  }
+
+  if (/\b\d+(?:\.\d+)?\s*(?:%|percent\b|प्रतिशत)/.test(normalized)) issues.push("unsupported_rate");
+  if (/(interest rate|processing fee|fee|charges?|emi|penalty|tenure|ब्याज दर|प्रोसेसिंग फीस|फीस|चार्ज|ई एम आई|पेनल्टी|टेन्योर).{0,30}\b\d+(?:[.,]\d+)?\b/.test(normalized)
+      || /\b\d+(?:[.,]\d+)?\b.{0,20}(interest rate|processing fee|fee|charges?|emi|penalty|tenure|ब्याज दर|फीस|चार्ज|ई एम आई|पेनल्टी|टेन्योर)/.test(normalized)) {
+    issues.push("unsupported_financial_term");
+  }
+  if (/(guaranteed|guarantee|100% approved|approval is certain|loan pakka|पक्का loan|पक्का लोन|गारंटीड|निश्चित मंजूरी)/.test(normalized)) {
+    issues.push("unsupported_guarantee");
+  }
+  if (requestsSensitiveData(normalized)) issues.push("sensitive_data_request");
+
+  const currentStage = groundingStageForLead(session.lead);
+  for (const claimedStage of claimedPendingStages(normalized)) {
+    if (currentStage && claimedStage !== currentStage) issues.push(`stage_mismatch:${claimedStage}`);
+  }
+
+  return Array.from(new Set(issues));
+}
+
+function allowedAssistantHosts(session = {}) {
+  const urls = [leadJourneyUrl(session.lead || {}), config.paymentLinkBase]
+    .filter(Boolean)
+    .map(value => /^https?:\/\//i.test(value) ? value : `https://${value}`);
+  const hosts = new Set();
+  for (const value of urls) {
+    try {
+      hosts.add(new URL(value).hostname.toLowerCase().replace(/^www\./, ""));
+    } catch {}
+  }
+  return hosts;
+}
+
+function extractAssistantHosts(text = "") {
+  return (String(text).match(/\b(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+\b/gi) || [])
+    .map(value => value.replace(/^https?:\/\//i, "").replace(/^www\./i, "").toLowerCase());
+}
+
+function extractCurrencyAmounts(text = "") {
+  const amounts = [];
+  const pattern = /(?:₹|rs\.?|inr)\s*([\d,]+)|([\d,]+)\s*(?:rupees?|रुपये?)/gi;
+  for (const match of String(text).matchAll(pattern)) {
+    const value = Number(String(match[1] || match[2] || "").replace(/,/g, ""));
+    if (Number.isFinite(value) && value > 0) amounts.push(Math.round(value));
+  }
+  return amounts;
+}
+
+function requestsSensitiveData(text = "") {
+  const sensitive = /(otp|o t p|pin|password|card details?|aadhaar otp|ओ टी पी|ओटीपी|पिन|पासवर्ड|कार्ड details?)/;
+  const request = /(share|tell|say|give|read|बताइए|बताएं|बोलिए|बोलें|दीजिए|दें)/;
+  const negated = /(do not|don t|never|not ask|मत|नहीं पूछ|नही पूछ|share नहीं|share नही)/;
+  return sensitive.test(text) && request.test(text) && !negated.test(text);
+}
+
+function groundingStageForLead(lead = {}) {
+  const stage = String(lead?.drop_stage || lead?.playbook_type || "").toUpperCase();
+  if (stage.includes("SELFIE")) return "SELFIE";
+  if (stage.includes("AADHAAR")) return "AADHAAR";
+  if (stage.includes("PROFILE")) return "PROFILE";
+  if (stage.includes("BANK_VERIFICATION")) return "BANK_VERIFICATION";
+  if (stage.includes("E_SIGN")) return "E_SIGN";
+  if (stage.includes("APPROVED_NOT_DISBURSED")) return "DISBURSAL";
+  return "";
+}
+
+function claimedPendingStages(text = "") {
+  const definitions = [
+    ["SELFIE", /(selfie|सेल्फी).{0,12}(pending|बाकी)/],
+    ["AADHAAR", /(aadhaar|aadhar|आधार).{0,12}(pending|बाकी)/],
+    ["PROFILE", /(profile|प्रोफाइल).{0,12}(pending|बाकी)/],
+    ["BANK_VERIFICATION", /(bank verification|बैंक verification|बैंक वेरिफिकेशन).{0,12}(pending|बाकी)/],
+    ["E_SIGN", /(e sign|esign|ई साइन).{0,12}(pending|बाकी)/],
+    ["DISBURSAL", /(disbursal|disbursement|डिस्बर्सल).{0,12}(pending|बाकी)/]
+  ];
+  return definitions.filter(([, pattern]) => pattern.test(text)).map(([stage]) => stage);
+}
+
+function groundingFallbackReply(session = {}, userText = "") {
+  const english = isEnglishSession(session);
+  if (asksWebsiteName(normalizeVoiceIntent(userText))) return english ? TEZ_WEBSITE_NAME_TEXT_EN : TEZ_WEBSITE_NAME_TEXT_HI;
+  const amount = session.lead?.offer_amount || session.lead?.loan_amount;
+  if (amount && asksAmount(normalizeVoiceIntent(userText))) {
+    const amountText = formatLoanAmount(amount);
+    return english
+      ? `Your current eligible amount in the TezCredit record is ${amountText}.`
+      : `आपकी TezCredit details में current eligible amount ${amountText} है।`;
+  }
+  const stageReason = stageReasonReply(session, english);
+  return english
+    ? `I can only confirm details shown in your TezCredit record. ${stageReason || "One TezCredit step is still pending."}`
+    : `मैं सिर्फ आपकी TezCredit details में दिख रही जानकारी बता सकता हूँ। ${stageReason || "TezCredit का एक step अभी pending है।"}`;
 }
 
 function isConversationGatePrompt(text = "") {
@@ -2535,16 +2740,16 @@ function isPositiveAgreement(text) {
   const normalized = normalizeVoiceIntent(text);
   const withoutConversationalFillers = normalized
     .replace(/\b(ji|please|tell me|go ahead)\b/g, " ")
-    .replace(/(जी|बताइए|बताओ|बोलिए|बोलो)/g, " ")
+    .replace(/(जी|ਜੀ|बताइए|बताओ|बोलिए|बोलो)/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   const agreementWords = withoutConversationalFillers.split(/\s+/).filter(Boolean);
   const onlyAgreementWords = agreementWords.length > 0
-    && agreementWords.every(word => /^(haan|han|haa|yes|yeah|yep|ok|okay|sure|ठीक|हाँ|हां|हा|ओके)$/.test(word));
+    && agreementWords.every(word => /^(haan|han|haa|yes|yeah|yep|ok|okay|sure|ठीक|हाँ|हां|हा|ਹਾਂ|ओके)$/.test(word));
 
   return onlyAgreementWords
-    || /^(haan|han|haa|yes|ok|okay|sure|ठीक|हाँ|हां|हा|ओके)$/.test(normalized)
-    || /^(yes|haan|han|हाँ|हां|जी)\s+(sure|ji|yes|हाँ|हां|जी)$/.test(normalized)
+    || /^(haan|han|haa|yes|ok|okay|sure|ठीक|हाँ|हां|हा|ਹਾਂ|ਹਾਂਜੀ|ओके)$/.test(normalized)
+    || /^(yes|haan|han|हाँ|हां|ਹਾਂ|जी|ਜੀ)\s+(sure|ji|yes|हाँ|हां|ਹਾਂ|जी|ਜੀ)$/.test(normalized)
     || /^(yes|haan|han|हाँ|हां|जी).*(speaking|this is|bol raha|bol rahi|मैं ही|बोल रहा|बोल रही)/.test(normalized)
     || /(kar dijiye|kar do|bhej do|bhej dijiye|send kar|continue|कर दीजिए|कर दीजिये|कर दो|भेज दो|भेज दीजिए|भेज दीजिये|आगे बढ़)/.test(normalized);
 }
@@ -2647,6 +2852,10 @@ function asksConfused(text) {
 
 function asksReason(text) {
   return /(kyun|why|kisliye|kis liye|kiske regarding|kis ke regarding|kis baare|what is this about|what is the call about|what are you calling about|calling regarding|regarding what|regarding|क्यों|किसलिए|किस लिये|किस बारे|किसके बारे|किस संबंध|किस सिलसिले|क्या बात|call kyu|कॉल क्यों)/.test(text);
+}
+
+function asksWebsiteName(text) {
+  return /(website.*(name|naam|नाम)|(?:name|naam|नाम).*website|site.*(name|naam|नाम)|(?:name|naam|नाम).*site|web address|website url|site url|website का नाम|वेबसाइट का नाम)/.test(text);
 }
 
 function asksQuestion(text) {
@@ -2855,11 +3064,20 @@ function clearNoSpeechTimers(session) {
   }
 }
 
-function isLikelyMisheardTranscript(text, event) {
-  if (event.confidence === null || event.confidence === undefined || event.confidence === "") return false;
+function isLikelyMisheardTranscript(text, event = {}, session = {}) {
+  const wordCount = transcriptWordCount(text);
+  const confidenceMissing = event.confidence === null || event.confidence === undefined || event.confidence === "";
+  if (confidenceMissing) {
+    if (wordCount !== 1 || isAllowedShortIntent(text)) return false;
+    if (askedForNameRecently(session.lastSpokenText)) {
+      const expectedName = conversationalLeadName(session.lead?.name);
+      if (!expectedName || namesReferToSamePerson(expectedName, text)) return false;
+    }
+    return true;
+  }
   const confidence = Number(event.confidence);
   if (!Number.isFinite(confidence) || confidence >= MIN_TRANSCRIPT_CONFIDENCE) return false;
-  if (transcriptWordCount(text) > LOW_CONFIDENCE_MAX_WORDS) return false;
+  if (wordCount > LOW_CONFIDENCE_MAX_WORDS) return false;
   return !isAllowedShortIntent(text);
 }
 
@@ -2873,7 +3091,7 @@ function transcriptWordCount(text) {
 }
 
 function isAllowedShortIntent(text) {
-  const normalized = normalizeTranscript(text);
+  const normalized = normalizeTranscript(text).trim();
   if (!normalized) return false;
   return [
     "haan",
@@ -2892,14 +3110,32 @@ function isAllowedShortIntent(text) {
     "callback",
     "call back",
     "interested",
-    "not interested"
-  ].some(intent => normalized === intent || normalized.includes(` ${intent} `));
+    "not interested",
+    "hello",
+    "hi",
+    "website",
+    "site",
+    "app",
+    "link",
+    "upi",
+    "error",
+    "हाँ",
+    "हां",
+    "हाँ जी",
+    "जी",
+    "नहीं",
+    "नही",
+    "ਹਾਂ",
+    "ਹਾਂਜੀ",
+    "ਹਾਂ ਜੀ",
+    "ਨਹੀਂ"
+  ].includes(normalized);
 }
 
 function normalizeTranscript(text) {
   return ` ${String(text || "")
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()} `;
 }
@@ -3180,8 +3416,26 @@ function ttsLanguageCodeForSession(session = {}) {
   return process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
 }
 
-async function prewarmAudio(text) {
-  await getPcmBase64(text, { mediaSampleRate: 8000 });
+async function prewarmAudio(text, session = {}) {
+  await getPcmBase64(text, { ...session, mediaSampleRate: 8000 });
+}
+
+function coreVoicePrewarmItems() {
+  const session = {
+    preferredLanguage: "Hinglish",
+    lead: {
+      playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+      drop_stage: "BANK_VERIFICATION_PENDING",
+      source_metadata: { productName: "TezCredit" }
+    }
+  };
+  return [
+    { name: "bank_purpose_hi", text: "ठीक है। आपका bank verification pending है। क्या आप अभी website खोल सकते हैं?", session },
+    { name: "website_reference_hi", text: "TezCredit website www.tezcredit.com है। क्या यह अभी खुल गई है?", session },
+    { name: "bank_options_hi", text: "ठीक है। वहाँ कौन सा option दिख रहा है: UPI, bank account, permission या error?", session },
+    { name: "availability_decline_hi", text: "कोई बात नहीं। आपका समय देने के लिए धन्यवाद।", session },
+    { name: "website_login_check_hi", text: "क्या आपने www.tezcredit.com खोलकर Apply Now पर click किया और login कर लिया?", session }
+  ];
 }
 
 function startSilenceKeepalive(ws, session, markName) {
@@ -3639,9 +3893,13 @@ module.exports = {
     buildScriptedReply,
     callScreeningReply,
     classifyLiveConversation,
+    hasTezInterestEvidence,
+    shouldTreatAsCallScreening,
     extractNameAnswer,
     firstGreeting,
     refineAssistantReply,
+    assistantGroundingIssues,
+    groundGeneratedAssistantReply,
     invalidateAssistantTurn,
     contextualNegativeReply,
     isContextualNegativeReply,
@@ -3659,6 +3917,8 @@ module.exports = {
     websiteLoginCheckDelays,
     sttFinalWatchdogConfig,
     shouldRecoverMissingSttFinal,
+    isLikelyMisheardTranscript,
+    coreVoicePrewarmItems,
     availabilityDeclineReply,
     availabilityDeclineOutcome,
     namedCalleeDenialReply,

@@ -319,6 +319,11 @@ ${lastUserMessage || "No clear customer message captured yet."}
 Rules:
 - Treat the selected playbook as the source of truth for what to do next.
 - If a journey stage is provided, anchor every response to that exact pending step.
+- Never claim that a different journey stage is pending. Mention later stages only as future steps.
+- Use only the customer amounts shown above. Never calculate, estimate, or invent another loan amount.
+- Use only the Customer journey URL and Payment link base listed below. Never invent a website, domain, phone number, or support channel.
+- Never state a numeric interest rate, fee, EMI, penalty, or tenure unless that exact value appears in the customer data above.
+- Never claim guaranteed approval, guaranteed disbursal, or guaranteed eligibility.
 - Use the crisp spoken lines as examples. Do not read them all at once.
 - Follow the current required playbook action. Do not restart from the beginning unless the user asks.
 - If the known call memory says the name is already confirmed, never ask the name or reference details again.

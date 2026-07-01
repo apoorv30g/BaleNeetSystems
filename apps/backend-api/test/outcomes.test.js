@@ -70,6 +70,8 @@ test("voicemail and call screening are terminal non-human outcomes", () => {
 test("customer asking reason for call is not call screening", () => {
   assert.equal(isCallScreening("What is the reason for this call?"), false);
   assert.equal(isTerminalIntent("What is the reason for this call?"), false);
+  assert.equal(isCallScreening("website का नाम बताइए मेरे को"), false);
+  assert.equal(isCallScreening("नाम क्या है website का?"), false);
 });
 
 test("classifyConversation summarizes the outcome", () => {

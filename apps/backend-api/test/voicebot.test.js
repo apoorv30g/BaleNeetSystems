@@ -687,6 +687,28 @@ test("TezCredit proceeds to the active stage after website login confirmation", 
   assert.equal(state.websiteLoginAcknowledged, true);
 });
 
+test("TezCredit answers the website name and URL directly", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    identityPrompted: true,
+    confirmedName: true,
+    availabilityConfirmed: true,
+    userTurns: 5
+  });
+
+  for (const question of ["नाम क्या है website का?", "website का नाम बताइए मेरे को"]) {
+    const reply = _test.buildScriptedReply(state, question);
+    assert.match(reply, /Website का नाम TezCredit है/);
+    assert.match(reply, /www\.tezcredit\.com/);
+    assert.match(reply, /Apply Now/);
+    assert.doesNotMatch(reply, /Please connect the call/i);
+  }
+});
+
 test("TezCredit answers the eligible amount from imported CSV details", () => {
   const state = session("English", {
     playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
@@ -717,6 +739,21 @@ test("TezCredit handles a request for more amount without promising approval", (
 test("voicebot treats iPhone available phrase as screening", () => {
   const { isCallScreening } = require("../src/services/outcomes");
   assert.equal(isCallScreening("This person is available."), true);
+});
+
+test("voicebot only treats screening prompts as screening before a human conversation starts", () => {
+  assert.equal(
+    _test.shouldTreatAsCallScreening({ userTurns: 0 }, "Name and reason for your call? Please stay on the line."),
+    true
+  );
+  assert.equal(
+    _test.shouldTreatAsCallScreening({ userTurns: 5, confirmedName: true }, "website का नाम बताइए मेरे को"),
+    false
+  );
+  assert.equal(
+    _test.shouldTreatAsCallScreening({ userTurns: 5 }, "Name and reason for your call? Please stay on the line."),
+    false
+  );
 });
 
 test("voicebot welcomes real user after call screening without human-transfer reply", () => {
@@ -823,4 +860,134 @@ test("voicebot handles user complaint that it is repeating", () => {
 
   const reply = _test.buildScriptedReply(state, "आप बार बार एक ही बात बोल रहे हो");
   assert.match(reply, /repeat नहीं|Simple|bank verification|app/i);
+});
+
+test("known TezCredit identity is not confirmed by conversational filler", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    identityPrompted: true,
+    userTurns: 1,
+    lastSpokenText: "नमस्ते, मैं TezCredit से Raj बोल रहा हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
+  });
+
+  _test.updateConversationMemory(state, "हूं भाई।");
+  const reply = _test.buildScriptedReply(state, "हूं भाई।");
+  assert.equal(Boolean(state.confirmedName), false);
+  assert.match(reply, /Prasheel जी से हो रही है/);
+});
+
+test("Punjabi-script haan ji confirms a known customer after Sarvam transliteration", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    identityPrompted: true,
+    userTurns: 1,
+    lastSpokenText: "नमस्ते, मैं TezCredit से Raj बोल रहा हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
+  });
+
+  _test.updateConversationMemory(state, "ਹਾਂਜੀ");
+  assert.equal(state.confirmedName, true);
+  assert.match(_test.buildScriptedReply(state, "ਹਾਂਜੀ"), /दो मिनट बात कर सकते हैं/);
+});
+
+test("an explicitly different name never confirms the CSV customer", () => {
+  const state = session("English", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    identityPrompted: true,
+    userTurns: 1,
+    lastSpokenText: "Hi, this is Raj from TezCredit. Am I speaking with Prasheel?"
+  });
+
+  _test.updateConversationMemory(state, "I am Rahul");
+  assert.equal(Boolean(state.confirmedName), false);
+  assert.equal(_test.isNamedCalleeDenial(state, "I am Rahul"), true);
+});
+
+test("confidence-free Sarvam fragments are clarified without rejecting valid short intents", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING"
+  });
+  const noConfidence = { confidence: null };
+
+  assert.equal(_test.isLikelyMisheardTranscript("मात्र", noConfidence, state), true);
+  assert.equal(_test.isLikelyMisheardTranscript("हाँ", noConfidence, state), false);
+  assert.equal(_test.isLikelyMisheardTranscript("website", noConfidence, state), false);
+  assert.equal(_test.isLikelyMisheardTranscript("UPI", noConfidence, state), false);
+});
+
+test("a lone website reference asks for confirmation without assuming a bank screen", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    identityPrompted: true,
+    confirmedName: true,
+    availabilityConfirmed: true,
+    userTurns: 4
+  });
+
+  const reply = _test.buildScriptedReply(state, "website");
+  assert.match(reply, /www\.tezcredit\.com/);
+  assert.match(reply, /खुल गई है/);
+  assert.doesNotMatch(reply, /UPI|bank account|successful/);
+});
+
+test("TezCredit interest requires meaningful journey evidence", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    userTurns: 4
+  });
+  const transcript = [
+    { speaker: "user", text: "हाँ हाँ कर सकते हैं" },
+    { speaker: "user", text: "website" }
+  ];
+
+  assert.equal(_test.classifyLiveConversation(state, "website", transcript).outcome, "IN_PROGRESS");
+  assert.equal(_test.classifyLiveConversation(state, "login हो गया", transcript).outcome, "INTERESTED");
+});
+
+test("LLM grounding rejects invented facts and allows known TezCredit facts", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "18000",
+    loan_amount: "18000",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true
+  });
+
+  assert.ok(_test.assistantGroundingIssues(state, "Visit www.fake-loan.com now.").some(issue => issue.startsWith("unsupported_url:")));
+  assert.ok(_test.assistantGroundingIssues(state, "Your loan amount is ₹50,000.").some(issue => issue.startsWith("unsupported_amount:")));
+  assert.ok(_test.assistantGroundingIssues(state, "Your interest rate is 12%.").includes("unsupported_rate"));
+  assert.ok(_test.assistantGroundingIssues(state, "Your processing fee is 500.").includes("unsupported_financial_term"));
+  assert.ok(_test.assistantGroundingIssues(state, "Your tenure is 6 months.").includes("unsupported_financial_term"));
+  assert.ok(_test.assistantGroundingIssues(state, "Your loan is guaranteed.").includes("unsupported_guarantee"));
+  assert.ok(_test.assistantGroundingIssues(state, "Please tell me your OTP.").includes("sensitive_data_request"));
+  assert.ok(_test.assistantGroundingIssues(state, "Your selfie is pending.").includes("stage_mismatch:SELFIE"));
+  assert.deepEqual(
+    _test.assistantGroundingIssues(state, "Your bank verification is pending. Open www.tezcredit.com. Your amount is ₹18,000. Never share OTP."),
+    []
+  );
+
+  const grounded = _test.refineAssistantReply(state, "what next", "Visit www.fake-loan.com for a guaranteed ₹50,000 loan.", { source: "llm" });
+  assert.doesNotMatch(grounded, /fake-loan|guaranteed|50,000/);
+  assert.match(grounded, /TezCredit|bank verification/i);
 });
