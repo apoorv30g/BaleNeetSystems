@@ -66,6 +66,13 @@ const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
 const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
 const PCM_CACHE_MAX = Number(process.env.VOICEBOT_PCM_CACHE_MAX || 200);
+const MAX_CALL_SECONDS = Math.max(15, Number(process.env.VOICEBOT_MAX_CALL_SECONDS || 120));
+const MAX_CALL_CLOSING_LEAD_SECONDS = Math.min(
+  Math.max(1, Number(process.env.VOICEBOT_MAX_CALL_CLOSING_LEAD_SECONDS || 5)),
+  MAX_CALL_SECONDS - 1
+);
+const MAX_CALL_CLOSE_TEXT_EN = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_EN || "You can follow the pending steps now.";
+const MAX_CALL_CLOSE_TEXT_HI = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_HI || "अब आप बाकी चरण पूरे कर सकते हैं।";
 
 // Bounded LRU cache — prevents unbounded memory growth over long server uptime.
 const pcmCache = (() => {
@@ -184,6 +191,7 @@ function attachVoicebot(server) {
       introTimer: null,
       noSpeechPromptTimer: null,
       noSpeechEndTimer: null,
+      maxCallTimer: null,
       introStarted: false,
       startedAt: Date.now()
     };
@@ -199,6 +207,7 @@ function attachVoicebot(server) {
     ws.on("close", (code, reason) => {
       session.closed = true;
       if (session.introTimer) clearTimeout(session.introTimer);
+      clearMaxCallTimer(session);
       clearInterimTimer(session);
       clearNoSpeechTimers(session);
       session.stt?.close();
@@ -239,6 +248,7 @@ async function handleMessage(ws, session, data) {
 
   if (event === "start") {
     await initializeSession(session, message);
+    scheduleMaxCallDuration(ws, session);
     startStt(ws, session);
     if (INTRO_START_MODE === "first_media") {
       scheduleIntro(ws, session, Number(process.env.VOICEBOT_FIRST_MEDIA_FALLBACK_MS || 350));
@@ -317,6 +327,64 @@ function scheduleIntro(ws, session, delayMs = INTRO_DELAY_MS) {
   }, delayMs);
 
   logVoicebotEvent(session, "intro_scheduled", { delayMs, mode: INTRO_START_MODE }).catch(() => {});
+}
+
+function scheduleMaxCallDuration(ws, session) {
+  clearMaxCallTimer(session);
+  const delayMs = Math.max(1000, (MAX_CALL_SECONDS - MAX_CALL_CLOSING_LEAD_SECONDS) * 1000);
+  session.maxCallTimer = setTimeout(() => {
+    session.maxCallTimer = null;
+    enforceMaxCallDuration(ws, session).catch(err => {
+      logger.warn("voicebot_max_duration_close_failed", { error: err.message, callId: session.callId });
+      if (!session.closed && ws.readyState === ws.OPEN) ws.close();
+    });
+  }, delayMs);
+  logVoicebotEvent(session, "max_call_duration_scheduled", {
+    maxCallSeconds: MAX_CALL_SECONDS,
+    closingLeadSeconds: MAX_CALL_CLOSING_LEAD_SECONDS,
+    delayMs
+  }).catch(() => {});
+}
+
+async function enforceMaxCallDuration(ws, session) {
+  if (session.closed || session.ending || ws.readyState !== ws.OPEN) return;
+  session.ending = true;
+  invalidateAssistantTurn(session, "max_call_duration");
+  if (session.speaking) cancelAssistantSpeech(ws, session, "max_call_duration");
+  clearNoSpeechTimers(session);
+  clearInterimTimer(session);
+
+  const closingText = maxCallClosingText(session);
+  if (session.callId) {
+    await addTranscript(session.callId, "assistant", closingText);
+    await query(
+      `UPDATE calls
+       SET summary=CASE
+             WHEN summary IS NULL OR summary='' THEN $2
+             ELSE summary || ' ' || $2
+           END,
+           updated_at=NOW()
+       WHERE id=$1`,
+      [session.callId, "Call closed at the two-minute limit after directing the customer to continue the pending steps."]
+    );
+  }
+  await logVoicebotEvent(session, "max_call_duration_reached", {
+    maxCallSeconds: MAX_CALL_SECONDS,
+    closingLeadSeconds: MAX_CALL_CLOSING_LEAD_SECONDS,
+    language: isEnglishSession(session) ? "English" : "Hindi",
+    closingText
+  });
+  await speakAndClose(ws, session, closingText, "max_call_duration_close");
+}
+
+function maxCallClosingText(session = {}) {
+  return isEnglishSession(session) ? MAX_CALL_CLOSE_TEXT_EN : MAX_CALL_CLOSE_TEXT_HI;
+}
+
+function clearMaxCallTimer(session = {}) {
+  if (!session.maxCallTimer) return;
+  clearTimeout(session.maxCallTimer);
+  session.maxCallTimer = null;
 }
 
 function startIntro(ws, session, trigger) {
@@ -1992,6 +2060,7 @@ function antiRepeatReply(session = {}, userText = "") {
 }
 
 async function speakAndClose(ws, session, text, markName) {
+  clearMaxCallTimer(session);
   clearNoSpeechTimers(session);
   clearInterimTimer(session);
   await speakText(ws, session, text, markName);
@@ -2000,6 +2069,7 @@ async function speakAndClose(ws, session, text, markName) {
 }
 
 async function closeQuietly(ws, session) {
+  clearMaxCallTimer(session);
   clearNoSpeechTimers(session);
   clearInterimTimer(session);
   await sleep(Number(process.env.VOICEBOT_NON_HUMAN_CLOSE_GRACE_MS || 100));
@@ -3161,6 +3231,7 @@ module.exports = {
     normalizeVoiceIntent,
     normalizeTezCreditReply,
     prepareTextForSpeech,
+    maxCallClosingText,
     shouldCancelAssistantSpeech,
     updateConversationMemory
   }

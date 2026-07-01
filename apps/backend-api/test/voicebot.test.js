@@ -324,6 +324,20 @@ test("TezCredit Hindi speech says 1800 in Hindi words", () => {
   assert.doesNotMatch(spoken, /₹|1,800/);
 });
 
+test("two-minute call limit uses the requested English closing", () => {
+  assert.equal(
+    _test.maxCallClosingText(session("English")),
+    "You can follow the pending steps now."
+  );
+});
+
+test("two-minute call limit uses a natural Hindi closing", () => {
+  assert.equal(
+    _test.maxCallClosingText(session("Hinglish")),
+    "अब आप बाकी चरण पूरे कर सकते हैं।"
+  );
+});
+
 test("voicebot treats iPhone available phrase as screening", () => {
   const { isCallScreening } = require("../src/services/outcomes");
   assert.equal(isCallScreening("This person is available."), true);
