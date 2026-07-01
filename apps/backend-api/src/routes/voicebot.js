@@ -1550,31 +1550,76 @@ function buildScriptedReply(session, text) {
   }
 
   if (lead.playbook_type === "FRESH_LEAD" && session.confirmedNameTurn === session.userTurns && isNameConfirmationTurn(normalized)) {
-    if (english) return "Thanks. How much loan are you looking for right now?";
-    return "धन्यवाद। अभी आपको कितना loan चाहिए?";
+    return english
+      ? stageLine(session, "name_confirm_en", [
+        "Thanks. How much loan are you looking for right now?",
+        "Got it. What loan amount do you have in mind?",
+        "Perfect. And how much are you looking to borrow?"
+      ])
+      : stageLine(session, "name_confirm_hi", [
+        "धन्यवाद। अभी आपको कितना loan चाहिए?",
+        "अच्छा। आप कितना loan लेना चाहते हैं?",
+        "ठीक है। आपको कितनी राशि की ज़रूरत है?"
+      ]);
   }
 
   if (mentionsMissingLink(normalized)) {
     queueLeadLink(session, "missing_link");
-    if (english) return "Sure, I am sending the secure link again. Please open it and check your final offer in two minutes.";
-    return "ठीक है, मैं सुरक्षित link दोबारा भेज रहा हूँ। कृपया उसे खोलकर दो मिनट में final offer check कर लीजिए।";
+    return english
+      ? stageLine(session, "missing_link_en", [
+        "Sure, I am sending the secure link again. Please open it and check your final offer in two minutes.",
+        "No problem, sending it again right now. Open it in two minutes and your offer will be there.",
+        "Got it, I will resend the link. Check it in a moment on mobile data."
+      ])
+      : stageLine(session, "missing_link_hi", [
+        "ठीक है, मैं सुरक्षित link दोबारा भेज रहा हूँ। कृपया उसे खोलकर दो मिनट में final offer check कर लीजिए।",
+        "कोई बात नहीं, अभी दोबारा भेज रहा हूँ। दो मिनट में mobile data पर खोल लीजिए।",
+        "ठीक है, link फिर से आ रहा है। थोड़ी देर में खोलकर देखिए।"
+      ]);
   }
 
   if (mentionsLinkProblem(normalized)) {
     queueLeadLink(session, "link_problem");
-    if (english) return "I am sending the secure link again. Please open it in mobile data or the app; if it still fails, use app support.";
-    return "मैं सुरक्षित link दोबारा भेज रहा हूँ। उसे mobile data या app में खोलिए; फिर भी दिक्कत हो तो app support use कीजिए।";
+    return english
+      ? stageLine(session, "link_problem_en", [
+        "I am sending the secure link again. Please open it in mobile data or the app; if it still fails, use app support.",
+        "Let me resend that link. Try opening it on mobile data, not WiFi. If it still does not work, app support can help.",
+        "Sure, sending it again. Open on mobile data and if there is still a problem, the app has a support section."
+      ])
+      : stageLine(session, "link_problem_hi", [
+        "मैं सुरक्षित link दोबारा भेज रहा हूँ। उसे mobile data या app में खोलिए; फिर भी दिक्कत हो तो app support use कीजिए।",
+        "ठीक है, link फिर भेज रहा हूँ। WiFi की जगह mobile data पर खोलिए। फिर भी न खुले तो app support है।",
+        "समझ गया, दोबारा भेज रहा हूँ। mobile data on करके try कीजिए।"
+      ]);
   }
 
   if (asksSendDetails(normalized)) {
     queueLeadLink(session, "send_details");
-    if (english) return "Sure, I am sending the secure link by SMS. Please review the details there before accepting anything.";
-    return "ठीक है, मैं सुरक्षित link SMS पर भेज रहा हूँ। कुछ accept करने से पहले details वहीं देख लीजिए।";
+    return english
+      ? stageLine(session, "send_details_en", [
+        "Sure, I am sending the secure link by SMS. Please review the details there before accepting anything.",
+        "Of course, sending it now. You will get a secure link by SMS — go through the details at your own pace.",
+        "Sure, the link is on its way by SMS. Take a look and let me know if you have questions."
+      ])
+      : stageLine(session, "send_details_hi", [
+        "ठीक है, मैं सुरक्षित link SMS पर भेज रहा हूँ। कुछ accept करने से पहले details वहीं देख लीजिए।",
+        "बिल्कुल, अभी भेज रहा हूँ। SMS पर link आएगा — आराम से पढ़िए।",
+        "ज़रूर, link SMS से आ रहा है। details देखकर बताइए अगर कोई सवाल हो।"
+      ]);
   }
 
   if (mentionsWrongAnswer(normalized)) {
-    if (english) return "Sorry, I misunderstood. Tell me the exact point: interest rate, EMI, amount, fees, or link?";
-    return "माफ़ कीजिए, मैं गलत समझा। आप क्या जानना चाहते हैं: ब्याज दर, ई एम आई, amount, fees या link?";
+    return english
+      ? stageLine(session, "wrong_answer_en", [
+        "Sorry, I misunderstood. Tell me the exact point: interest rate, EMI, amount, fees, or link?",
+        "My apologies. Which part did I get wrong — rate, EMI, amount, fees, or the link?",
+        "Sorry about that. What exactly did you want to know?"
+      ])
+      : stageLine(session, "wrong_answer_hi", [
+        "माफ़ कीजिए, मैं गलत समझा। आप क्या जानना चाहते हैं: ब्याज दर, ई एम आई, amount, fees या link?",
+        "माफी चाहता हूँ। कौन सी बात गलत बताई — rate, ई एम आई, amount या link?",
+        "Sorry, ग़लती हुई। आप exactly क्या जानना चाहते थे?"
+      ]);
   }
 
   if (complainsAboutRepetition(normalized)) {
@@ -1582,24 +1627,60 @@ function buildScriptedReply(session, text) {
   }
 
   if (asksIdentity(normalized)) {
-    if (english) return "I am LoanConnect's AI assistant, calling about your loan eligibility or offer. I will not ask for OTP or passwords.";
-    return "मैं लोन कनेक्ट का AI assistant हूँ, आपकी loan eligibility या offer के बारे में call कर रहा हूँ। मैं ओ टी पी या password नहीं पूछूँगा।";
+    return english
+      ? stageLine(session, "identity_en", [
+        "I am LoanConnect's AI assistant, calling about your loan eligibility or offer. I will not ask for OTP or passwords.",
+        "Good question — I am an AI assistant from LoanConnect. I am here about your loan offer and will never ask for OTP or PIN.",
+        "I am LoanConnect's AI. I call about loan offers and eligibility only — never for OTP, passwords, or card details."
+      ])
+      : stageLine(session, "identity_hi", [
+        "मैं लोन कनेक्ट का AI assistant हूँ, आपकी loan eligibility या offer के बारे में call कर रहा हूँ। मैं ओ टी पी या password नहीं पूछूँगा।",
+        "अच्छा सवाल है — मैं लोन कनेक्ट का AI assistant हूँ। loan offer के बारे में बात करने के लिए call किया है, ओ टी पी या PIN कभी नहीं माँगूँगा।",
+        "मैं लोन कनेक्ट से हूँ। सिर्फ आपकी loan eligibility के बारे में बात करना है — ओ टी पी, password कुछ नहीं पूछूँगा।"
+      ]);
   }
 
   if (asksDataSource(normalized)) {
-    if (english) return "This number is linked to a loan enquiry or app registration record. If that is wrong, tell me and I will mark it.";
-    return "यह number loan enquiry या app registration record से जुड़ा दिख रहा है। अगर यह गलत है, बताइए, मैं mark कर दूँगा।";
+    return english
+      ? stageLine(session, "data_source_en", [
+        "This number is linked to a loan enquiry or app registration record. If that is wrong, tell me and I will mark it.",
+        "Your number came up from a loan enquiry or app sign-up. If it is not yours or it is incorrect, just say so and I will update it.",
+        "We have this number from a loan application or registration. If that is not right, let me know and I will flag it."
+      ])
+      : stageLine(session, "data_source_hi", [
+        "यह number loan enquiry या app registration record से जुड़ा दिख रहा है। अगर यह गलत है, बताइए, मैं mark कर दूँगा।",
+        "आपका number loan enquiry या app sign-up से आया है। अगर यह सही नहीं है तो बताइए, मैं update कर दूँगा।",
+        "यह number एक loan application से linked है। गलत लगे तो बताइए, मैं note कर लूँगा।"
+      ]);
   }
 
   if (asksHumanSupport(normalized)) {
-    if (english) return "There is no human transfer on this call. I can note the issue, and support is available in the app.";
-    return "इस call पर human transfer नहीं है। मैं issue note कर सकता हूँ, और support app में available है।";
+    return english
+      ? stageLine(session, "human_support_en", [
+        "There is no human transfer on this call. I can note the issue, and support is available in the app.",
+        "I cannot transfer to a person right now, but I can note your concern. The app also has a support section that can help.",
+        "This call does not have a human transfer option. Tell me the issue and I will note it, or use app support for a faster response."
+      ])
+      : stageLine(session, "human_support_hi", [
+        "इस call पर human transfer नहीं है। मैं issue note कर सकता हूँ, और support app में available है।",
+        "अभी किसी इंसान से connect नहीं कर सकता, लेकिन आपकी बात note कर सकता हूँ। app में support section भी है।",
+        "इस call पर human transfer नहीं होता। problem बताइए, मैं note कर लेता हूँ — या app support से जल्दी मदद मिलेगी।"
+      ]);
   }
 
   if (mentionsLinkReceived(normalized)) {
     markLinkInstruction(session, "link_received");
-    if (english) return "Great. Open it once and tell me which screen you see: documents, KYC, bank verification, e-sign, final offer, or an error.";
-    return "बहुत अच्छा। Link खोलिए और बताइए कौन सा screen दिख रहा है: documents, KYC, bank verification, e-sign, final offer या error?";
+    return english
+      ? stageLine(session, "link_received_en", [
+        "Great. Open it once and tell me which screen you see: documents, KYC, bank verification, e-sign, final offer, or an error.",
+        "Perfect. Go ahead and open it — what is the first screen you land on?",
+        "Good. Open the link and tell me what you see on screen."
+      ])
+      : stageLine(session, "link_received_hi", [
+        "बहुत अच्छा। Link खोलिए और बताइए कौन सा screen दिख रहा है: documents, KYC, bank verification, e-sign, final offer या error?",
+        "बढ़िया। खोलिए — पहला screen क्या दिख रहा है?",
+        "अच्छा। Link खोलकर बताइए क्या दिख रहा है।"
+      ]);
   }
 
   if (shouldMoveToLinkAfterGreeting(session, normalized)) {
@@ -1640,15 +1721,42 @@ function buildScriptedReply(session, text) {
     }
     queueLeadLink(session, "user_agreed");
     if (lead.playbook_type === "UNAPPROVED_USERS") {
-      if (english) return "Sure, I am sending the secure link. Please open it and check your documents and final eligibility.";
-      return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर documents और final eligibility दो मिनट में check कर लीजिए।";
+      return english
+        ? stageLine(session, "agreed_unapproved_en", [
+          "Sure, I am sending the secure link. Please open it and check your documents and final eligibility.",
+          "Great, sending the link now. Open it and see what documents are needed for your eligibility.",
+          "Perfect, the link is on its way. Check your eligibility and documents inside."
+        ])
+        : stageLine(session, "agreed_unapproved_hi", [
+          "ठीक है, मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर documents और final eligibility दो मिनट में check कर लीजिए।",
+          "बढ़िया, link अभी भेज रहा हूँ। खोलकर देखिए कौन से documents चाहिए।",
+          "अच्छा, link आ रहा है। अंदर eligibility और documents check कर लीजिए।"
+        ]);
     }
     if (lead.playbook_type === "APPROVED_USERS") {
-      if (english) return "Sure, I am sending the secure link. Please open it to continue your loan offer.";
-      return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। आपका offer आगे बढ़ाने के लिए उसे खोल लीजिए।";
+      return english
+        ? stageLine(session, "agreed_approved_en", [
+          "Sure, I am sending the secure link. Please open it to continue your loan offer.",
+          "Perfect, sending the link now. Open it and your offer will be right there waiting.",
+          "Great, the link is coming. Open it to pick up where you left off on your offer."
+        ])
+        : stageLine(session, "agreed_approved_hi", [
+          "ठीक है, मैं सुरक्षित link भेज रहा हूँ। आपका offer आगे बढ़ाने के लिए उसे खोल लीजिए।",
+          "बढ़िया, link भेज रहा हूँ। खोलिए और आपका offer वहीं मिलेगा।",
+          "अच्छा, link आ रहा है। खोलकर offer आगे बढ़ाइए।"
+        ]);
     }
-    if (english) return "Sure, I am sending the secure link. Please open it and complete the next step.";
-    return "ठीक है, मैं सुरक्षित link भेज रहा हूँ। कृपया उसे खोलकर आगे का step पूरा कर लीजिए।";
+    return english
+      ? stageLine(session, "agreed_general_en", [
+        "Sure, I am sending the secure link. Please open it and complete the next step.",
+        "Great, sending the link now. Open it and carry on from where you stopped.",
+        "Perfect, the link is on its way. Open it and you will see the next step."
+      ])
+      : stageLine(session, "agreed_general_hi", [
+        "ठीक है, मैं सुरक्षित link भेज रहा हूँ। कृपया उसे खोलकर आगे का step पूरा कर लीजिए।",
+        "बढ़िया, link भेज रहा हूँ। खोलकर जहाँ रुके थे वहाँ से आगे बढ़िए।",
+        "अच्छा, link आ रहा है। खोलिए और अगला step दिख जाएगा।"
+      ]);
   }
 
   if (asksForgotLogin(normalized)) {
@@ -2406,7 +2514,61 @@ function refineAssistantReply(session = {}, userText = "", reply = "", { source 
     return normalizeTezCreditReply(session, replacement);
   }
 
+  if (source === "llm") {
+    return addConversationalStarter(session, userText, cleaned);
+  }
+
   return cleaned;
+}
+
+function addConversationalStarter(session = {}, userText = "", reply = "") {
+  const english = isEnglishSession(session);
+  const normalized = normalizeVoiceIntent(userText);
+
+  // Don't add a starter if the reply already begins with a natural one
+  const alreadyHasStarter = /^(हाँ|हां|अच्छा|देखिए|तो|समझ|बिल्कुल|ज़रूर|sure|okay|got it|yes|absolutely|of course|look|so,|actually)/i.test(reply.trim());
+  if (alreadyHasStarter) return reply;
+
+  // Don't add starter on first turn — it would clash with the intro
+  if ((session.userTurns || 0) <= 1) return reply;
+
+  const starter = pickConversationalStarter(session, normalized, english);
+  if (!starter) return reply;
+
+  return `${starter} ${reply}`;
+}
+
+function pickConversationalStarter(session = {}, normalized = "", english = false) {
+  const isConfused = /samajh nahi|kya bol|what did|repeat|sorry|confus|समझ नहीं|क्या बोल/.test(normalized);
+  const isFrustrated = /nahin chahiye|nahi chahiye|band karo|mat karo|bakwaas|tang|परेशान|बंद करो/.test(normalized);
+  const isAgreeing = /^(haan|haa|yes|ok|okay|theek|bilkul|sure|ठीक|हाँ|बिल्कुल)$/.test(normalized);
+  const isAsking = /\?/.test(normalized) || /kya|kyun|kaise|kitna|कब|क्या|कैसे|कितना/.test(normalized);
+
+  if (isFrustrated) {
+    return english
+      ? stageLine(session, "starter_frustrated_en", ["I understand.", "Fair enough.", "I hear you."])
+      : stageLine(session, "starter_frustrated_hi", ["समझ गया।", "ठीक है।", "सुन रहा हूँ।"]);
+  }
+  if (isConfused) {
+    return english
+      ? stageLine(session, "starter_confused_en", ["Let me explain.", "Sure, let me clarify.", "Of course."])
+      : stageLine(session, "starter_confused_hi", ["देखिए,", "समझाता हूँ,", "बिल्कुल,"]);
+  }
+  if (isAgreeing) {
+    return english
+      ? stageLine(session, "starter_agree_en", ["", "Great.", "Perfect."])
+      : stageLine(session, "starter_agree_hi", ["", "बढ़िया।", "अच्छा।"]);
+  }
+  if (isAsking) {
+    return english
+      ? stageLine(session, "starter_question_en", ["Good question.", "", "Sure."])
+      : stageLine(session, "starter_question_hi", ["अच्छा सवाल है।", "", "देखिए,"]);
+  }
+
+  // Default: rotate through soft starters or nothing
+  return english
+    ? stageLine(session, "starter_default_en", ["", "", "Okay.", ""])
+    : stageLine(session, "starter_default_hi", ["", "", "हाँ जी,", ""]);
 }
 
 function groundGeneratedAssistantReply(session = {}, userText = "", reply = "") {
@@ -3287,7 +3449,7 @@ async function getPcmBase64(text, session = {}) {
   const ttsLanguageCode = ttsLanguageCodeForSession(session);
   const speechText = prepareTextForSpeech(text, session);
   const speaker = process.env.SARVAM_TTS_SPEAKER || "shubh";
-  const model = process.env.SARVAM_TTS_MODEL || "bulbul:v2";
+  const model = process.env.SARVAM_TTS_MODEL || "bulbul:v3";
   const charCount = charLength(speechText);
   const cacheKey = buildAudioCacheKey({
     text: speechText,
@@ -3388,6 +3550,10 @@ function prepareTextForSpeech(text, session = {}) {
       .replace(/\bEMI\b/gi, "E M I")
       .replace(/\bKYC\b/gi, "K Y C")
       .replace(/\bOTP\b/gi, "O T P")
+      // natural pause after sentence-level starters
+      .replace(/^(Sure|Okay|Got it|Great|Perfect|Of course|Absolutely|Look)(\.?\s+)/i, "$1, ")
+      // ellipsis to a natural breath pause
+      .replace(/\.\.\./g, ", ")
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -3431,6 +3597,10 @@ function prepareTextForSpeech(text, session = {}) {
     .replace(/\bTheek hai\b/gi, "ठीक है")
     .replace(/\bSamjha\b/gi, "समझ गया")
     .replace(/\baap\b/gi, "आप")
+    // natural pause after Hindi acknowledgement starters
+    .replace(/^(हाँ जी|हाँ|अच्छा|ठीक है|समझ गया|देखिए|बिल्कुल|ज़रूर)(\.?\s+)/, "$1, ")
+    // ellipsis to breath pause
+    .replace(/\.\.\./g, ", ")
     .replace(/\s+/g, " ")
     .trim();
 }
