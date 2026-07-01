@@ -331,6 +331,25 @@ test("natural speaking confirmation also confirms the CSV identity", () => {
   assert.equal(state.confirmedName, true);
 });
 
+test("natural Hindi identity confirmation from production advances to availability", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    identityPrompted: true,
+    userTurns: 1,
+    lastSpokenText: "नमस्ते, मैं TezCredit से Raj बोल रहा हूँ। क्या मेरी बात Prasheel जी से हो रही है?"
+  });
+
+  _test.updateConversationMemory(state, "हां जी हो रही है।");
+  const reply = _test.buildScriptedReply(state, "हां जी हो रही है।");
+  assert.equal(state.confirmedName, true);
+  assert.match(reply, /क्या अभी दो मिनट बात कर सकते हैं/);
+  assert.doesNotMatch(reply, /क्या मेरी बात Prasheel जी से हो रही है/);
+});
+
 test("no after the named greeting asks for the intended person instead of rejecting the loan", () => {
   const state = session("English", {
     name: "Apoorv Gupta",
@@ -417,6 +436,30 @@ test("repeated natural yes confirms availability without repeating the permissio
   assert.equal(state.availabilityConfirmed, true);
   assert.match(reply, /bank verification pending/);
   assert.doesNotMatch(reply, /दो मिनट बात कर सकते/);
+});
+
+test("natural Hindi availability confirmation from production advances to journey purpose", () => {
+  const permission = "धन्यवाद, Prasheel जी। क्या अभी दो मिनट बात कर सकते हैं?";
+  for (const customerReply of ["हां कर सकते हैं बात बोलो आगे।", "कर सकते हैं बात?"]) {
+    const state = session("Hinglish", {
+      name: "Prasheel",
+      playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+      drop_stage: "BANK_VERIFICATION_PENDING",
+      source_metadata: { productName: "TezCredit" }
+    }, {
+      identityPrompted: true,
+      confirmedName: true,
+      userTurns: 2,
+      lastSpokenText: permission,
+      assistantReplyHistory: [permission]
+    });
+
+    _test.updateConversationMemory(state, customerReply);
+    const reply = _test.buildScriptedReply(state, customerReply);
+    assert.equal(state.availabilityConfirmed, true, customerReply);
+    assert.match(reply, /bank verification pending/, customerReply);
+    assert.doesNotMatch(reply, /दो मिनट बात कर सकते/, customerReply);
+  }
 });
 
 test("anti-repeat never replaces an availability prompt with journey instructions", () => {
@@ -667,6 +710,28 @@ test("voicebot classification ignores screening text once a human joins", () => 
   ]);
 
   assert.notEqual(result.outcome, "CALL_SCREENING");
+});
+
+test("identity and availability confirmations remain in progress until journey intent is known", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    userTurns: 2,
+    confirmedName: true,
+    confirmedNameTurn: 1,
+    availabilityConfirmed: true,
+    availabilityConfirmedTurn: 2
+  });
+
+  const result = _test.classifyLiveConversation(state, "हां कर सकते हैं बात बोलो आगे।", [
+    { speaker: "user", text: "हां जी हो रही है।" },
+    { speaker: "user", text: "हां कर सकते हैं बात बोलो आगे।" }
+  ]);
+
+  assert.equal(result.outcome, "IN_PROGRESS");
+  assert.equal(result.intent, "IN_PROGRESS");
+  assert.match(result.summary, /identity or availability/i);
 });
 
 test("voicebot rewrites assistant replies that repeat the previous line", () => {

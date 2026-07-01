@@ -1313,7 +1313,7 @@ function updateConversationMemory(session, text) {
   const extractedName = extractNameAnswer(text);
   const normalized = normalizeVoiceIntent(text);
   const confirmsKnownName = askedName
-    && isPositiveAgreement(normalized)
+    && confirmsIdentityResponse(normalized)
     && (Boolean(session.lead.name) || isTezJourneyLead(session.lead));
   const shortName = askedName ? shortNameAnswer(text) : "";
 
@@ -1326,10 +1326,24 @@ function updateConversationMemory(session, text) {
     }
   }
 
-  if (!session.availabilityConfirmed && askedForAvailabilityRecently(session.lastSpokenText) && isPositiveAgreement(normalized)) {
+  if (!session.availabilityConfirmed
+      && askedForAvailabilityRecently(session.lastSpokenText)
+      && confirmsAvailabilityResponse(normalized)) {
     session.availabilityConfirmed = true;
     session.availabilityConfirmedTurn = session.userTurns || 0;
   }
+}
+
+function confirmsIdentityResponse(text = "") {
+  const normalized = normalizeVoiceIntent(text);
+  return isPositiveAgreement(normalized)
+    || /(yes.*speaking|speaking.*yes|this is me|that is me|मैं ही|मेरी ही बात|बात.*हो रही है|बात.*हो रहा है|हां.*हो रही है|हाँ.*हो रही है|हां.*हो रहा है|हाँ.*हो रहा है)/.test(normalized);
+}
+
+function confirmsAvailabilityResponse(text = "") {
+  const normalized = normalizeVoiceIntent(text);
+  return isPositiveAgreement(normalized)
+    || /(yes.*can talk|can talk|we can talk|go ahead|tell me|कर सकते हैं बात|बात कर सकते हैं|बात कर सकते है|बोलो आगे|बोलिए आगे|बताइए आगे|हाँ.*कर सकते|हां.*कर सकते)/.test(normalized);
 }
 
 function askedForNameRecently(text) {
@@ -2212,6 +2226,20 @@ function classifyLiveConversation(session = {}, userMessage = "", transcript = [
     transcript: filteredTranscript,
     playbookType: session.lead?.playbook_type
   });
+
+  const confirmedConversationGateThisTurn = session.confirmedNameTurn === session.userTurns
+    || session.availabilityConfirmedTurn === session.userTurns;
+  if (confirmedConversationGateThisTurn && classification.outcome === "INTERESTED") {
+    return {
+      ...classification,
+      outcome: "IN_PROGRESS",
+      intent: "IN_PROGRESS",
+      confidence: 0.9,
+      reason: "Customer confirmed identity or availability; journey intent has not been established yet.",
+      nextAction: "Continue to the active TezCredit journey step.",
+      summary: `Latest user response: "${String(userMessage || "").slice(0, 180)}". Customer confirmed identity or availability; journey conversation is still in progress.`
+    };
+  }
 
   if (classification.outcome === "CALL_SCREENING" && session.screeningHumanJoined) {
     return {
