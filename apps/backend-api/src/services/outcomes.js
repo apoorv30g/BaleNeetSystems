@@ -141,8 +141,8 @@ function detectObjections(text) {
 
 function isOptOut(message) {
   const text = normalizeForIntent(message);
-  return /\b(stop|unsubscribe|remove|do not call|dont call|don't call|mat call|dobara call nahi|dobara phone nahi)\b/.test(text)
-    || /(दोबारा कॉल मत|दोबारा फोन मत|फिर कॉल मत|मत कॉल|कॉल मत करना|फोन मत करना)/.test(text);
+  return /\b(stop|unsubscribe|remove|do not call|dont call|don't call|never call|never contact|mat call|dobara call nahi|dobara phone nahi)\b/.test(text)
+    || /(दोबारा कॉल मत|दोबारा फोन मत|फिर कॉल मत|मत कॉल|कॉल मत करना|फोन मत करना|कभी कॉल मत|कभी call मत|कभी भी ना|कभी भी नहीं)/.test(text);
 }
 
 function isTerminalIntent(message) {

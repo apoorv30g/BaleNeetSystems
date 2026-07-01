@@ -925,6 +925,26 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  if (isOptOut(text)) {
+    session.ending = true;
+    await query(
+      `INSERT INTO dnc_list (tenant_id, phone, reason)
+       VALUES ($1,$2,'call_opt_out')
+       ON CONFLICT (tenant_id, phone) DO UPDATE SET reason='call_opt_out'`,
+      [session.tenantId, session.lead.phone]
+    );
+    const closingText = "समझ गया। हम आपको दोबारा call नहीं करेंगे। धन्यवाद।";
+    if (session.callId) {
+      await addTranscript(session.callId, "assistant", closingText);
+      await finalizeCall(session, {
+        outcome: "OPTED_OUT",
+        summary: `Latest user response: "${text.slice(0, 180)}". User opted out of future calls.`
+      });
+    }
+    await speakAndClose(ws, session, closingText, "opt_out");
+    return;
+  }
+
   if (isNamedCalleeDenial(session, text)) {
     const reply = namedCalleeDenialReply(session);
     await logVoicebotEvent(session, "named_callee_not_confirmed", {
@@ -944,17 +964,20 @@ async function processUserTranscript(ws, session, event) {
   }
 
   if (isAvailabilityDecline(session, text)) {
+    session.ending = true;
     const reply = availabilityDeclineReply(session);
-    await logVoicebotEvent(session, "conversation_permission_declined", { text });
+    const outcome = availabilityDeclineOutcome(text);
+    await logVoicebotEvent(session, "conversation_permission_declined", { text, outcome, terminal: true });
     if (session.callId) {
       await addTranscript(session.callId, "assistant", reply);
-      await query(
-        `UPDATE calls SET outcome='IN_PROGRESS', summary=$2, updated_at=NOW() WHERE id=$1`,
-        [session.callId, "Customer said it was not a good time; the bot asked for a preferred callback time."]
-      );
+      await finalizeCall(session, {
+        outcome,
+        summary: outcome === "CALLBACK"
+          ? `Latest user response: "${text.slice(0, 180)}". Customer was unavailable; the call ended politely without requesting a callback time.`
+          : `Latest user response: "${text.slice(0, 180)}". Customer declined the conversation; the call ended politely.`
+      });
     }
-    await speakText(ws, session, reply, "availability_callback_prompt");
-    scheduleNoSpeechCheck(ws, session, "after_availability_callback_prompt");
+    await speakAndClose(ws, session, reply, "availability_declined_close");
     return;
   }
 
@@ -963,26 +986,6 @@ async function processUserTranscript(ws, session, event) {
   });
   if (journeyProgress) {
     await handleTezJourneyProgress(ws, session, text, journeyProgress);
-    return;
-  }
-
-  if (isOptOut(text)) {
-    session.ending = true;
-    await query(
-      `INSERT INTO dnc_list (tenant_id, phone, reason)
-       VALUES ($1,$2,'call_opt_out')
-       ON CONFLICT (tenant_id, phone) DO UPDATE SET reason='call_opt_out'`,
-      [session.tenantId, session.lead.phone]
-    );
-    const closingText = "समझ गया। हम आपको दोबारा call नहीं करेंगे। धन्यवाद।";
-    if (session.callId) {
-      await addTranscript(session.callId, "assistant", closingText);
-      await finalizeCall(session, {
-        outcome: "OPTED_OUT",
-        summary: `Latest user response: "${text.slice(0, 180)}". User opted out of future calls.`
-      });
-    }
-    await speakAndClose(ws, session, closingText, "opt_out");
     return;
   }
 
@@ -1400,12 +1403,20 @@ function isAvailabilityDecline(session = {}, text = "") {
   if (!askedForAvailabilityRecently(session.lastSpokenText)) return false;
   const normalized = normalizeVoiceIntent(text);
   return isBareNegative(normalized)
-    || /(not now|cannot talk|can t talk|busy|अभी नहीं|अभी नही|नहीं कर सकते|नही कर सकते|बात नहीं कर)/.test(normalized);
+    || /^(no|nope|na|nahi|nahin|nhi|नहीं|नही|ना|न|ਨਹੀਂ|ਨਹੀ)(\s|$)/.test(normalized)
+    || /(not now|not a good time|cannot talk|can t talk|cannot speak|can t speak|don t have time|no time|time नहीं|time नही|time nahi|time nahin|busy|not interested|अभी नहीं|अभी नही|समय नहीं|समय नही|टाइम नहीं|टाइम नही|व्यस्त|बिजी|नहीं कर सकते|नही कर सकते|बात नहीं कर|बात नही कर|ਨਹੀਂ|ਨਹੀ)/.test(normalized);
 }
 
 function availabilityDeclineReply(session = {}) {
-  if (isEnglishSession(session)) return "No problem. What time would be better for me to call you back?";
-  return "कोई बात नहीं। मैं आपको किस समय दोबारा call करूँ?";
+  if (isEnglishSession(session)) return "No problem. Thank you for your time.";
+  return "कोई बात नहीं। आपका समय देने के लिए धन्यवाद।";
+}
+
+function availabilityDeclineOutcome(text = "") {
+  const normalized = normalizeVoiceIntent(text);
+  return /(not now|not a good time|cannot talk|can t talk|cannot speak|can t speak|don t have time|no time|time नहीं|time नही|time nahi|time nahin|busy|अभी नहीं|अभी नही|समय नहीं|समय नही|टाइम नहीं|टाइम नही|व्यस्त|बिजी)/.test(normalized)
+    ? "CALLBACK"
+    : "NOT_INTERESTED";
 }
 
 function extractNameAnswer(text) {
@@ -1753,6 +1764,13 @@ function buildTezIdentityGateReply(session = {}, text = "", english = false) {
   }
 
   if (!session.availabilityConfirmed) {
+    if (asksReason(text)) {
+      const reason = stageReasonReply(session, english)
+        || (english
+          ? "I am calling because one TezCredit loan step is pending."
+          : "यह call इसलिए है क्योंकि TezCredit का एक loan step pending है।");
+      return `${reason} ${availabilityQuestion(session, english)}`;
+    }
     return availabilityQuestion(session, english);
   }
 
@@ -2208,7 +2226,7 @@ function contextualNegativeReply(session = {}) {
 }
 
 function isBareNegative(text = "") {
-  return /^(no|nope|na|nahi|nahin|nhi|not now|नहीं|नही|ना|न|नाही)$/.test(text);
+  return /^(no|nope|na|nahi|nahin|nhi|not now|नहीं|नही|ना|न|नाही|ਨਹੀਂ|ਨਹੀ)( ji| thanks| thank you| जी)?$/.test(text);
 }
 
 function isConversationalBackchannel(text = "") {
@@ -2628,7 +2646,7 @@ function asksConfused(text) {
 }
 
 function asksReason(text) {
-  return /(kyun|why|kisliye|क्यों|किसलिए|किस लिये|call kyu|कॉल क्यों)/.test(text);
+  return /(kyun|why|kisliye|kis liye|kiske regarding|kis ke regarding|kis baare|what is this about|what is the call about|what are you calling about|calling regarding|regarding what|regarding|क्यों|किसलिए|किस लिये|किस बारे|किसके बारे|किस संबंध|किस सिलसिले|क्या बात|call kyu|कॉल क्यों)/.test(text);
 }
 
 function asksQuestion(text) {
@@ -3642,6 +3660,7 @@ module.exports = {
     sttFinalWatchdogConfig,
     shouldRecoverMissingSttFinal,
     availabilityDeclineReply,
+    availabilityDeclineOutcome,
     namedCalleeDenialReply,
     shouldCancelAssistantSpeech,
     updateConversationMemory

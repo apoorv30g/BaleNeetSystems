@@ -499,7 +499,7 @@ test("bank screen guidance progresses from visible screen to selecting the repor
   assert.equal(state.bankVerificationOptionSeen, true);
 });
 
-test("no after the availability question asks for a callback time", () => {
+test("no after the availability question closes politely without another question", () => {
   const state = session("English", {
     name: "Apoorv Gupta",
     playbook_type: "TEZ_SELFIE_PENDING",
@@ -510,7 +510,52 @@ test("no after the availability question asks for a callback time", () => {
   });
 
   assert.equal(_test.isAvailabilityDecline(state, "no"), true);
-  assert.match(_test.availabilityDeclineReply(state), /what time.*call you back/i);
+  assert.equal(_test.availabilityDeclineReply(state), "No problem. Thank you for your time.");
+  assert.doesNotMatch(_test.availabilityDeclineReply(state), /\?/);
+  assert.equal(_test.availabilityDeclineOutcome("no"), "NOT_INTERESTED");
+});
+
+test("busy and negative availability responses always close the conversation gate", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    lastSpokenText: "धन्यवाद, Prasheel जी। क्या अभी दो मिनट बात कर सकते हैं?"
+  });
+
+  for (const response of [
+    "नहीं अभी मैं busy हूं।",
+    "अभी बात नहीं कर सकते",
+    "मेरे पास time नहीं है",
+    "not a good time",
+    "नहीं, किसके regarding?",
+    "ਨਹੀਂ ਜੀ"
+  ]) {
+    assert.equal(_test.isAvailabilityDecline(state, response), true, response);
+  }
+  assert.equal(_test.availabilityDeclineOutcome("नहीं अभी मैं busy हूं।"), "CALLBACK");
+  assert.equal(_test.availabilityDeclineReply(state), "कोई बात नहीं। आपका समय देने के लिए धन्यवाद।");
+  assert.doesNotMatch(_test.availabilityDeclineReply(state), /\?/);
+});
+
+test("purpose question at the availability gate explains the active TezCredit step", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    identityPrompted: true,
+    confirmedName: true,
+    lastSpokenText: "धन्यवाद, Prasheel जी। क्या अभी दो मिनट बात कर सकते हैं?"
+  });
+
+  const reply = _test.buildScriptedReply(state, "किसके regarding?");
+  assert.match(reply, /bank verification pending/);
+  assert.match(reply, /क्या अभी दो मिनट बात कर सकते हैं/);
+  assert.notEqual(reply, "धन्यवाद, Prasheel जी। क्या अभी दो मिनट बात कर सकते हैं?");
 });
 
 test("TezCredit stage guidance sends the user through Apply Now on the website", () => {

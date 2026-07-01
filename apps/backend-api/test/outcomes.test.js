@@ -20,6 +20,8 @@ test("inferOutcome detects disputes", () => {
 
 test("isOptOut detects do-not-call language", () => {
   assert.equal(isOptOut("please do not call me again"), true);
+  assert.equal(isOptOut("कभी भी ना"), true);
+  assert.equal(isOptOut("never contact me again"), true);
 });
 
 test("Hindi decline with bye is terminal not interested", () => {
