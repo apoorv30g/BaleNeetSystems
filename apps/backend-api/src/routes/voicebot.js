@@ -66,7 +66,7 @@ const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
 const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
 const PCM_CACHE_MAX = Number(process.env.VOICEBOT_PCM_CACHE_MAX || 200);
-const MAX_CALL_SECONDS = Math.max(15, Number(process.env.VOICEBOT_MAX_CALL_SECONDS || 120));
+const MAX_CALL_SECONDS = Math.max(15, Number(process.env.VOICEBOT_MAX_CALL_SECONDS || 300));
 const MAX_CALL_CLOSING_LEAD_SECONDS = Math.min(
   Math.max(1, Number(process.env.VOICEBOT_MAX_CALL_CLOSING_LEAD_SECONDS || 5)),
   MAX_CALL_SECONDS - 1
@@ -74,6 +74,8 @@ const MAX_CALL_CLOSING_LEAD_SECONDS = Math.min(
 const MAX_CALL_CLOSE_TEXT_EN = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_EN || "You can follow the pending steps now.";
 const MAX_CALL_CLOSE_TEXT_HI = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_HI || "अब आप बाकी चरण पूरे कर सकते हैं।";
 const VOICEBOT_AGENT_NAME = String(process.env.VOICEBOT_AGENT_NAME || "Raj").trim() || "Raj";
+const WEBSITE_LOGIN_FIRST_CHECK_MS = Math.max(1000, Number(process.env.VOICEBOT_WEBSITE_FIRST_CHECK_MS || 20000));
+const WEBSITE_LOGIN_SECOND_CHECK_MS = Math.max(1000, Number(process.env.VOICEBOT_WEBSITE_SECOND_CHECK_MS || 30000));
 
 // Bounded LRU cache — prevents unbounded memory growth over long server uptime.
 const pcmCache = (() => {
@@ -196,6 +198,12 @@ function attachVoicebot(server) {
       noSpeechPromptTimer: null,
       noSpeechEndTimer: null,
       maxCallTimer: null,
+      websiteLoginCheckTimer: null,
+      websiteLoginFollowupTimer: null,
+      websiteWaitActive: false,
+      websiteCheckCount: 0,
+      websiteLoginConfirmed: false,
+      websiteLoginAcknowledged: false,
       introStarted: false,
       startedAt: Date.now()
     };
@@ -212,6 +220,7 @@ function attachVoicebot(server) {
       session.closed = true;
       if (session.introTimer) clearTimeout(session.introTimer);
       clearMaxCallTimer(session);
+      clearWebsiteLoginChecks(session);
       clearInterimTimer(session);
       clearNoSpeechTimers(session);
       session.stt?.close();
@@ -369,7 +378,7 @@ async function enforceMaxCallDuration(ws, session) {
            END,
            updated_at=NOW()
        WHERE id=$1`,
-      [session.callId, "Call closed at the two-minute limit after directing the customer to continue the pending steps."]
+      [session.callId, "Call closed at the five-minute limit after directing the customer to continue the pending steps."]
     );
   }
   await logVoicebotEvent(session, "max_call_duration_reached", {
@@ -698,6 +707,12 @@ async function handleTranscript(ws, session, event) {
   const text = event.transcript.trim();
   if (!text) return;
   clearNoSpeechTimers(session);
+  if (session.websiteWaitActive && websiteLoginConfirmed(text, {
+    allowBareAgreement: session.websiteCheckCount > 0
+  })) {
+    session.websiteLoginConfirmed = true;
+    clearWebsiteLoginChecks(session);
+  }
 
   if (!event.isFinal && !event.speechFinal) {
     trackInterimTranscript(ws, session, event);
@@ -1047,7 +1062,119 @@ async function processUserTranscript(ws, session, event) {
   }
 
   await speakText(ws, session, reply, "reply_played");
-  scheduleNoSpeechCheck(ws, session, "after_reply");
+  if (!session.websiteWaitActive && !session.websiteLoginConfirmed && shouldStartWebsiteLoginWait(session, reply)) {
+    scheduleWebsiteLoginChecks(ws, session);
+  } else if (!session.websiteWaitActive) {
+    scheduleNoSpeechCheck(ws, session, "after_reply");
+  }
+}
+
+function shouldStartWebsiteLoginWait(session = {}, text = "") {
+  if (!isTezJourneyLead(session.lead) || session.websiteLoginConfirmed) return false;
+  const normalized = normalizeVoiceIntent(text);
+  const mentionsWebsite = /(www tezcredit com|tezcredit website|tez credit website|website)/.test(normalized);
+  const mentionsApplyNow = /(apply now)/.test(normalized);
+  return mentionsWebsite && mentionsApplyNow;
+}
+
+function scheduleWebsiteLoginChecks(ws, session) {
+  clearWebsiteLoginChecks(session);
+  clearNoSpeechTimers(session);
+  session.websiteWaitActive = true;
+  session.websiteLoginConfirmed = false;
+  session.websiteCheckCount = 0;
+
+  session.websiteLoginCheckTimer = setTimeout(() => {
+    session.websiteLoginCheckTimer = null;
+    deliverWebsiteLoginCheck(ws, session).catch(err => {
+      logger.warn("voicebot_website_check_failed", { error: err.message, callId: session.callId, check: 1 });
+    });
+  }, WEBSITE_LOGIN_FIRST_CHECK_MS);
+
+  session.websiteLoginFollowupTimer = setTimeout(() => {
+    session.websiteLoginFollowupTimer = null;
+    closeAfterWebsiteLoginTimeout(ws, session).catch(err => {
+      logger.warn("voicebot_website_timeout_close_failed", { error: err.message, callId: session.callId });
+      if (!session.closed && ws.readyState === ws.OPEN) ws.close();
+    });
+  }, WEBSITE_LOGIN_SECOND_CHECK_MS);
+
+  logVoicebotEvent(session, "website_login_wait_started", {
+    firstCheckMs: WEBSITE_LOGIN_FIRST_CHECK_MS,
+    finalCheckMs: WEBSITE_LOGIN_SECOND_CHECK_MS
+  }).catch(() => {});
+}
+
+async function deliverWebsiteLoginCheck(ws, session) {
+  if (!session.websiteWaitActive || session.websiteLoginConfirmed || session.closed || session.ending || ws.readyState !== ws.OPEN) return;
+  session.websiteCheckCount = 1;
+  const prompt = websiteLoginCheckText(session, 1);
+  if (session.callId) await addTranscript(session.callId, "assistant", prompt);
+  await logVoicebotEvent(session, "website_login_check", {
+    checkNumber: 1,
+    elapsedMs: WEBSITE_LOGIN_FIRST_CHECK_MS,
+    prompt
+  });
+  await speakText(ws, session, prompt, "website_login_check_1");
+}
+
+async function closeAfterWebsiteLoginTimeout(ws, session) {
+  if (!session.websiteWaitActive || session.websiteLoginConfirmed || session.closed || session.ending || ws.readyState !== ws.OPEN) return;
+  session.ending = true;
+  invalidateAssistantTurn(session, "website_login_timeout");
+  if (session.speaking) cancelAssistantSpeech(ws, session, "website_login_timeout");
+  const closingText = websiteLoginCheckText(session, 2);
+  if (session.callId) {
+    await addTranscript(session.callId, "assistant", closingText);
+    await query(
+      `UPDATE calls
+       SET outcome=CASE WHEN outcome IS NULL OR outcome='IN_PROGRESS' THEN 'CALLBACK' ELSE outcome END,
+           summary=$2,
+           updated_at=NOW()
+       WHERE id=$1`,
+      [session.callId, "Customer did not confirm website login within 30 seconds and was asked to complete the pending journey online."]
+    );
+  }
+  await logVoicebotEvent(session, "website_login_timeout", {
+    totalWaitMs: WEBSITE_LOGIN_SECOND_CHECK_MS,
+    closingText
+  });
+  await speakAndClose(ws, session, closingText, "website_login_timeout_close");
+}
+
+function websiteLoginConfirmed(text = "", { allowBareAgreement = false } = {}) {
+  const normalized = normalizeVoiceIntent(text);
+  if (/(not yet|not opened|not logged|nahi|nahin|नहीं|नही|नहीं हुआ|नही हुआ|नहीं खुल|नही खुल)/.test(normalized)) return false;
+  const explicitConfirmation = /(logged in|login ho gaya|login kar liya|login हो गया|login कर लिया|लॉगिन हो गया|लॉग इन हो गया|opened|website खुल|खुल गई|खुल गया|दिख रहा|दिख रही)/.test(normalized);
+  return explicitConfirmation || (allowBareAgreement && isPositiveAgreement(normalized));
+}
+
+function websiteLoginCheckText(session = {}, checkNumber = 1) {
+  const english = isEnglishSession(session);
+  if (checkNumber === 1) {
+    return english
+      ? "Have you opened www.tezcredit.com, clicked Apply Now, and logged in?"
+      : "क्या आपने www.tezcredit.com खोलकर Apply Now पर click किया और login कर लिया?";
+  }
+  return english
+    ? "Please log in at www.tezcredit.com and complete the pending process. Thank you."
+    : "कृपया www.tezcredit.com पर login करके pending process पूरा कर लीजिए। धन्यवाद।";
+}
+
+function websiteLoginCheckDelays() {
+  return { firstCheckMs: WEBSITE_LOGIN_FIRST_CHECK_MS, finalCheckMs: WEBSITE_LOGIN_SECOND_CHECK_MS };
+}
+
+function maxCallDurationConfig() {
+  return { maxCallSeconds: MAX_CALL_SECONDS, closingLeadSeconds: MAX_CALL_CLOSING_LEAD_SECONDS };
+}
+
+function clearWebsiteLoginChecks(session = {}) {
+  if (session.websiteLoginCheckTimer) clearTimeout(session.websiteLoginCheckTimer);
+  if (session.websiteLoginFollowupTimer) clearTimeout(session.websiteLoginFollowupTimer);
+  session.websiteLoginCheckTimer = null;
+  session.websiteLoginFollowupTimer = null;
+  session.websiteWaitActive = false;
 }
 
 async function handleTezJourneyProgress(ws, session, text, progress) {
@@ -1235,7 +1362,10 @@ function namedCalleeDenialReply(session = {}) {
 }
 
 function isAvailabilityDecline(session = {}, text = "") {
-  return askedForAvailabilityRecently(session.lastSpokenText) && isBareNegative(normalizeVoiceIntent(text));
+  if (!askedForAvailabilityRecently(session.lastSpokenText)) return false;
+  const normalized = normalizeVoiceIntent(text);
+  return isBareNegative(normalized)
+    || /(not now|cannot talk|can t talk|busy|अभी नहीं|अभी नही|नहीं कर सकते|नही कर सकते|बात नहीं कर)/.test(normalized);
 }
 
 function availabilityDeclineReply(session = {}) {
@@ -1322,6 +1452,11 @@ function buildScriptedReply(session, text) {
   const identityGateReply = buildTezIdentityGateReply(session, normalized, english);
   if (identityGateReply) return identityGateReply;
 
+  if (isTezJourneyLead(lead) && session.websiteLoginConfirmed && !session.websiteLoginAcknowledged) {
+    session.websiteLoginAcknowledged = true;
+    return positiveFollowUpReply(session, english);
+  }
+
   if (lead.playbook_type === "FRESH_LEAD" && session.confirmedNameTurn === session.userTurns && isNameConfirmationTurn(normalized)) {
     if (english) return "Thanks. How much loan are you looking for right now?";
     return "धन्यवाद। अभी आपको कितना loan चाहिए?";
@@ -1383,6 +1518,16 @@ function buildScriptedReply(session, text) {
     }
     if (english) return "Great. I am sending the secure link. Please open it and tell me which screen you see.";
     return "बहुत अच्छा। मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर बताइए कौन सा screen दिख रहा है।";
+  }
+
+  if (isTezJourneyLead(lead) && amount && asksChangeAmount(normalized)) {
+    if (english) return `First complete the current loan for ${amountText}. After that, you may become eligible for a higher amount.`;
+    return `पहले ${amountText} का current loan पूरा कीजिए। इसके बाद higher amount की eligibility मिल सकती है।`;
+  }
+
+  if (isTezJourneyLead(lead) && amount && asksAmount(normalized)) {
+    if (english) return `Your current eligible amount is ${amountText}, according to your TezCredit details.`;
+    return `आपकी TezCredit details के अनुसार current eligible amount ${amountText} है।`;
   }
 
   const stageConversationalReply = buildStageConversationalReply(session, normalized, { amountText, english });
@@ -1877,14 +2022,32 @@ function stageNextStepReply(session = {}, english = false) {
 function stageScreenGuidanceReply(session = {}, text = "", english = false) {
   const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
   if (stage.includes("BANK_VERIFICATION")) {
-    if (/(upi|यू पी आई|bank account|account|खाता|error|एरर|fail|failed)/.test(text)) {
+    if (/(error|एरर|fail|failed)/.test(text)) {
       return english
-        ? "Use only the in-app option and retry once if needed. Is bank verification successful now?"
-        : "सिर्फ app के अंदर वाला option use कीजिए; जरूरत हो तो एक बार retry करें। क्या bank verification successful हो गया?";
+        ? "I understand. Retry once on the website. If it still fails, note the error and use website support."
+        : "समझ गया। Website पर एक बार retry कीजिए। फिर भी fail हो तो error note करके website support use कीजिए।";
     }
-    return english
-      ? "Tell me what you see there: UPI, bank account, permission, or an error?"
-      : "वहाँ क्या दिख रहा है: UPI, bank account, permission, या कोई error?";
+    if (/(upi|यू पी आई|bank account|account|खाता)/.test(text)) {
+      session.bankVerificationOptionSeen = true;
+      return stageLine(session, "bank_option_seen", english
+        ? [
+          "Good, select that option and follow the website instructions. Is bank verification successful now?",
+          "Please tap the visible option and finish verification. Tell me when it shows successful."
+        ]
+        : [
+          "ठीक है, वही option चुनकर website के instructions follow कीजिए। क्या bank verification successful हो गया?",
+          "दिख रहा option tap करके verification पूरा कीजिए। Successful दिखे तो मुझे बताइए।"
+        ]);
+    }
+    return stageLine(session, "bank_screen_visible", english
+      ? [
+        "Good. Which option is visible there: UPI, bank account, permission, or an error?",
+        "Thanks. Please read the option label you see: UPI, account verification, or an error?"
+      ]
+      : [
+        "ठीक है। वहाँ कौन सा option दिख रहा है: UPI, bank account, permission या error?",
+        "अच्छा। Screen पर लिखा option बताइए: UPI, account verification या कोई error?"
+      ]);
   }
   if (stage.includes("SELFIE")) {
     if (/(error|fail|camera|permission|एरर|फेल|कैमरा)/.test(text)) {
@@ -2070,6 +2233,7 @@ function refineAssistantReply(session = {}, userText = "", reply = "", { source 
   const surfaceCorrected = normalizeTezCreditReply(session, reply);
   const cleaned = completeSpokenReply(String(surfaceCorrected || "").replace(/\s+/g, " ").trim(), session);
   if (!cleaned) return normalizeTezCreditReply(session, antiRepeatReply(session, userText));
+  if (isConversationGatePrompt(cleaned)) return cleaned;
 
   if (isTooSimilarToRecentAssistant(session, cleaned)) {
     const replacement = antiRepeatReply(session, userText);
@@ -2084,6 +2248,11 @@ function refineAssistantReply(session = {}, userText = "", reply = "", { source 
   }
 
   return cleaned;
+}
+
+function isConversationGatePrompt(text = "") {
+  const normalized = normalizeVoiceIntent(text);
+  return askedForNameRecently(normalized) || askedForAvailabilityRecently(normalized);
 }
 
 function completeSpokenReply(text = "", session = {}) {
@@ -2145,14 +2314,25 @@ function antiRepeatReply(session = {}, userText = "") {
   }
 
   if (stage.includes("BANK_VERIFICATION")) {
+    if (session.bankVerificationOptionSeen) {
+      return stageLine(session, "bank_option_followup", english
+        ? [
+          "Select the option you can see and complete its instructions. Tell me when the website shows successful.",
+          "Continue with that UPI or account option. What status appears after you submit it?"
+        ]
+        : [
+          "दिख रहा option चुनकर instructions पूरे कीजिए। Website पर successful आए तो बताइए।",
+          "उसी UPI या account option से continue कीजिए। Submit करने के बाद कौन सा status दिखता है?"
+        ]);
+    }
     return stageLine(session, "bank_anti_repeat", english
       ? [
-        "Let me put it simply: open TezCredit, tap bank verification, and tell me if UPI or account option appears.",
-        "I will not repeat the full line. Just check whether bank verification is visible in the app."
+        "Open the TezCredit website and choose bank verification. Which option do you see: UPI or bank account?",
+        "On bank verification, look for UPI or account verification and tell me which one is available."
       ]
       : [
-        "Simple रखता हूँ: TezCredit app खोलिए, bank verification tap कीजिए, और बताइए UPI या account option दिख रहा है?",
-        "मैं वही बात repeat नहीं करूँगा। बस app में देखिए bank verification दिख रहा है या नहीं।"
+        "TezCredit website पर bank verification खोलिए। UPI या bank account में कौन सा option दिख रहा है?",
+        "Bank verification screen पर UPI या account verification देखिए। कौन सा option available है?"
       ]);
   }
 
@@ -2181,6 +2361,7 @@ function antiRepeatReply(session = {}, userText = "") {
 
 async function speakAndClose(ws, session, text, markName) {
   clearMaxCallTimer(session);
+  clearWebsiteLoginChecks(session);
   clearNoSpeechTimers(session);
   clearInterimTimer(session);
   await speakText(ws, session, text, markName);
@@ -2190,6 +2371,7 @@ async function speakAndClose(ws, session, text, markName) {
 
 async function closeQuietly(ws, session) {
   clearMaxCallTimer(session);
+  clearWebsiteLoginChecks(session);
   clearNoSpeechTimers(session);
   clearInterimTimer(session);
   await sleep(Number(process.env.VOICEBOT_NON_HUMAN_CLOSE_GRACE_MS || 100));
@@ -2281,10 +2463,21 @@ function isUnclearGreetingResponse(text = "") {
 }
 
 function isPositiveAgreement(text) {
-  return /^(haan|han|haa|yes|ok|okay|sure|ठीक|हाँ|हां|हा|ओके)$/.test(text)
-    || /^(yes|haan|han|हाँ|हां|जी)\s+(sure|ji|yes|हाँ|हां|जी)$/.test(text)
-    || /^(yes|haan|han|हाँ|हां|जी).*(speaking|this is|bol raha|bol rahi|मैं ही|बोल रहा|बोल रही)/.test(text)
-    || /(kar dijiye|kar do|bhej do|bhej dijiye|send kar|continue|कर दीजिए|कर दीजिये|कर दो|भेज दो|भेज दीजिए|भेज दीजिये|आगे बढ़)/.test(text);
+  const normalized = normalizeVoiceIntent(text);
+  const withoutConversationalFillers = normalized
+    .replace(/\b(ji|please|tell me|go ahead)\b/g, " ")
+    .replace(/(जी|बताइए|बताओ|बोलिए|बोलो)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const agreementWords = withoutConversationalFillers.split(/\s+/).filter(Boolean);
+  const onlyAgreementWords = agreementWords.length > 0
+    && agreementWords.every(word => /^(haan|han|haa|yes|yeah|yep|ok|okay|sure|ठीक|हाँ|हां|हा|ओके)$/.test(word));
+
+  return onlyAgreementWords
+    || /^(haan|han|haa|yes|ok|okay|sure|ठीक|हाँ|हां|हा|ओके)$/.test(normalized)
+    || /^(yes|haan|han|हाँ|हां|जी)\s+(sure|ji|yes|हाँ|हां|जी)$/.test(normalized)
+    || /^(yes|haan|han|हाँ|हां|जी).*(speaking|this is|bol raha|bol rahi|मैं ही|बोल रहा|बोल रही)/.test(normalized)
+    || /(kar dijiye|kar do|bhej do|bhej dijiye|send kar|continue|कर दीजिए|कर दीजिये|कर दो|भेज दो|भेज दीजिए|भेज दीजिये|आगे बढ़)/.test(normalized);
 }
 
 function asksAmount(text) {
@@ -2308,7 +2501,7 @@ function asksEmiOrTenure(text) {
 }
 
 function asksChangeAmount(text) {
-  return /(reduce.*amount|lower amount|increase.*amount|higher amount|amount kam|amount badh|कम amount|कम अमाउंट|ज्यादा amount|ज़्यादा amount|अमाउंट कम|अमाउंट बढ़|राशि कम|राशि बढ़)/.test(text);
+  return /(reduce.*amount|lower amount|increase.*amount|higher amount|more amount|more loan|want more|amount kam|amount badh|और amount|और अमाउंट|ज्यादा amount|ज़्यादा amount|ज्यादा चाहिए|ज़्यादा चाहिए|कम amount|कम अमाउंट|अमाउंट कम|अमाउंट बढ़|राशि कम|राशि बढ़)/.test(text);
 }
 
 function asksDocuments(text) {
@@ -3341,6 +3534,11 @@ module.exports = {
     normalizeTezCreditReply,
     prepareTextForSpeech,
     maxCallClosingText,
+    maxCallDurationConfig,
+    shouldStartWebsiteLoginWait,
+    websiteLoginConfirmed,
+    websiteLoginCheckText,
+    websiteLoginCheckDelays,
     availabilityDeclineReply,
     namedCalleeDenialReply,
     shouldCancelAssistantSpeech,

@@ -397,6 +397,65 @@ test("TezCredit opening waits for identity and availability before journey guida
   assert.match(guidance, /Apply Now/i);
 });
 
+test("repeated natural yes confirms availability without repeating the permission question", () => {
+  const permission = "धन्यवाद, Prasheel जी। क्या अभी दो मिनट बात कर सकते हैं?";
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    identityPrompted: true,
+    confirmedName: true,
+    userTurns: 2,
+    lastSpokenText: permission,
+    assistantReplyHistory: [permission]
+  });
+
+  _test.updateConversationMemory(state, "हाँ जी हाँ जी बताइए");
+  const reply = _test.buildScriptedReply(state, "हाँ जी हाँ जी बताइए");
+  assert.equal(state.availabilityConfirmed, true);
+  assert.match(reply, /bank verification pending/);
+  assert.doesNotMatch(reply, /दो मिनट बात कर सकते/);
+});
+
+test("anti-repeat never replaces an availability prompt with journey instructions", () => {
+  const permission = "धन्यवाद, Prasheel जी। क्या अभी दो मिनट बात कर सकते हैं?";
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    lastSpokenText: permission,
+    assistantReplyHistory: [permission]
+  });
+
+  const reply = _test.refineAssistantReply(state, "हाँ जी", permission, { source: "scripted" });
+  assert.equal(reply, permission);
+  assert.doesNotMatch(reply, /UPI|bank verification tap/i);
+});
+
+test("bank screen guidance progresses from visible screen to selecting the reported option", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true
+  });
+
+  const first = _test.buildScriptedReply(state, "हाँ जी दिख रहा है");
+  const second = _test.buildScriptedReply(state, "दिख रहा है दिख रहा है");
+  const option = _test.buildScriptedReply(state, "UPI का option दिख रहा है");
+
+  assert.match(first, /कौन सा option|UPI/);
+  assert.match(second, /Screen पर लिखा option|UPI/);
+  assert.notEqual(first, second);
+  assert.match(option, /option चुनकर|successful/);
+  assert.equal(state.bankVerificationOptionSeen, true);
+});
+
 test("no after the availability question asks for a callback time", () => {
   const state = session("English", {
     name: "Apoorv Gupta",
@@ -450,18 +509,105 @@ test("TezCredit Hindi speech says 1800 in Hindi words", () => {
   assert.doesNotMatch(spoken, /₹|1,800/);
 });
 
-test("two-minute call limit uses the requested English closing", () => {
+test("five-minute call limit uses the requested English closing", () => {
   assert.equal(
     _test.maxCallClosingText(session("English")),
     "You can follow the pending steps now."
   );
 });
 
-test("two-minute call limit uses a natural Hindi closing", () => {
+test("five-minute call limit uses a natural Hindi closing", () => {
   assert.equal(
     _test.maxCallClosingText(session("Hinglish")),
     "अब आप बाकी चरण पूरे कर सकते हैं।"
   );
+});
+
+test("voicebot limits calls to five minutes by default", () => {
+  assert.deepEqual(_test.maxCallDurationConfig(), {
+    maxCallSeconds: 300,
+    closingLeadSeconds: 5
+  });
+});
+
+test("TezCredit website wait checks at 20 seconds and closes at 30 seconds total", () => {
+  assert.deepEqual(_test.websiteLoginCheckDelays(), {
+    firstCheckMs: 20000,
+    finalCheckMs: 30000
+  });
+
+  const state = session("English", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  });
+  assert.equal(
+    _test.shouldStartWebsiteLoginWait(state, "Open www.tezcredit.com, click Apply Now, and log in."),
+    true
+  );
+  assert.equal(
+    _test.shouldStartWebsiteLoginWait(state, "Are you able to open the website now?"),
+    false
+  );
+  assert.match(_test.websiteLoginCheckText(state, 1), /opened.*Apply Now.*logged in/i);
+  assert.match(_test.websiteLoginCheckText(state, 2), /complete the pending process.*Thank you/i);
+  state.websiteLoginConfirmed = true;
+  assert.equal(
+    _test.shouldStartWebsiteLoginWait(state, "Open www.tezcredit.com, click Apply Now, and log in."),
+    false
+  );
+});
+
+test("TezCredit website wait proceeds only after login confirmation", () => {
+  assert.equal(_test.websiteLoginConfirmed("Yes, I have logged in"), true);
+  assert.equal(_test.websiteLoginConfirmed("हाँ जी login हो गया"), true);
+  assert.equal(_test.websiteLoginConfirmed("अभी नहीं हुआ"), false);
+  assert.equal(_test.websiteLoginConfirmed("yes"), false);
+  assert.equal(_test.websiteLoginConfirmed("yes", { allowBareAgreement: true }), true);
+});
+
+test("TezCredit proceeds to the active stage after website login confirmation", () => {
+  const state = session("English", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    websiteLoginConfirmed: true
+  });
+
+  const reply = _test.buildScriptedReply(state, "yes");
+  assert.match(reply, /UPI verification|bank-account verification|error/i);
+  assert.doesNotMatch(reply, /open www\.tezcredit\.com|Apply Now|sign in/i);
+  assert.equal(state.websiteLoginAcknowledged, true);
+});
+
+test("TezCredit answers the eligible amount from imported CSV details", () => {
+  const state = session("English", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "1800",
+    source_metadata: { productName: "TezCredit" }
+  });
+
+  const reply = _test.buildScriptedReply(state, "How much amount can I get?");
+  assert.match(reply, /current eligible amount/i);
+  assert.match(reply, /₹1,800/);
+  assert.match(reply, /TezCredit details/i);
+});
+
+test("TezCredit handles a request for more amount without promising approval", () => {
+  const state = session("English", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "1800",
+    source_metadata: { productName: "TezCredit" }
+  });
+
+  const reply = _test.buildScriptedReply(state, "I want more amount");
+  assert.match(reply, /current loan.*₹1,800/i);
+  assert.match(reply, /may become eligible for a higher amount/i);
 });
 
 test("voicebot treats iPhone available phrase as screening", () => {
