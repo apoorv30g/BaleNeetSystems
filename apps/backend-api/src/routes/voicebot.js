@@ -37,17 +37,19 @@ const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, main S
 const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Haan ji, ek second.|Samjha, dekhte hain.|Theek hai, sure.|Hmm, bilkul.|Achha, okay.|Got it.|Haan, sure.");
 const FAST_ACK_TEXT = FAST_ACK_TEXTS[0] || "Haan ji.";
 const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?";
-const NO_SPEECH_PROMPT_TEXT = process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXT || "Hello, are you able to hear me? Main line par hoon.";
-const NO_SPEECH_PROMPT_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXTS || "Hello? Kya aap sun paa rahe hain?|Haan, main yahan hoon. Kya aap mujhe sun sakte hain?|Hello, koi hai? Main line par hoon.|Aap bol sakte hain, main sun raha hoon.");
-const NO_SPEECH_GOODBYE_TEXT = process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT || "I could not hear you, so I am ending this call. Thank you.";
+const NO_SPEECH_PROMPT_TEXT_HI = process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXT || "Hello, क्या मेरी आवाज़ आपको आ रही है?";
+const NO_SPEECH_PROMPT_TEXT_EN = process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXT_EN || "Hello, am I audible?";
+const NO_SPEECH_GOODBYE_TEXT_HI = process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT || "कोई बात नहीं। आप www.tezcredit.com पर login करके अपनी pending process आगे बढ़ा सकते हैं। धन्यवाद।";
+const NO_SPEECH_GOODBYE_TEXT_EN = process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT_EN || "No problem. You can log in at www.tezcredit.com and continue your pending process. Thank you.";
 const INTRO_DELAY_MS = Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0);
 const SILENCE_KEEPALIVE_ENABLED = process.env.VOICEBOT_SILENCE_KEEPALIVE_ENABLED === "true";
 const FAST_ACK_ENABLED = process.env.VOICEBOT_FAST_ACK_ENABLED !== "false";
 const FAST_ACK_DELAY_MS = Number(process.env.VOICEBOT_FAST_ACK_DELAY_MS || process.env.VOICEBOT_ACK_DELAY_MS || 650);
 const FAST_ACK_SCRIPTED_ENABLED = process.env.VOICEBOT_FAST_ACK_SCRIPTED_ENABLED === "true";
 const NO_SPEECH_TIMEOUT_ENABLED = process.env.VOICEBOT_NO_SPEECH_TIMEOUT_ENABLED !== "false";
-const NO_SPEECH_PROMPT_MS = Number(process.env.VOICEBOT_NO_SPEECH_PROMPT_MS || 9000);
-const NO_SPEECH_END_MS = Number(process.env.VOICEBOT_NO_SPEECH_END_MS || 22000);
+const NO_SPEECH_PROMPT_MS = Number(process.env.VOICEBOT_NO_SPEECH_PROMPT_MS || 3000);
+const NO_SPEECH_END_MS = Number(process.env.VOICEBOT_NO_SPEECH_END_MS || 3000);
+const STRICT_TURN_TAKING = process.env.VOICEBOT_STRICT_TURN_TAKING !== "false";
 const MIN_TRANSCRIPT_CONFIDENCE = Number(process.env.VOICEBOT_MIN_TRANSCRIPT_CONFIDENCE || 0.62);
 const LOW_CONFIDENCE_MAX_WORDS = Number(process.env.VOICEBOT_LOW_CONFIDENCE_MAX_WORDS || 3);
 const INTERIM_TRANSCRIPT_ENABLED = process.env.VOICEBOT_INTERIM_TRANSCRIPT_ENABLED !== "false";
@@ -108,8 +110,10 @@ function attachVoicebot(server) {
     prewarmAudio(ackText).catch(err => logger.warn("voicebot_ack_prewarm_failed", { error: err.message, ackText }));
   }
   prewarmAudio(FAST_CLARIFY_TEXT).catch(err => logger.warn("voicebot_clarify_prewarm_failed", { error: err.message }));
-  prewarmAudio(NO_SPEECH_PROMPT_TEXT).catch(err => logger.warn("voicebot_no_speech_prompt_prewarm_failed", { error: err.message }));
-  prewarmAudio(NO_SPEECH_GOODBYE_TEXT).catch(err => logger.warn("voicebot_no_speech_goodbye_prewarm_failed", { error: err.message }));
+  prewarmAudio(NO_SPEECH_PROMPT_TEXT_HI).catch(err => logger.warn("voicebot_no_speech_prompt_prewarm_failed", { error: err.message, language: "Hindi" }));
+  prewarmAudio(NO_SPEECH_PROMPT_TEXT_EN, { preferredLanguage: "English" }).catch(err => logger.warn("voicebot_no_speech_prompt_prewarm_failed", { error: err.message, language: "English" }));
+  prewarmAudio(NO_SPEECH_GOODBYE_TEXT_HI).catch(err => logger.warn("voicebot_no_speech_goodbye_prewarm_failed", { error: err.message, language: "Hindi" }));
+  prewarmAudio(NO_SPEECH_GOODBYE_TEXT_EN, { preferredLanguage: "English" }).catch(err => logger.warn("voicebot_no_speech_goodbye_prewarm_failed", { error: err.message, language: "English" }));
   prewarmAudio(TEZ_WEBSITE_NAME_TEXT_HI).catch(err => logger.warn("voicebot_tez_website_prewarm_failed", { error: err.message, language: "Hindi" }));
   prewarmAudio(TEZ_WEBSITE_NAME_TEXT_EN, { preferredLanguage: "English" }).catch(err => logger.warn("voicebot_tez_website_prewarm_failed", { error: err.message, language: "English" }));
   for (const item of coreVoicePrewarmItems()) {
@@ -218,6 +222,8 @@ function attachVoicebot(server) {
       websiteLoginCheckTimer: null,
       websiteLoginFollowupTimer: null,
       websiteWaitActive: false,
+      websiteWaitStartedAt: 0,
+      websiteLoginResponsePending: false,
       websiteCheckCount: 0,
       websiteLoginConfirmed: false,
       websiteLoginAcknowledged: false,
@@ -618,6 +624,11 @@ function startStt(ws, session) {
           startedAt: Date.now()
         };
         clearNoSpeechTimers(session);
+        if (interruptWebsiteLoginWait(session, "stt_speech_started")) {
+          logVoicebotEvent(session, "website_login_wait_interrupted", {
+            reason: "customer_started_speaking"
+          }).catch(() => {});
+        }
         if (session.speaking && STT_DURING_ASSISTANT_ENABLED && shouldCancelAssistantSpeech(session, status)) {
           invalidateAssistantTurn(session, "barge_in_speech_started");
           cancelAssistantSpeech(ws, session, "barge_in_speech_started");
@@ -658,6 +669,12 @@ function forwardAudioToStt(session, audio) {
 
   if (vadResult.started) {
     session.sttVadSpeechStarts++;
+    clearNoSpeechTimers(session);
+    if (interruptWebsiteLoginWait(session, "vad_speech_started")) {
+      logVoicebotEvent(session, "website_login_wait_interrupted", {
+        reason: "customer_voice_activity"
+      }).catch(() => {});
+    }
     logVoicebotEvent(session, "vad_speech_started", {
       speechStarts: session.sttVadSpeechStarts,
       stats: vadResult.stats,
@@ -740,11 +757,20 @@ async function handleTranscript(ws, session, event) {
   session.activeSttUtterance = null;
   session.transcriptSeq = Number(session.transcriptSeq || 0) + 1;
   clearNoSpeechTimers(session);
-  if (session.websiteWaitActive && websiteLoginConfirmed(text, {
+  const websiteResponsePending = session.websiteWaitActive || session.websiteLoginResponsePending;
+  if (websiteResponsePending && websiteLoginConfirmed(text, {
     allowBareAgreement: session.websiteCheckCount > 0
   })) {
     session.websiteLoginConfirmed = true;
     clearWebsiteLoginChecks(session);
+  } else if (session.websiteWaitActive && (event.isFinal || event.speechFinal)) {
+    interruptWebsiteLoginWait(session, "customer_transcript");
+    await logVoicebotEvent(session, "website_login_wait_interrupted", {
+      reason: "customer_response",
+      text
+    });
+  } else if (websiteResponsePending && (event.isFinal || event.speechFinal)) {
+    session.websiteLoginResponsePending = false;
   }
 
   if (!event.isFinal && !event.speechFinal) {
@@ -1108,11 +1134,18 @@ async function processUserTranscript(ws, session, event) {
   }
 
   await speakText(ws, session, reply, "reply_played");
-  if (!session.websiteWaitActive && !session.websiteLoginConfirmed && shouldStartWebsiteLoginWait(session, reply)) {
+  if (shouldUseWebsiteLoginWait(session, reply)) {
     scheduleWebsiteLoginChecks(ws, session);
-  } else if (!session.websiteWaitActive) {
+  } else {
     scheduleNoSpeechCheck(ws, session, "after_reply");
   }
+}
+
+function shouldUseWebsiteLoginWait(session = {}, text = "") {
+  return !STRICT_TURN_TAKING
+    && !session.websiteWaitActive
+    && !session.websiteLoginConfirmed
+    && shouldStartWebsiteLoginWait(session, text);
 }
 
 function shouldStartWebsiteLoginWait(session = {}, text = "") {
@@ -1127,6 +1160,8 @@ function scheduleWebsiteLoginChecks(ws, session) {
   clearWebsiteLoginChecks(session);
   clearNoSpeechTimers(session);
   session.websiteWaitActive = true;
+  session.websiteWaitStartedAt = Date.now();
+  session.websiteLoginResponsePending = true;
   session.websiteLoginConfirmed = false;
   session.websiteCheckCount = 0;
 
@@ -1137,17 +1172,10 @@ function scheduleWebsiteLoginChecks(ws, session) {
     });
   }, WEBSITE_LOGIN_FIRST_CHECK_MS);
 
-  session.websiteLoginFollowupTimer = setTimeout(() => {
-    session.websiteLoginFollowupTimer = null;
-    closeAfterWebsiteLoginTimeout(ws, session).catch(err => {
-      logger.warn("voicebot_website_timeout_close_failed", { error: err.message, callId: session.callId });
-      if (!session.closed && ws.readyState === ws.OPEN) ws.close();
-    });
-  }, WEBSITE_LOGIN_SECOND_CHECK_MS);
-
   logVoicebotEvent(session, "website_login_wait_started", {
     firstCheckMs: WEBSITE_LOGIN_FIRST_CHECK_MS,
-    finalCheckMs: WEBSITE_LOGIN_SECOND_CHECK_MS
+    finalCheckMs: WEBSITE_LOGIN_SECOND_CHECK_MS,
+    answerWindowMs: websiteLoginAnswerWindowMs()
   }).catch(() => {});
 }
 
@@ -1162,19 +1190,45 @@ async function deliverWebsiteLoginCheck(ws, session) {
     prompt
   });
   await speakText(ws, session, prompt, "website_login_check_1");
+  if (!session.websiteWaitActive || session.websiteLoginConfirmed || session.closed || session.ending || ws.readyState !== ws.OPEN) return;
+
+  const answerWindowMs = websiteLoginAnswerWindowMs();
+  session.websiteLoginFollowupTimer = setTimeout(() => {
+    session.websiteLoginFollowupTimer = null;
+    closeAfterWebsiteLoginTimeout(ws, session).catch(err => {
+      logger.warn("voicebot_website_timeout_close_failed", { error: err.message, callId: session.callId });
+      if (!session.closed && ws.readyState === ws.OPEN) ws.close();
+    });
+  }, answerWindowMs);
+  await logVoicebotEvent(session, "website_login_answer_window_started", {
+    answerWindowMs,
+    startsAfterPromptPlayback: true
+  });
 }
 
 async function closeAfterWebsiteLoginTimeout(ws, session) {
   if (!session.websiteWaitActive || session.websiteLoginConfirmed || session.closed || session.ending || ws.readyState !== ws.OPEN) return;
+  if (session.speaking || session.activeSttUtterance) {
+    session.websiteLoginFollowupTimer = setTimeout(() => {
+      session.websiteLoginFollowupTimer = null;
+      closeAfterWebsiteLoginTimeout(ws, session).catch(err => {
+        logger.warn("voicebot_website_timeout_close_failed", { error: err.message, callId: session.callId });
+      });
+    }, 1000);
+    await logVoicebotEvent(session, "website_login_timeout_deferred", {
+      reason: session.speaking ? "assistant_speaking" : "customer_speaking",
+      retryMs: 1000
+    });
+    return;
+  }
   session.ending = true;
   invalidateAssistantTurn(session, "website_login_timeout");
-  if (session.speaking) cancelAssistantSpeech(ws, session, "website_login_timeout");
   const closingText = websiteLoginCheckText(session, 2);
   if (session.callId) {
     await addTranscript(session.callId, "assistant", closingText);
     await query(
       `UPDATE calls
-       SET outcome=CASE WHEN outcome IS NULL OR outcome='IN_PROGRESS' THEN 'CALLBACK' ELSE outcome END,
+       SET outcome='IN_PROGRESS',
            summary=$2,
            updated_at=NOW()
        WHERE id=$1`,
@@ -1182,7 +1236,8 @@ async function closeAfterWebsiteLoginTimeout(ws, session) {
     );
   }
   await logVoicebotEvent(session, "website_login_timeout", {
-    totalWaitMs: WEBSITE_LOGIN_SECOND_CHECK_MS,
+    quietWaitMs: WEBSITE_LOGIN_SECOND_CHECK_MS,
+    answerWindowMs: websiteLoginAnswerWindowMs(),
     closingText
   });
   await speakAndClose(ws, session, closingText, "website_login_timeout_close");
@@ -1208,7 +1263,15 @@ function websiteLoginCheckText(session = {}, checkNumber = 1) {
 }
 
 function websiteLoginCheckDelays() {
-  return { firstCheckMs: WEBSITE_LOGIN_FIRST_CHECK_MS, finalCheckMs: WEBSITE_LOGIN_SECOND_CHECK_MS };
+  return {
+    firstCheckMs: WEBSITE_LOGIN_FIRST_CHECK_MS,
+    finalCheckMs: WEBSITE_LOGIN_SECOND_CHECK_MS,
+    answerWindowMs: websiteLoginAnswerWindowMs()
+  };
+}
+
+function websiteLoginAnswerWindowMs() {
+  return Math.max(1000, WEBSITE_LOGIN_SECOND_CHECK_MS - WEBSITE_LOGIN_FIRST_CHECK_MS);
 }
 
 function maxCallDurationConfig() {
@@ -1221,6 +1284,17 @@ function clearWebsiteLoginChecks(session = {}) {
   session.websiteLoginCheckTimer = null;
   session.websiteLoginFollowupTimer = null;
   session.websiteWaitActive = false;
+  session.websiteWaitStartedAt = 0;
+  session.websiteLoginResponsePending = false;
+}
+
+function interruptWebsiteLoginWait(session = {}, reason = "customer_activity") {
+  if (!session.websiteWaitActive) return false;
+  clearWebsiteLoginChecks(session);
+  session.websiteLoginResponsePending = true;
+  session.websiteWaitInterruptedAt = Date.now();
+  session.websiteWaitInterruptedReason = reason;
+  return true;
 }
 
 async function handleTezJourneyProgress(ws, session, text, progress) {
@@ -1541,6 +1615,12 @@ function buildScriptedReply(session, text) {
   const amountText = amount ? formatLoanAmount(amount) : "eligible amount";
   const english = isEnglishSession(session);
 
+  const tezAmountReply = buildTezAmountReply(session, normalized, english, amount, amountText);
+  if (tezAmountReply && session.confirmedName) {
+    if (!session.availabilityConfirmed) return `${tezAmountReply} ${availabilityQuestion(session, english)}`;
+    return tezAmountReply;
+  }
+
   const identityGateReply = buildTezIdentityGateReply(session, normalized, english);
   if (identityGateReply) return identityGateReply;
 
@@ -1693,15 +1773,7 @@ function buildScriptedReply(session, text) {
     return "बहुत अच्छा। मैं सुरक्षित link भेज रहा हूँ। उसे खोलकर बताइए कौन सा screen दिख रहा है।";
   }
 
-  if (isTezJourneyLead(lead) && amount && asksChangeAmount(normalized)) {
-    if (english) return `First complete the current loan for ${amountText}. After that, you may become eligible for a higher amount.`;
-    return `पहले ${amountText} का current loan पूरा कीजिए। इसके बाद higher amount की eligibility मिल सकती है।`;
-  }
-
-  if (isTezJourneyLead(lead) && amount && asksAmount(normalized)) {
-    if (english) return `Your current eligible amount is ${amountText}, according to your TezCredit details.`;
-    return `आपकी TezCredit details के अनुसार current eligible amount ${amountText} है।`;
-  }
+  if (tezAmountReply) return tezAmountReply;
 
   const stageConversationalReply = buildStageConversationalReply(session, normalized, { amountText, english });
   if (stageConversationalReply) return stageConversationalReply;
@@ -1900,6 +1972,21 @@ function buildScriptedReply(session, text) {
     return "हाँ, पूछिए। मैं आपकी बात समझकर छोटा सा जवाब दूँगा, फिर final offer check करवा दूँगा।";
   }
 
+  return "";
+}
+
+function buildTezAmountReply(session = {}, text = "", english = false, amount = "", amountText = "eligible amount") {
+  if (!isTezJourneyLead(session.lead) || !amount) return "";
+  if (asksChangeAmount(text)) {
+    if (english) {
+      return `Your current eligible amount is ${amountText}. Please take this amount first. After completing this loan, you can apply for a higher amount, subject to eligibility.`;
+    }
+    return `आपका current eligible amount ${amountText} है। पहले यह amount ले लीजिए। यह loan complete होने के बाद higher amount के लिए apply कर सकते हैं।`;
+  }
+  if (asksAmount(text)) {
+    if (english) return `According to your TezCredit details, your current eligible amount is ${amountText}.`;
+    return `आपकी TezCredit details के अनुसार अभी eligible amount ${amountText} है।`;
+  }
   return "";
 }
 
@@ -3175,11 +3262,12 @@ function isWhyQuestion(text = "") {
   return /\b(why|kyu|kyun|kyunki|kyon|kaise|kaisa|reason|wajah|matlab|samjhao|explain|bata|batao)\b/.test(normalized);
 }
 
-function pickNoSpeechPrompt(session) {
-  if (!NO_SPEECH_PROMPT_TEXTS.length) return NO_SPEECH_PROMPT_TEXT;
-  const index = Math.max((session.noSpeechPromptCount || 0), 0) % NO_SPEECH_PROMPT_TEXTS.length;
-  session.noSpeechPromptCount = (session.noSpeechPromptCount || 0) + 1;
-  return NO_SPEECH_PROMPT_TEXTS[index];
+function noSpeechPromptText(session = {}) {
+  return isEnglishSession(session) ? NO_SPEECH_PROMPT_TEXT_EN : NO_SPEECH_PROMPT_TEXT_HI;
+}
+
+function noSpeechClosingText(session = {}) {
+  return isEnglishSession(session) ? NO_SPEECH_GOODBYE_TEXT_EN : NO_SPEECH_GOODBYE_TEXT_HI;
 }
 
 function scheduleSttFinalWatchdog(ws, session) {
@@ -3234,26 +3322,68 @@ function sttFinalWatchdogConfig() {
 function scheduleNoSpeechCheck(ws, session, stage) {
   clearNoSpeechTimers(session);
   if (!NO_SPEECH_TIMEOUT_ENABLED || session.closed || ws.readyState !== ws.OPEN) return;
+  const cycleSeq = Number(session.noSpeechCycleSeq || 0) + 1;
+  session.noSpeechCycleSeq = cycleSeq;
 
-  session.noSpeechPromptTimer = setTimeout(() => {
+  session.noSpeechPromptTimer = setTimeout(async () => {
     session.noSpeechPromptTimer = null;
-    if (session.closed || ws.readyState !== ws.OPEN || session.speaking) return;
-    logVoicebotEvent(session, "no_speech_prompt_started", { stage, delayMs: NO_SPEECH_PROMPT_MS }).catch(() => {});
-    speakText(ws, session, NO_SPEECH_PROMPT_TEXT, "no_speech_prompt").catch(err => {
-      logger.warn("voicebot_no_speech_prompt_failed", { error: err.message, callId: session.callId });
-    });
-  }, NO_SPEECH_PROMPT_MS);
+    if (!isNoSpeechCycleActive(ws, session, cycleSeq)) return;
+    const prompt = noSpeechPromptText(session);
+    await logVoicebotEvent(session, "no_speech_prompt_started", { stage, delayMs: NO_SPEECH_PROMPT_MS, prompt });
+    if (session.callId) await addTranscript(session.callId, "assistant", prompt);
+    await speakText(ws, session, prompt, "no_speech_prompt");
+    if (!isNoSpeechCycleActive(ws, session, cycleSeq)) return;
 
-  session.noSpeechEndTimer = setTimeout(() => {
-    session.noSpeechEndTimer = null;
-    if (session.closed || ws.readyState !== ws.OPEN) return;
-    logVoicebotEvent(session, "no_speech_timeout", { stage, delayMs: NO_SPEECH_END_MS }).catch(() => {});
-    speakText(ws, session, NO_SPEECH_GOODBYE_TEXT, "no_speech_goodbye")
-      .catch(err => logger.warn("voicebot_no_speech_goodbye_failed", { error: err.message, callId: session.callId }))
-      .finally(() => {
+    session.noSpeechEndTimer = setTimeout(() => {
+      session.noSpeechEndTimer = null;
+      closeAfterNoSpeech(ws, session, stage, cycleSeq).catch(err => {
+        logger.warn("voicebot_no_speech_goodbye_failed", { error: err.message, callId: session.callId });
         if (!session.closed && ws.readyState === ws.OPEN) ws.close();
       });
-  }, NO_SPEECH_END_MS);
+    }, NO_SPEECH_END_MS);
+    await logVoicebotEvent(session, "no_speech_answer_window_started", {
+      stage,
+      delayMs: NO_SPEECH_END_MS,
+      startsAfterPromptPlayback: true
+    });
+  }, NO_SPEECH_PROMPT_MS);
+}
+
+function isNoSpeechCycleActive(ws, session, cycleSeq) {
+  return !session.closed
+    && !session.ending
+    && !session.speaking
+    && !session.activeSttUtterance
+    && ws.readyState === ws.OPEN
+    && Number(session.noSpeechCycleSeq || 0) === cycleSeq;
+}
+
+async function closeAfterNoSpeech(ws, session, stage, cycleSeq) {
+  if (!isNoSpeechCycleActive(ws, session, cycleSeq)) return;
+  session.ending = true;
+  invalidateAssistantTurn(session, "no_speech_timeout");
+  const closingText = noSpeechClosingText(session);
+  await logVoicebotEvent(session, "no_speech_timeout", {
+    stage,
+    delayMs: NO_SPEECH_END_MS,
+    closingText
+  });
+  if (session.callId) {
+    await addTranscript(session.callId, "assistant", closingText);
+    await finalizeCall(session, {
+      outcome: "IN_PROGRESS",
+      summary: "Customer did not respond after the audible check and was directed to continue at www.tezcredit.com."
+    });
+  }
+  await speakAndClose(ws, session, closingText, "no_speech_goodbye");
+}
+
+function noSpeechTurnConfig() {
+  return {
+    strictTurnTaking: STRICT_TURN_TAKING,
+    promptDelayMs: NO_SPEECH_PROMPT_MS,
+    responseGraceMs: NO_SPEECH_END_MS
+  };
 }
 
 function clearNoSpeechTimers(session) {
@@ -3265,6 +3395,7 @@ function clearNoSpeechTimers(session) {
     clearTimeout(session.noSpeechEndTimer);
     session.noSpeechEndTimer = null;
   }
+  session.noSpeechCycleSeq = Number(session.noSpeechCycleSeq || 0) + 1;
 }
 
 function isLikelyMisheardTranscript(text, event = {}, session = {}) {
@@ -4125,10 +4256,15 @@ module.exports = {
     maxCallClosingText,
     maxCallDurationConfig,
     shouldStartWebsiteLoginWait,
+    shouldUseWebsiteLoginWait,
     websiteLoginConfirmed,
     websiteLoginCheckText,
     websiteLoginCheckDelays,
+    interruptWebsiteLoginWait,
     sttFinalWatchdogConfig,
+    noSpeechPromptText,
+    noSpeechClosingText,
+    noSpeechTurnConfig,
     shouldRecoverMissingSttFinal,
     isLikelyMisheardTranscript,
     coreVoicePrewarmItems,

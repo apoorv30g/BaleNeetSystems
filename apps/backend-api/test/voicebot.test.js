@@ -646,6 +646,18 @@ test("voicebot limits calls to five minutes by default", () => {
   });
 });
 
+test("voicebot uses strict three-second customer turn-taking", () => {
+  assert.deepEqual(_test.noSpeechTurnConfig(), {
+    strictTurnTaking: true,
+    promptDelayMs: 3000,
+    responseGraceMs: 3000
+  });
+  assert.equal(_test.noSpeechPromptText(session()), "Hello, क्या मेरी आवाज़ आपको आ रही है?");
+  assert.match(_test.noSpeechClosingText(session()), /www\.tezcredit\.com/);
+  assert.match(_test.noSpeechClosingText(session()), /login/);
+  assert.equal(_test.noSpeechPromptText(session("English")), "Hello, am I audible?");
+});
+
 test("missing Sarvam finals recover after a short watchdog instead of a long silence", () => {
   assert.deepEqual(_test.sttFinalWatchdogConfig(), {
     delayMs: 1200,
@@ -662,10 +674,11 @@ test("missing Sarvam finals recover after a short watchdog instead of a long sil
   assert.equal(_test.shouldRecoverMissingSttFinal(state, 8, 3), false);
 });
 
-test("TezCredit website wait checks at 20 seconds and closes at 30 seconds total", () => {
+test("TezCredit website wait gives a full answer window after the check prompt", () => {
   assert.deepEqual(_test.websiteLoginCheckDelays(), {
     firstCheckMs: 20000,
-    finalCheckMs: 30000
+    finalCheckMs: 30000,
+    answerWindowMs: 10000
   });
 
   const state = session("English", {
@@ -678,6 +691,10 @@ test("TezCredit website wait checks at 20 seconds and closes at 30 seconds total
     true
   );
   assert.equal(
+    _test.shouldUseWebsiteLoginWait(state, "Open www.tezcredit.com, click Apply Now, and log in."),
+    false
+  );
+  assert.equal(
     _test.shouldStartWebsiteLoginWait(state, "Are you able to open the website now?"),
     false
   );
@@ -688,6 +705,23 @@ test("TezCredit website wait checks at 20 seconds and closes at 30 seconds total
     _test.shouldStartWebsiteLoginWait(state, "Open www.tezcredit.com, click Apply Now, and log in."),
     false
   );
+});
+
+test("customer speech interrupts website auto-close", () => {
+  const state = {
+    websiteWaitActive: true,
+    websiteWaitStartedAt: Date.now(),
+    websiteLoginCheckTimer: setTimeout(() => {}, 60000),
+    websiteLoginFollowupTimer: setTimeout(() => {}, 60000)
+  };
+
+  assert.equal(_test.interruptWebsiteLoginWait(state, "customer_question"), true);
+  assert.equal(state.websiteWaitActive, false);
+  assert.equal(state.websiteLoginCheckTimer, null);
+  assert.equal(state.websiteLoginFollowupTimer, null);
+  assert.equal(state.websiteLoginResponsePending, true);
+  assert.equal(state.websiteWaitInterruptedReason, "customer_question");
+  assert.equal(_test.interruptWebsiteLoginWait(state, "duplicate"), false);
 });
 
 test("TezCredit website wait proceeds only after login confirmation", () => {
@@ -760,8 +794,33 @@ test("TezCredit handles a request for more amount without promising approval", (
   });
 
   const reply = _test.buildScriptedReply(state, "I want more amount");
-  assert.match(reply, /current loan.*₹1,800/i);
-  assert.match(reply, /may become eligible for a higher amount/i);
+  assert.match(reply, /current eligible amount is ₹1,800/i);
+  assert.match(reply, /take this amount first/i);
+  assert.match(reply, /apply for a higher amount, subject to eligibility/i);
+});
+
+test("TezCredit answers amount questions during the opening gate", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "18000",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    identityPrompted: true,
+    confirmedName: true,
+    availabilityConfirmed: false,
+    userTurns: 2
+  });
+
+  const amountReply = _test.buildScriptedReply(state, "मुझे कितना amount मिलेगा?");
+  assert.match(amountReply, /₹18,000/);
+  assert.match(amountReply, /eligible amount/);
+  assert.match(amountReply, /क्या अभी दो मिनट बात कर सकते हैं/);
+
+  const moreReply = _test.buildScriptedReply({ ...state, availabilityConfirmed: true }, "मुझे ज्यादा amount चाहिए");
+  assert.match(moreReply, /पहले यह amount ले लीजिए/);
+  assert.match(moreReply, /higher amount के लिए apply/);
 });
 
 test("voicebot treats iPhone available phrase as screening", () => {
