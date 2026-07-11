@@ -85,7 +85,8 @@ test("voicebot explains where the number came from", () => {
 test("voicebot handles link not opening", () => {
   const reply = _test.buildScriptedReply(session("English", {}, { tenantId: null }), "The link is not opening");
   assert.match(reply, /sending the secure link again/i);
-  assert.match(reply, /app support/i);
+  assert.match(reply, /www\.tezcredit\.com/i);
+  assert.match(reply, /Apply Now/i);
 });
 
 test("voicebot sends details without implying whatsapp support", () => {
@@ -839,6 +840,196 @@ test("TezCredit answers amount questions during the opening gate", () => {
   const moreReply = _test.buildScriptedReply({ ...state, availabilityConfirmed: true }, "मुझे ज्यादा amount चाहिए");
   assert.match(moreReply, /पहले यह amount ले लीजिए/);
   assert.match(moreReply, /higher amount के लिए apply/);
+});
+
+test("TezCredit handles real-call network issue with website-first guidance", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    tenantId: null
+  });
+
+  const reply = _test.buildScriptedReply(state, "लेकिन net तो चल नहीं रहा");
+  assert.match(reply, /www\.tezcredit\.com/);
+  assert.match(reply, /Apply Now/);
+  assert.doesNotMatch(reply, /app खोल|app में|ऐप/i);
+});
+
+test("TezCredit confirms same-number SMS link from real-call phrasing", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_PROFILE_PENDING",
+    drop_stage: "PROFILE_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    tenantId: null
+  });
+
+  const reply = _test.buildScriptedReply(state, "मैं इसी number पर डाल दूं link");
+  assert.match(reply, /इसी number|same number/i);
+  assert.match(reply, /SMS|एस एम एस/i);
+  assert.match(reply, /www\.tezcredit\.com/);
+});
+
+test("TezCredit lets customer self-complete without forcing call guidance", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_PROFILE_PENDING",
+    drop_stage: "PROFILE_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    tenantId: null
+  });
+
+  const reply = _test.buildScriptedReply(state, "नहीं वैसे मैं भर लेता हूँ अपने आप ही");
+  assert.match(reply, /खुद complete|खुद/i);
+  assert.match(reply, /www\.tezcredit\.com/);
+  assert.match(reply, /OTP|ओ टी पी/);
+});
+
+test("TezCredit handles NBFC and legitimacy questions safely", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true
+  });
+
+  const reply = _test.buildScriptedReply(state, "यह NBFC पास है ना");
+  assert.match(reply, /TezCredit/);
+  assert.match(reply, /www\.tezcredit\.com/);
+  assert.match(reply, /OTP|ओ टी पी/);
+});
+
+test("TezCredit handles high-interest objection without promising discount", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_APPROVED_NOT_DISBURSED",
+    drop_stage: "APPROVED_NOT_DISBURSED"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true
+  });
+
+  const reply = _test.buildScriptedReply(state, "interest बहुत ज्यादा है");
+  assert.match(reply, /Final rate|Final/i);
+  assert.match(reply, /मना|reject/i);
+  assert.doesNotMatch(reply, /कम rate|discount|90%/i);
+});
+
+test("TezCredit explains how personal loan proceeds from the website", () => {
+  const state = session("Hinglish", {
+    playbook_type: "TEZ_PROFILE_PENDING",
+    drop_stage: "PROFILE_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true
+  });
+
+  const reply = _test.buildScriptedReply(state, "personal loan चाहिए तो कैसे मिलेगा");
+  assert.match(reply, /www\.tezcredit\.com/);
+  assert.match(reply, /Apply Now/);
+  assert.match(reply, /Eligibility/i);
+});
+
+test("TezCredit latest-call website question gives exact URL before bank guidance", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING",
+    offer_amount: "18000",
+    source_metadata: { productName: "TezCredit" }
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true
+  });
+
+  const reply = _test.buildScriptedReply(state, "कौन सी website?");
+  assert.match(reply, /www\.tezcredit\.com/);
+  assert.match(reply, /Apply Now/);
+  assert.match(reply, /mobile number|mobile number से/i);
+  assert.doesNotMatch(reply, /bank verification दिख रहा|UPI या bank account/i);
+});
+
+test("TezCredit handles unknown website phrasing from latest call", () => {
+  const state = session("English", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true
+  });
+
+  const reply = _test.buildScriptedReply(state, "I don't know the website");
+  assert.match(reply, /www\.tezcredit\.com/);
+  assert.match(reply, /Apply Now/);
+  assert.doesNotMatch(reply, /UPI|bank-account verification/i);
+});
+
+test("TezCredit login question explains website login instead of repeating bank step", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true
+  });
+
+  const reply = _test.buildScriptedReply(state, "लॉग इन कैसे करना है?");
+  assert.match(reply, /www\.tezcredit\.com/);
+  assert.match(reply, /Apply Now/);
+  assert.match(reply, /registered mobile number|mobile number/i);
+  assert.match(reply, /OTP|ओ टी पी/);
+  assert.doesNotMatch(reply, /UPI या account verification|bank verification screen/i);
+});
+
+test("TezCredit process-in-progress waits for result instead of resetting journey", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    bankVerificationOptionSeen: true
+  });
+
+  const reply = _test.buildScriptedReply(state, "process हो रहा है");
+  assert.match(reply, /process complete|wait|seconds|successful|failed/i);
+  assert.doesNotMatch(reply, /website खोलिए|UPI, bank account/);
+});
+
+test("TezCredit not-visible blocker asks current screen and is not marked interested", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    bankVerificationOptionSeen: true,
+    userTurns: 8
+  });
+
+  const reply = _test.buildScriptedReply(state, "नहीं दिख रहा अभी यार");
+  assert.match(reply, /exact screen|screen बताइए/i);
+  assert.match(reply, /mobile login|OTP|profile|offer|UPI|error/i);
+  assert.doesNotMatch(reply, /कौन सा option दिख रहा है: UPI, bank account/);
+
+  const classification = _test.classifyLiveConversation(state, "नहीं दिख रहा अभी यार", [
+    { speaker: "user", text: "UPI" },
+    { speaker: "assistant", text: "दिख रहा option tap करके verification पूरा कीजिए। Successful दिखे तो मुझे बताइए।" },
+    { speaker: "user", text: "नहीं दिख रहा अभी यार" }
+  ]);
+  assert.equal(classification.outcome, "IN_PROGRESS");
+  assert.match(classification.reason, /blocked|cannot see/i);
 });
 
 test("voicebot treats iPhone available phrase as screening", () => {

@@ -1673,14 +1673,14 @@ function buildScriptedReply(session, text) {
     queueLeadLink(session, "link_problem");
     return english
       ? stageLine(session, "link_problem_en", [
-        "I am sending the secure link again. Please open it in mobile data or the app; if it still fails, use app support.",
-        "Let me resend that link. Try opening it on mobile data, not WiFi. If it still does not work, app support can help.",
-        "Sure, sending it again. Open on mobile data and if there is still a problem, the app has a support section."
+        "I am sending the secure link again. Please open it on mobile data or go to www.tezcredit.com and click Apply Now.",
+        "Let me resend that link. Try opening it on mobile data, not WiFi. You can also continue from www.tezcredit.com.",
+        "Sure, sending it again. Open on mobile data; if there is still a problem, continue from www.tezcredit.com when it works."
       ])
       : stageLine(session, "link_problem_hi", [
-        "मैं सुरक्षित link दोबारा भेज रहा हूँ। उसे mobile data या app में खोलिए; फिर भी दिक्कत हो तो app support use कीजिए।",
-        "ठीक है, link फिर भेज रहा हूँ। WiFi की जगह mobile data पर खोलिए। फिर भी न खुले तो app support है।",
-        "समझ गया, दोबारा भेज रहा हूँ। mobile data on करके try कीजिए।"
+        "मैं सुरक्षित link दोबारा भेज रही हूँ। उसे mobile data पर खोलिए या www.tezcredit.com पर Apply Now click कीजिए।",
+        "ठीक है, link फिर भेज रही हूँ। WiFi की जगह mobile data पर खोलिए। www.tezcredit.com से भी continue कर सकते हैं।",
+        "समझ गई, दोबारा भेज रही हूँ। mobile data on करके try कीजिए; नहीं हो तो www.tezcredit.com से continue कर लीजिए।"
       ]);
   }
 
@@ -1697,6 +1697,35 @@ function buildScriptedReply(session, text) {
         "बिल्कुल, अभी भेज रहा हूँ। SMS पर link आएगा — आराम से पढ़िए।",
         "ज़रूर, link SMS से आ रहा है। details देखकर बताइए अगर कोई सवाल हो।"
       ]);
+  }
+
+  if (mentionsNetworkProblem(normalized)) {
+    queueLeadLink(session, "network_problem");
+    return english
+      ? stageLine(session, "network_problem_en", [
+        "No problem. I am sending the link by SMS. When internet is working, open www.tezcredit.com, click Apply Now, and continue from there.",
+        "Understood. I will send the SMS link. Once mobile data works, open www.tezcredit.com and click Apply Now.",
+        "That is okay. Use the link when your internet is back; the website is www.tezcredit.com, then Apply Now."
+      ])
+      : stageLine(session, "network_problem_hi", [
+        "कोई बात नहीं। मैं SMS link भेज रही हूँ। Internet चलते ही www.tezcredit.com खोलकर Apply Now click कीजिए और वहीं से continue कर लीजिए।",
+        "समझ गया। SMS link भेज रही हूँ। Mobile data चलते ही www.tezcredit.com पर Apply Now से आगे बढ़िए।",
+        "ठीक है। Net वापस आते ही link खोलिए; website www.tezcredit.com है, वहाँ Apply Now click करना है।"
+      ]);
+  }
+
+  if (asksSameNumberForLink(normalized)) {
+    queueLeadLink(session, "same_number_link");
+    return english
+      ? "Yes, I am sending the secure link to this same number by SMS. Open www.tezcredit.com and click Apply Now when you are ready."
+      : "हाँ जी, इसी number पर SMS से secure link भेज रही हूँ। Ready हों तो www.tezcredit.com खोलकर Apply Now click कर लीजिए।";
+  }
+
+  if (wantsToSelfComplete(normalized)) {
+    queueLeadLink(session, "self_complete");
+    return english
+      ? "Sure. I am sending the secure link by SMS. You can complete it yourself on www.tezcredit.com. Do not share OTP or password with anyone."
+      : "बिल्कुल। मैं SMS से secure link भेज रही हूँ। आप www.tezcredit.com पर खुद complete कर सकते हैं। OTP या password किसी को मत बताइए।";
   }
 
   if (mentionsWrongAnswer(normalized)) {
@@ -1759,6 +1788,12 @@ function buildScriptedReply(session, text) {
       ]);
   }
 
+  if (asksLegitimacyOrNbfc(normalized)) {
+    return english
+      ? "TezCredit is the website where your loan journey is pending. Please verify details only on www.tezcredit.com and never share OTP, PIN, password, or card details on call."
+      : "TezCredit वही website है जहाँ आपकी loan journey pending है। Details सिर्फ www.tezcredit.com पर verify कीजिए, और call पर OTP, PIN, password या card details कभी मत बताइए।";
+  }
+
   if (mentionsLinkReceived(normalized)) {
     markLinkInstruction(session, "link_received");
     return english
@@ -1785,6 +1820,9 @@ function buildScriptedReply(session, text) {
   }
 
   if (tezAmountReply) return tezAmountReply;
+
+  const preStageObjectionReply = buildPreStageObjectionReply(session, normalized, english);
+  if (preStageObjectionReply) return preStageObjectionReply;
 
   const stageConversationalReply = buildStageConversationalReply(session, normalized, { amountText, english });
   if (stageConversationalReply) return stageConversationalReply;
@@ -1844,13 +1882,23 @@ function buildScriptedReply(session, text) {
 
   if (asksForgotLogin(normalized)) {
     queueLeadLink(session, "forgot_login");
-    if (english) return "I am sending the app link again. Login with your mobile number inside the app, but never share the OTP with me.";
-    return "मैं app link फिर भेज रहा हूँ। app में अपने mobile number से login कीजिए, लेकिन ओ टी पी मुझे कभी मत बताइए।";
+    if (english) return "I am sending the secure link again. Open www.tezcredit.com, click Apply Now, and login with your mobile number. Never share the OTP with me.";
+    return "मैं secure link फिर भेज रही हूँ। www.tezcredit.com पर Apply Now click करके mobile number से login कीजिए, लेकिन ओ टी पी मुझे कभी मत बताइए।";
   }
 
   if (asksSafety(normalized) || asksOtpOrSensitiveDetails(normalized)) {
-    if (english) return "Yes, use only the secure app link. I will never ask for OTP, PIN, password, Aadhaar OTP, or card details.";
-    return "हाँ, सिर्फ सुरक्षित app link use कीजिए। मैं ओ टी पी, PIN, password, Aadhaar OTP या card details कभी नहीं पूछूँगा।";
+    if (english) return "Yes, use only www.tezcredit.com or the secure SMS link. I will never ask for OTP, PIN, password, Aadhaar OTP, or card details.";
+    return "हाँ, सिर्फ www.tezcredit.com या secure SMS link use कीजिए। मैं ओ टी पी, PIN, password, Aadhaar OTP या card details कभी नहीं पूछूँगी।";
+  }
+
+  if (complainsInterestHigh(normalized)) {
+    if (english) return "I understand. The final rate and charges are shown before acceptance, and you can reject if they do not suit you. Complete the pending step first to see the exact offer.";
+    return "समझ रही हूँ। Final rate और charges accept करने से पहले साफ दिखेंगे, पसंद न हों तो मना कर सकते हैं। Exact offer देखने के लिए pending step complete कर लीजिए।";
+  }
+
+  if (asksHowToGetLoan(normalized)) {
+    if (english) return "Complete the pending step on www.tezcredit.com after clicking Apply Now. After eligibility is checked, the final amount and terms will be shown before you accept.";
+    return "www.tezcredit.com पर Apply Now click करके pending step complete कीजिए। Eligibility check के बाद final amount और terms accept करने से पहले दिखेंगे।";
   }
 
   if (asksInterestRate(normalized)) {
@@ -1864,13 +1912,13 @@ function buildScriptedReply(session, text) {
   }
 
   if (asksFeesOrCharges(normalized)) {
-    if (english) return "Any fee or charge is shown clearly in the app before acceptance. Please never share OTP or card details.";
-    return "कोई भी fee या charge ऐप में साफ दिखेगा, स्वीकार करने से पहले। ओ टी पी या card details मत बताइए।";
+    if (english) return "Any fee or charge is shown clearly on the final offer screen before acceptance. Please never share OTP or card details.";
+    return "कोई भी fee या charge final offer screen पर accept करने से पहले साफ दिखेगा। ओ टी पी या card details मत बताइए।";
   }
 
   if (asksEmiOrTenure(normalized)) {
-    if (english) return "EMI and tenure options are shown with the final offer in the app. Open the secure link, and I will stay on the line.";
-    return "ई एम आई और tenure options ऐप में final offer के साथ दिखेंगे। सुरक्षित link खोलिए, मैं line पर हूँ।";
+    if (english) return "EMI and tenure options are shown with the final offer on the website. Open www.tezcredit.com and click Apply Now.";
+    return "ई एम आई और tenure options website पर final offer के साथ दिखेंगे। www.tezcredit.com खोलकर Apply Now click कीजिए।";
   }
 
   if (asksChangeAmount(normalized)) {
@@ -1981,6 +2029,36 @@ function buildScriptedReply(session, text) {
   if (asksQuestion(normalized)) {
     if (english) return "Sure, please ask. I will answer briefly and then help you check the final offer.";
     return "हाँ, पूछिए। मैं आपकी बात समझकर छोटा सा जवाब दूँगा, फिर final offer check करवा दूँगा।";
+  }
+
+  return "";
+}
+
+function buildPreStageObjectionReply(session = {}, normalized = "", english = false) {
+  if (asksForgotLogin(normalized)) return "";
+
+  if (asksLegitimacyOrNbfc(normalized)) {
+    return english
+      ? "TezCredit is the website where your loan journey is pending. Please verify details only on www.tezcredit.com and never share OTP, PIN, password, or card details on call."
+      : "TezCredit वही website है जहाँ आपकी loan journey pending है। Details सिर्फ www.tezcredit.com पर verify कीजिए, और call पर OTP, PIN, password या card details कभी मत बताइए।";
+  }
+
+  if (asksSafety(normalized) || asksOtpOrSensitiveDetails(normalized)) {
+    return english
+      ? "Yes, use only www.tezcredit.com or the secure SMS link. I will never ask for OTP, PIN, password, Aadhaar OTP, or card details."
+      : "हाँ, सिर्फ www.tezcredit.com या secure SMS link use कीजिए। मैं ओ टी पी, PIN, password, Aadhaar OTP या card details कभी नहीं पूछूँगी।";
+  }
+
+  if (complainsInterestHigh(normalized)) {
+    return english
+      ? "I understand. The final rate and charges are shown before acceptance, and you can reject if they do not suit you. Complete the pending step first to see the exact offer."
+      : "समझ रही हूँ। Final rate और charges accept करने से पहले साफ दिखेंगे, पसंद न हों तो मना कर सकते हैं। Exact offer देखने के लिए pending step complete कर लीजिए।";
+  }
+
+  if (asksHowToGetLoan(normalized)) {
+    return english
+      ? "Complete the pending step on www.tezcredit.com after clicking Apply Now. After eligibility is checked, the final amount and terms will be shown before you accept."
+      : "www.tezcredit.com पर Apply Now click करके pending step complete कीजिए। Eligibility check के बाद final amount और terms accept करने से पहले दिखेंगे।";
   }
 
   return "";
@@ -2172,6 +2250,22 @@ function buildStageConversationalReply(session = {}, text = "", { amountText = "
 
   if (!isTezJourneyStage(stage)) return "";
 
+  if (asksWebsiteName(text) || mentionsUnknownWebsite(text)) {
+    return websiteInstructionReply(session, english);
+  }
+
+  if (asksLoginHelp(text)) {
+    return loginInstructionReply(session, english);
+  }
+
+  if (mentionsProcessInProgress(text)) {
+    return processInProgressReply(session, english);
+  }
+
+  if (mentionsNotVisible(text)) {
+    return stageNotVisibleReply(session, english);
+  }
+
   if (isSimpleGreeting(text) || confirmsCanHear(text)) {
     return stageOpeningContinuation(session, english, amountText);
   }
@@ -2211,6 +2305,53 @@ function buildStageConversationalReply(session = {}, text = "", { amountText = "
   }
 
   return "";
+}
+
+function websiteInstructionReply(session = {}, english = false) {
+  markWebsiteInstruction(session, "website_question");
+  return english
+    ? stageLine(session, "website_instruction_en", [
+      "The website is www.tezcredit.com. Open it in Chrome, tap Apply Now, and sign in with your mobile number. Tell me once it opens.",
+      "It is www.tezcredit.com. Please open it, click Apply Now, then login with your mobile number. Do not share the OTP with me.",
+      "Open www.tezcredit.com, tap Apply Now, and login with your registered mobile number. I will wait while you open it."
+    ])
+    : stageLine(session, "website_instruction_hi", [
+      "Website www.tezcredit.com है। Chrome में खोलिए, Apply Now click कीजिए, फिर mobile number से login कीजिए। खुल जाए तो बताइए।",
+      "www.tezcredit.com खोलना है। Apply Now click करके अपने mobile number से login कीजिए। OTP मुझे नहीं बताना है।",
+      "TezCredit website www.tezcredit.com है। Apply Now पर click कीजिए और registered mobile number से login कर लीजिए। मैं line पर हूँ।"
+    ]);
+}
+
+function loginInstructionReply(session = {}, english = false) {
+  markWebsiteInstruction(session, "login_help");
+  return english
+    ? "Open www.tezcredit.com, click Apply Now, enter your registered mobile number, and type the OTP only on the website. After login, tell me what screen opens."
+    : "www.tezcredit.com खोलिए, Apply Now click कीजिए, registered mobile number डालिए, और OTP सिर्फ website में भरिए। Login के बाद कौन सा screen खुलता है बताइए।";
+}
+
+function processInProgressReply(session = {}, english = false) {
+  session.stageProcessPending = true;
+  return english
+    ? "Okay, let it finish. Wait a few seconds and tell me whether it shows successful, failed, or asks for another step."
+    : "ठीक है, process complete होने दीजिए। कुछ seconds wait कीजिए और बताइए successful दिखा, failed दिखा, या कोई अगला step आया?";
+}
+
+function stageNotVisibleReply(session = {}, english = false) {
+  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  if (stage.includes("BANK_VERIFICATION")) {
+    return english
+      ? "No problem. If bank verification is not visible, tell me the exact screen you see now: mobile login, OTP, profile, offer, UPI, or error."
+      : "कोई बात नहीं। Bank verification नहीं दिख रहा तो अभी exact screen बताइए: mobile login, OTP, profile, offer, UPI या error?";
+  }
+  return english
+    ? "No problem. Tell me the exact screen you see now, and I will guide the next step."
+    : "कोई बात नहीं। अभी exact screen क्या दिख रहा है बताइए, मैं next step guide कर दूँगी।";
+}
+
+function markWebsiteInstruction(session = {}, reason = "") {
+  session.websiteInstructionGiven = true;
+  session.websiteInstructionReason = reason;
+  session.websiteInstructionCount = Number(session.websiteInstructionCount || 0) + 1;
 }
 
 function isTezJourneyStage(stage = "") {
@@ -2265,12 +2406,12 @@ function stageClarificationReply(session = {}, english = false, amountText = "el
   if (stage.includes("BANK_VERIFICATION")) {
     return stageLine(session, "bank_clarify", english
       ? [
-        "I am saying your loan offer is ready, but bank verification is pending. Can you open the app?",
-        "The pending step is bank verification. You can use UPI or bank-account verification inside the app."
+        "I am saying your loan offer is ready, but bank verification is pending. Can you open www.tezcredit.com?",
+        "The pending step is bank verification. Open www.tezcredit.com, click Apply Now, and complete it there."
       ]
       : [
         `मैं कह रहा हूँ कि आपका loan offer ${amountText} तक ready है, लेकिन bank verification pending है।`,
-        "Pending step bank verification है। App में UPI या bank account option से verify कर सकते हैं।"
+        "Pending step bank verification है। www.tezcredit.com पर Apply Now click करके UPI या bank account option से verify कर सकते हैं।"
       ]);
   }
   if (stage.includes("E_SIGN")) {
@@ -2416,17 +2557,17 @@ function stageGentleRedirectReply(session = {}, english = false) {
   if (stage.includes("BANK_VERIFICATION")) {
     return stageLine(session, "bank_gentle_redirect", english
       ? [
-        "No worries. Please open the app once and tell me whether bank verification is visible.",
-        "Let us do it slowly. Open TezCredit and tell me the first screen you see."
+        "No worries. Please open www.tezcredit.com, click Apply Now, and tell me the first screen you see.",
+        "Let us do it slowly. Open www.tezcredit.com and tell me whether login, OTP, offer, or bank verification is visible."
       ]
       : [
-        "कोई बात नहीं। App खोलिए और बताइए bank verification दिख रहा है या नहीं।",
-        "आराम से करते हैं। TezCredit app खोलकर बताइए पहला screen क्या दिख रहा है।"
+        "कोई बात नहीं। www.tezcredit.com खोलकर Apply Now click कीजिए और बताइए पहला screen क्या दिख रहा है।",
+        "आराम से करते हैं। www.tezcredit.com खोलिए और बताइए login, OTP, offer या bank verification में क्या दिख रहा है।"
       ]);
   }
   return english
-    ? "No worries. Tell me which app screen you see, and I will guide one step at a time."
-    : "कोई बात नहीं। कौन सा app screen दिख रहा है बताइए, मैं एक-एक step guide करूँगा।";
+    ? "No worries. Tell me which website screen you see, and I will guide one step at a time."
+    : "कोई बात नहीं। कौन सा website screen दिख रहा है बताइए, मैं एक-एक step guide करूँगी।";
 }
 
 function stageLine(session = {}, key = "stage", lines = []) {
@@ -2499,8 +2640,8 @@ function contextualNegativeReply(session = {}) {
     return "कोई बात नहीं। DigiLocker open नहीं हो रहा, या Aadhaar KYC को लेकर doubt है?";
   }
 
-  if (english) return "No problem. What is stopping you right now: link not received, app not opening, documents, or not interested?";
-  return "कोई बात नहीं। अभी क्या दिक्कत है: link नहीं मिला, app नहीं खुला, documents, या interest नहीं है?";
+  if (english) return "No problem. What is stopping you right now: link not received, website not opening, documents, or not interested?";
+  return "कोई बात नहीं। अभी क्या दिक्कत है: link नहीं मिला, website नहीं खुली, documents, या interest नहीं है?";
 }
 
 function isBareNegative(text = "") {
@@ -2517,7 +2658,9 @@ function terminalClosingText(outcome, session = {}) {
   if (outcome === "CALL_SCREENING") return english ? `${VOICEBOT_AGENT_NAME} from TezCredit, calling about a loan application. Thank you.` : `${VOICEBOT_AGENT_NAME}, TezCredit से loan application के बारे में call कर रही हूँ। धन्यवाद।`;
   if (outcome === "PAID") return english ? "Thanks, I have noted that you already paid. Please keep the payment receipt handy." : "धन्यवाद, मैं note कर रहा हूँ कि आपने payment कर दिया है। Receipt संभाल कर रखिए।";
   if (outcome === "PROMISE_TO_PAY") return english ? "Thanks, I have noted your payment commitment. Please pay from the secure link before the time you mentioned." : "धन्यवाद, मैं आपका payment commitment note कर रहा हूँ। बताए हुए समय से पहले secure link से payment कर दीजिए।";
-  if (outcome === "CALLBACK") return english ? "Sure, we will contact you later. Thank you." : "ठीक है, हम बाद में संपर्क करेंगे। धन्यवाद।";
+  if (outcome === "CALLBACK") return english
+    ? "Sure, thank you. When you are free, you can continue from www.tezcredit.com by clicking Apply Now."
+    : "ठीक है, धन्यवाद। जब आप free हों, www.tezcredit.com पर Apply Now click करके process continue कर सकते हैं।";
   if (outcome === "WRONG_NUMBER") return english ? "Sorry about that, I am marking this as a wrong number. Thank you." : "माफ कीजिए, मैं इस number को wrong number mark कर रहा हूँ। धन्यवाद।";
   if (outcome === "OPTED_OUT") return english ? "Understood. We will not call you again. Thank you." : "समझ गया। हम आपको दोबारा call नहीं करेंगे। धन्यवाद।";
   return "ठीक है, मैं call यहीं close कर रहा हूँ। धन्यवाद।";
@@ -2565,6 +2708,20 @@ function classifyLiveConversation(session = {}, userMessage = "", transcript = [
 
   if (isTezJourneyLead(session.lead)
       && classification.outcome === "INTERESTED"
+      && isTezJourneyBlockerResponse(userMessage)) {
+    return {
+      ...classification,
+      outcome: "IN_PROGRESS",
+      intent: "IN_PROGRESS",
+      confidence: 0.82,
+      reason: "Customer is blocked or cannot see the expected TezCredit step; journey progress is not confirmed.",
+      nextAction: "Clarify the current website screen and guide the next TezCredit action.",
+      summary: `Latest user response: "${String(userMessage || "").slice(0, 180)}". Customer is blocked on the TezCredit journey; outcome remains in progress.`
+    };
+  }
+
+  if (isTezJourneyLead(session.lead)
+      && classification.outcome === "INTERESTED"
       && !hasTezInterestEvidence(session, userMessage)) {
     return {
       ...classification,
@@ -2586,6 +2743,18 @@ function classifyLiveConversation(session = {}, userMessage = "", transcript = [
   }
 
   return classification;
+}
+
+function isTezJourneyBlockerResponse(text = "") {
+  const normalized = normalizeVoiceIntent(text);
+  return mentionsNotVisible(normalized)
+    || mentionsLinkProblem(normalized)
+    || mentionsNetworkProblem(normalized)
+    || asksLoginHelp(normalized)
+    || asksWebsiteName(normalized)
+    || mentionsUnknownWebsite(normalized)
+    || asksConfused(normalized)
+    || /(problem|issue|error|fail|failed|दिक्कत|समस्या|एरर|नहीं हो|नही हो|नहीं खुल|नही खुल)/.test(normalized);
 }
 
 function hasTezInterestEvidence(session = {}, userMessage = "") {
@@ -2965,6 +3134,19 @@ function asksSendDetails(text) {
   return /(send details|share details|details bhej|details send|whatsapp|sms|message kar|मेसेज|मैसेज|डिटेल भेज|details भेज|व्हाट्सऐप|वॉट्सऐप|एस एम एस|sms भेज)/.test(text);
 }
 
+function mentionsNetworkProblem(text) {
+  return /(net.*(nahi|nahin|not|नहीं|नही).*chal|net.*चल.*(nahi|nahin|not|नहीं|नही)|internet.*(nahi|nahin|not).*work|network.*(nahi|nahin|not)|mobile data.*(nahi|nahin|not)|data.*(nahi|nahin|not|नहीं|नही).*chal|नेट.*(नहीं|नही).*चल|internet.*नहीं|internet.*नही|इंटरनेट.*नहीं|इंटरनेट.*नही|network.*नहीं|network.*नही|नेट नहीं|नेट नही|data नहीं|data नही)/.test(text);
+}
+
+function asksSameNumberForLink(text) {
+  return /(same number|this number|isi number|is number|ye number|yahi number|इसी number|इस number|ये number|यही number|इसी नंबर|इस नंबर|ये नंबर|यही नंबर).{0,30}(link|sms|text|message|भेज|मेसेज|मैसेज|एस एम एस|लिंक)/.test(text)
+    || /(link|sms|text|message|भेज|मेसेज|मैसेज|एस एम एस|लिंक).{0,30}(same number|this number|isi number|is number|ye number|yahi number|इसी number|इस number|ये number|यही number|इसी नंबर|इस नंबर|ये नंबर|यही नंबर)/.test(text);
+}
+
+function wantsToSelfComplete(text) {
+  return /(i will do myself|i can do myself|i will fill myself|i can fill myself|khud kar|khud bhar|main bhar leta|mai bhar leta|main kar leta|mai kar leta|मैं खुद|मैं भर लेता|मैं कर लेता|खुद कर लूँ|खुद कर लू|अपने आप|apne aap)/.test(text);
+}
+
 function mentionsWrongAnswer(text) {
   return /(ye nahi|ye nahin|यह नहीं|ये नहीं|यह नही|ये नही|not asked|did not ask|wrong answer|गलत जवाब|गलत समझ|nahi pucha|nahin pucha|नहीं पूछा|नही पूछा)/.test(text);
 }
@@ -2983,6 +3165,10 @@ function asksDataSource(text) {
 
 function asksHumanSupport(text) {
   return /(agent|human|representative|customer care|support se baat|talk to.*support|talk to (a )?person|speak to (a )?person|connect.*person|कस्टमर केयर|support से बात|सपोर्ट से बात|किसी आदमी|इंसान से बात|agent से बात)/.test(text);
+}
+
+function asksLegitimacyOrNbfc(text) {
+  return /(nbfc|registered|rbi|approved company|genuine company|real company|company genuine|legit|legitimate|trustworthy|एन बी एफ सी|रजिस्टर|आर बी आई|आरबीआई|कंपनी सही|company सही|कंपनी genuine|कंपनी असली|कंपनी real|कंपनी safe)/.test(text);
 }
 
 function mentionsLinkReceived(text) {
@@ -3038,6 +3224,14 @@ function asksAmount(text) {
 
 function asksInterestRate(text) {
   return /(rate of interest|interest rate|\broi\b|\binterest\b|ब्याज|ब्याज दर|इंटरेस्ट|इंट्रेस्ट|रेट ऑफ|रेट क्या|दर क्या|कितना ब्याज|कितनी ब्याज)/.test(text);
+}
+
+function complainsInterestHigh(text) {
+  return /(interest.*(high|zyada|jada|bahut|too much|ज्यादा|ज़्यादा|बहुत)|rate.*(high|zyada|jada|bahut|too much|ज्यादा|ज़्यादा|बहुत)|charges?.*(high|zyada|jada|bahut|too much|ज्यादा|ज़्यादा|बहुत)|ब्याज.*(ज्यादा|ज़्यादा|बहुत)|इंटरेस्ट.*(ज्यादा|ज़्यादा|बहुत)|रेट.*(ज्यादा|ज़्यादा|बहुत)|बहुत ज्यादा.*(interest|इंटरेस्ट|ब्याज|rate|रेट))/.test(text);
+}
+
+function asksHowToGetLoan(text) {
+  return /(loan.*(kaise|कैसे).*milega|kaise.*loan.*milega|personal loan.*kaise|how.*get.*loan|how.*loan.*work|कैसे मिलेगा|loan कैसे मिलेगा|लोन कैसे मिलेगा|personal loan चाहिए|personal loan chahiye|loan chahiye.*kaise|लोन चाहिए.*कैसे)/.test(text);
 }
 
 function asksFeesOrCharges(text) {
@@ -3133,7 +3327,23 @@ function asksReason(text) {
 }
 
 function asksWebsiteName(text) {
-  return /(website.*(name|naam|नाम)|(?:name|naam|नाम).*website|site.*(name|naam|नाम)|(?:name|naam|नाम).*site|web address|website url|site url|website का नाम|वेबसाइट का नाम)/.test(text);
+  return /(which website|which site|what website|what site|kaunsi website|kaun si website|konsi website|kon si website|kaunsi site|कौन सी website|कौनसी website|कौन सी वेबसाइट|कौनसी वेबसाइट|कौन सा site|कौन सा website|कौन सी site|website.*(name|naam|नाम)|(?:name|naam|नाम).*website|site.*(name|naam|नाम)|(?:name|naam|नाम).*site|web address|website url|site url|website का नाम|वेबसाइट का नाम)/.test(text);
+}
+
+function mentionsUnknownWebsite(text) {
+  return /(don t know.*website|dont know.*website|do not know.*website|don t know.*site|dont know.*site|website.*nahi pata|website.*nahin pata|site.*nahi pata|site.*nahin pata|website नहीं पता|website नही पता|वेबसाइट नहीं पता|वेबसाइट नही पता|site नहीं पता|site नही पता)/.test(text);
+}
+
+function asksLoginHelp(text) {
+  return /(login.*kaise|log in.*kaise|sign in.*kaise|login कैसे|log in कैसे|लॉग इन कैसे|लॉगिन कैसे|login kaise kar|mobile number.*login|otp.*login|apply now.*login|login.*mobile number|login.*otp)/.test(text);
+}
+
+function mentionsProcessInProgress(text) {
+  return /(process.*(ho raha|ho rahi|चल|chal|running)|processing|लोड|loading|घूम|process हो रहा|process हो रही|प्रोसेस हो रहा|प्रोसेस हो रही)/.test(text);
+}
+
+function mentionsNotVisible(text) {
+  return /(nahi dikh|nahin dikh|not visible|not showing|not see|can t see|cannot see|नहीं दिख|नही दिख|दिख नहीं|दिख नही|नहीं मिल|नही मिल|nahi mil|nahin mil)/.test(text);
 }
 
 function asksQuestion(text) {
