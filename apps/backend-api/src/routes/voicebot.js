@@ -24,6 +24,7 @@ const config = require("../config");
 const { sendLeadLink } = require("../providers/notifications");
 const { expandCurrencyForSpeech } = require("../services/speechText");
 const {
+  TEZ_JOURNEY,
   applyTezJourneyProgress,
   buildTezJourneyTransitionReply,
   detectTezJourneyProgress,
@@ -405,16 +406,23 @@ async function enforceMaxCallDuration(ws, session) {
   const closingText = maxCallClosingText(session);
   if (session.callId) {
     await addTranscript(session.callId, "assistant", closingText);
-    await query(
-      `UPDATE calls
-       SET summary=CASE
-             WHEN summary IS NULL OR summary='' THEN $2
-             ELSE summary || ' ' || $2
-           END,
-           updated_at=NOW()
-       WHERE id=$1`,
-      [session.callId, "Call closed at the five-minute limit after directing the customer to continue the pending steps."]
-    );
+    if (isTezJourneyCompleted(session)) {
+      await finalizeCall(session, {
+        outcome: "JOURNEY_COMPLETED",
+        summary: journeyCompleteSummary(session, "Call closed at the five-minute limit after customer confirmed completion.")
+      });
+    } else {
+      await query(
+        `UPDATE calls
+         SET summary=CASE
+               WHEN summary IS NULL OR summary='' THEN $2
+               ELSE summary || ' ' || $2
+             END,
+             updated_at=NOW()
+         WHERE id=$1`,
+        [session.callId, "Call closed at the five-minute limit after directing the customer to continue the pending steps."]
+      );
+    }
   }
   await logVoicebotEvent(session, "max_call_duration_reached", {
     maxCallSeconds: MAX_CALL_SECONDS,
@@ -426,7 +434,27 @@ async function enforceMaxCallDuration(ws, session) {
 }
 
 function maxCallClosingText(session = {}) {
+  if (isTezJourneyCompleted(session)) return journeyCompleteClosingText(session);
   return isEnglishSession(session) ? MAX_CALL_CLOSE_TEXT_EN : MAX_CALL_CLOSE_TEXT_HI;
+}
+
+function isTezJourneyCompleted(session = {}) {
+  return Boolean(session.journeyCompleted)
+    || session.lead?.drop_stage === "JOURNEY_COMPLETED"
+    || session.lead?.source_status === "JOURNEY_COMPLETED"
+    || session.lead?.source_metadata?.journeyProgress?.journeyCompleted === true;
+}
+
+function journeyCompleteClosingText(session = {}) {
+  return isEnglishSession(session)
+    ? "Perfect, your TezCredit journey is complete. Thank you for confirming."
+    : "बहुत बढ़िया, आपकी TezCredit journey complete हो गई। Confirm करने के लिए धन्यवाद।";
+}
+
+function journeyCompleteSummary(session = {}, suffix = "") {
+  const amount = session.lead?.offer_amount || session.lead?.loan_amount || "";
+  const amountText = amount ? ` Loan amount: ${amount}.` : "";
+  return `Customer confirmed TezCredit journey completion and disbursal.${amountText}${suffix ? ` ${suffix}` : ""}`.trim();
 }
 
 function clearMaxCallTimer(session = {}) {
@@ -1046,6 +1074,11 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  if (isTezJourneyLead(session.lead) && isTezDisbursalConfirmation(text)) {
+    await completeTezJourneyFromDisbursal(ws, session, text);
+    return;
+  }
+
   if (isContextualNegativeReply(session, text)) {
     const reply = contextualNegativeReply(session);
     await logVoicebotEvent(session, "contextual_negative_followup", {
@@ -1361,6 +1394,7 @@ async function handleTezJourneyProgress(ws, session, text, progress) {
   }
 
   if (progress.journeyComplete) {
+    session.journeyCompleted = true;
     session.ending = true;
     await speakAndClose(ws, session, reply, "tez_journey_completed");
     return;
@@ -1368,6 +1402,77 @@ async function handleTezJourneyProgress(ws, session, text, progress) {
 
   await speakText(ws, session, reply, "tez_journey_stage_advanced");
   scheduleNoSpeechCheck(ws, session, "after_journey_stage_advanced");
+}
+
+async function completeTezJourneyFromDisbursal(ws, session, text) {
+  const existingMetadata = session.lead?.source_metadata && typeof session.lead.source_metadata === "object"
+    ? session.lead.source_metadata
+    : {};
+  const existingProgress = existingMetadata.journeyProgress && typeof existingMetadata.journeyProgress === "object"
+    ? existingMetadata.journeyProgress
+    : {};
+  const now = new Date().toISOString();
+  const completedStages = TEZ_JOURNEY.map(item => item.stage);
+  const history = Array.isArray(existingProgress.history) ? existingProgress.history.slice(-19) : [];
+  history.push({
+    completedStage: "APPROVED_NOT_DISBURSED",
+    nextStage: "JOURNEY_COMPLETED",
+    reason: "disbursal_confirmed_directly",
+    at: now
+  });
+  const sourceMetadata = {
+    ...existingMetadata,
+    journeyStage: "JOURNEY_COMPLETED",
+    journeyProgress: {
+      ...existingProgress,
+      startingStage: existingProgress.startingStage || getTezJourneyStage(session.lead),
+      currentStage: "JOURNEY_COMPLETED",
+      completedStages,
+      completedCount: completedStages.length,
+      totalStages: TEZ_JOURNEY.length,
+      journeyCompleted: true,
+      lastAdvancedAt: now,
+      completedAt: now,
+      history
+    }
+  };
+
+  session.journeyCompleted = true;
+  session.lead = {
+    ...session.lead,
+    drop_stage: "JOURNEY_COMPLETED",
+    source_status: "JOURNEY_COMPLETED",
+    status: "completed",
+    source_metadata: sourceMetadata
+  };
+
+  if (session.lead?.id) {
+    await query(
+      `UPDATE leads
+       SET drop_stage='JOURNEY_COMPLETED',
+           source_status='JOURNEY_COMPLETED',
+           source_metadata=$2::jsonb,
+           status='completed'
+       WHERE id=$1`,
+      [session.lead.id, JSON.stringify(sourceMetadata)]
+    );
+  }
+
+  const reply = journeyCompleteClosingText(session);
+  const summary = journeyCompleteSummary(session, `Latest user response: "${String(text || "").slice(0, 180)}".`);
+  await logVoicebotEvent(session, "tez_journey_completed", {
+    userText: text,
+    completedStage: "APPROVED_NOT_DISBURSED",
+    nextStage: "JOURNEY_COMPLETED",
+    reason: "disbursal_confirmed_directly"
+  });
+  if (session.callId) {
+    await addTranscript(session.callId, "assistant", reply);
+    await finalizeCall(session, { outcome: "JOURNEY_COMPLETED", summary });
+  }
+
+  session.ending = true;
+  await speakAndClose(ws, session, reply, "tez_journey_completed");
 }
 
 async function maybeSpeakDelayedAck(ws, session, replyPromise, ackText, turnSeq) {
@@ -1476,7 +1581,7 @@ function confirmsIdentityResponse(text = "") {
 function confirmsAvailabilityResponse(text = "") {
   const normalized = normalizeVoiceIntent(text);
   return isPositiveAgreement(normalized)
-    || /(yes.*can talk|can talk|we can talk|go ahead|tell me|कर सकते हैं बात|बात कर सकते हैं|बात कर सकते है|बोलो आगे|बोलिए आगे|बताइए आगे|हाँ.*कर सकते|हां.*कर सकते)/.test(normalized);
+    || /(yes.*can talk|can talk|we can talk|i can talk|go ahead|tell me|कर सकते हैं बात|बात कर सकते हैं|बात कर सकते है|कर सकता हूँ|कर सकता हूं|कर सकती हूँ|कर सकती हूं|बात कर सकता|बात कर सकती|बोलो आगे|बोलिए आगे|बताइए आगे|हाँ.*कर सक|हां.*कर सक)/.test(normalized);
 }
 
 function askedForNameRecently(text) {
@@ -1625,6 +1730,11 @@ function buildScriptedReply(session, text) {
   const amount = lead.offer_amount || lead.loan_amount || "";
   const amountText = amount ? formatLoanAmount(amount) : "eligible amount";
   const english = isEnglishSession(session);
+
+  if (isTezJourneyCompleted(session) || isTezDisbursalConfirmation(normalized)) {
+    session.journeyCompleted = true;
+    return journeyCompleteClosingText(session);
+  }
 
   const tezAmountReply = buildTezAmountReply(session, normalized, english, amount, amountText);
   if (tezAmountReply && session.confirmedName) {
@@ -2258,6 +2368,12 @@ function buildStageConversationalReply(session = {}, text = "", { amountText = "
     return loginInstructionReply(session, english);
   }
 
+  if (stage.includes("APPROVED_NOT_DISBURSED") && mentionsCompletionWithoutDisbursalSignal(text)) {
+    return english
+      ? "Great. Just to confirm, has the loan amount been credited to your bank account?"
+      : "बहुत अच्छा। बस confirm कर दीजिए, क्या loan amount आपके bank account में credit हो गया?";
+  }
+
   if (mentionsProcessInProgress(text)) {
     return processInProgressReply(session, english);
   }
@@ -2602,6 +2718,13 @@ function mentionsCurrentScreen(text = "") {
   return /(screen|upi|यू पी आई|bank account|account|खाता|permission|error|एरर|fail|failed|open ho gaya|खुल गया|दिख रहा)/.test(text);
 }
 
+function mentionsCompletionWithoutDisbursalSignal(text = "") {
+  const normalized = normalizeVoiceIntent(text);
+  if (isTezDisbursalConfirmation(normalized)) return false;
+  return /\b(done|complete|completed|finished|submitted|successful|success|ho gaya|hogaya)\b/.test(normalized)
+    || /(हो गया|हो गई|पूरा|पूरी|complete|successful|success)/.test(normalized);
+}
+
 function isBareWebsiteReference(text = "") {
   return /^(website|web site|site|app|वेबसाइट|साइट)$/.test(normalizeVoiceIntent(text));
 }
@@ -2686,6 +2809,17 @@ function noteHumanJoinedAfterScreening(session = {}, text = "") {
 
 function classifyLiveConversation(session = {}, userMessage = "", transcript = []) {
   const filteredTranscript = effectiveTranscriptForClassification(session, transcript);
+  if (isTezJourneyLead(session.lead) && (isTezJourneyCompleted(session) || isTezDisbursalConfirmation(userMessage))) {
+    return {
+      outcome: "JOURNEY_COMPLETED",
+      intent: "JOURNEY_COMPLETED",
+      confidence: 0.95,
+      reason: "Customer confirmed TezCredit disbursal or loan amount credit.",
+      nextAction: "Stop journey reminders and reconcile final disbursal status.",
+      summary: `Latest user response: "${String(userMessage || "").slice(0, 180)}". Customer confirmed the TezCredit journey and disbursal are complete.`
+    };
+  }
+
   const classification = classifyConversation({
     userMessage,
     transcript: filteredTranscript,
@@ -2761,6 +2895,18 @@ function hasTezInterestEvidence(session = {}, userMessage = "") {
   if (session.websiteLoginConfirmed || session.bankVerificationOptionSeen || Number(session.linkPositiveFollowups || 0) > 0) return true;
   const normalized = normalizeVoiceIntent(userMessage);
   return /(i am interested|interested|continue|send (the )?link|apply now|logged in|login ho gaya|login हो गया|login कर लिया|लॉगिन हो गया|खोल लिया|खुल गया|website खुल|upi|यू पी आई|bank account|verification successful|successful हो गया|complete हो गया|पूरा हो गया)/.test(normalized);
+}
+
+function isTezDisbursalConfirmation(text = "") {
+  const normalized = normalizeVoiceIntent(text);
+  return /(money|amount|loan|funds|paisa|paise).*(received|credited|disbursed|credit|mil gaya|aa gaya)/.test(normalized)
+    || /(received|credited|disbursed|credit).*(money|amount|loan|funds|account)/.test(normalized)
+    || /(credit|credited|disbursed|dispersed).*(ho gaya|ho gya|hogaya|done|complete|completed|account)/.test(normalized)
+    || /(ho gaya|ho gya|hogaya|done|complete|completed).*(credit|credited|disbursed|dispersed)/.test(normalized)
+    || /(पैसा|पैसे|राशि|loan amount|लोन amount).*(मिल गया|मिल गए|आ गया|आ गई|credit|क्रेडिट)/.test(normalized)
+    || /(credit|क्रेडिट|डिस्बर्स|डिसबर्स|dispersed).*(हो गया|हो गई|हो चुका|दिख रहा|दिख रही)/.test(normalized)
+    || /(हो गया|हो गई|हो चुका).*(credit|क्रेडिट|डिस्बर्स|डिसबर्स|dispersed)/.test(normalized)
+    || /(खाते|अकाउंट|account).*(पैसा|पैसे|राशि|amount).*(आ गया|आ गई|मिल गया|credit|क्रेडिट)/.test(normalized);
 }
 
 function effectiveTranscriptForClassification(session = {}, transcript = []) {

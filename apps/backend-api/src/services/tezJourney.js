@@ -33,7 +33,7 @@ const TEZ_JOURNEY = [
     stage: "APPROVED_NOT_DISBURSED",
     playbookType: "TEZ_APPROVED_NOT_DISBURSED",
     label: "approval and disbursal",
-    textPattern: /(approved|approval|disburs|credited|money received|amount received|पैसा मिल|पैसे मिल|खाते में आ|डिस्बर्स)/
+    textPattern: /(approved|approval|disburs|credit|credited|money received|amount received|पैसा मिल|पैसे मिल|खाते में आ|डिस्बर्स|क्रेडिट)/
   }
 ];
 
@@ -62,7 +62,7 @@ function getTezJourneyStage(lead = {}) {
   const metadataStage = normalizeStage(lead.source_metadata?.journeyProgress?.currentStage);
   const dropStage = normalizeStage(lead.drop_stage);
   const playbookStage = STAGE_BY_PLAYBOOK.get(String(lead.playbook_type || "").toUpperCase())?.stage || "";
-  return metadataStage || dropStage || playbookStage;
+  return dropStage || metadataStage || playbookStage;
 }
 
 function tezJourneyContext(lead = {}) {
@@ -244,8 +244,8 @@ function completionPhrase(text) {
 }
 
 function positiveConfirmation(text) {
-  return /^(yes|yes it is|yes done|yeah|yep|correct|right|done|ok done|haan|han|ha ji|haan ji|ji haan|ho gaya)$/.test(text)
-    || /^(हाँ|हां|हाँ जी|हां जी|जी हाँ|जी हां|हो गया|हो गई|जी)$/.test(text);
+  return /^(yes|yes it is|yes done|yeah|yep|correct|right|done|ok done|complete|completed|ho gaya complete|complete ho gaya|haan|han|ha ji|haan ji|ji haan|ho gaya)$/.test(text)
+    || /^(हाँ|हां|हाँ जी|हां जी|जी हाँ|जी हां|हो गया|हो गई|हो गया complete|complete हो गया|जी)$/.test(text);
 }
 
 function completionConfirmationAsked(text, currentStage) {
@@ -264,7 +264,11 @@ function screenProgressPhrase(text) {
 function disbursalConfirmed(text) {
   return /(money|amount|loan|funds|paisa|paise).*(received|credited|disbursed|mil gaya|mil gaye|aa gaya|account.*aa)/.test(text)
     || /(received|credited|disbursed).*(money|amount|loan|funds)/.test(text)
+    || /(credit|credited|disbursed|dispersed).*(ho gaya|ho gya|hogaya|done|complete|completed|account)/.test(text)
+    || /(ho gaya|ho gya|hogaya|done|complete|completed).*(credit|credited|disbursed|dispersed)/.test(text)
     || /(पैसा|पैसे|राशि).*(मिल गया|मिल गए|आ गया|आ गई|credit|क्रेडिट)/.test(text)
+    || /(credit|क्रेडिट|डिस्बर्स|डिसबर्स|dispersed).*(हो गया|हो गई|हो चुका|दिख रहा|दिख रही)/.test(text)
+    || /(हो गया|हो गई|हो चुका).*(credit|क्रेडिट|डिस्बर्स|डिसबर्स|dispersed)/.test(text)
     || /(खाते|अकाउंट).*(पैसा|पैसे|राशि).*(आ गया|आ गई|मिल गया)/.test(text);
 }
 

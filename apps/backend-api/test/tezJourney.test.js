@@ -26,6 +26,15 @@ test("TezCredit journey starts at the imported stage and treats earlier stages a
   assert.equal(context.next.stage, "E_SIGN_PENDING");
 });
 
+test("drop stage is authoritative when stale metadata disagrees", () => {
+  const current = lead("BANK_VERIFICATION_PENDING", "TEZ_BANK_VERIFICATION_PENDING");
+  current.source_metadata.journeyProgress = { currentStage: "APPROVED_NOT_DISBURSED" };
+
+  const context = tezJourneyContext(current);
+
+  assert.equal(context.currentStage, "BANK_VERIFICATION_PENDING");
+});
+
 test("a bare yes does not falsely complete a TezCredit stage", () => {
   const progress = detectTezJourneyProgress(lead(), "yes", {
     lastSpokenText: "Can you complete the live selfie now?"
@@ -112,6 +121,29 @@ test("journey completes only after disbursal is explicitly confirmed", () => {
   assert.equal(updated.drop_stage, "JOURNEY_COMPLETED");
   assert.equal(updated.status, "completed");
   assert.equal(updated.source_metadata.journeyProgress.journeyCompleted, true);
+});
+
+test("Hindi credit confirmation completes approved-not-disbursed journey", () => {
+  const current = lead("APPROVED_NOT_DISBURSED", "TEZ_APPROVED_NOT_DISBURSED");
+  const progress = detectTezJourneyProgress(current, "क्रेडिट हो गया।", {
+    lastSpokenText: "कृपया disbursal status देखिए। क्या loan amount आपके account में credit हो गया?"
+  });
+
+  assert.equal(progress.journeyComplete, true);
+  assert.equal(progress.reason, "disbursal_confirmed");
+});
+
+test("complete ho gaya confirms disbursal only after explicit credit question", () => {
+  const current = lead("APPROVED_NOT_DISBURSED", "TEZ_APPROVED_NOT_DISBURSED");
+  const vague = detectTezJourneyProgress(current, "हो गया complete", {
+    lastSpokenText: "What disbursal status do you see?"
+  });
+  const confirmed = detectTezJourneyProgress(current, "हो गया complete", {
+    lastSpokenText: "क्या loan amount आपके account में credit हो गया?"
+  });
+
+  assert.equal(vague, null);
+  assert.equal(confirmed.journeyComplete, true);
 });
 
 test("yes completes the journey after an explicit disbursal-credit question", () => {

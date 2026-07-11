@@ -1128,6 +1128,77 @@ test("identity and availability confirmations remain in progress until journey i
   assert.match(result.summary, /identity or availability/i);
 });
 
+test("Hindi singular availability confirmation is accepted", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_BANK_VERIFICATION_PENDING",
+    drop_stage: "BANK_VERIFICATION_PENDING"
+  }, {
+    confirmedName: true,
+    userTurns: 2,
+    lastSpokenText: "धन्यवाद, Prasheel जी। क्या अभी दो मिनट बात कर सकते हैं?"
+  });
+
+  _test.updateConversationMemory(state, "हाँ कर सकता हूँ।");
+
+  assert.equal(state.availabilityConfirmed, true);
+  assert.equal(state.availabilityConfirmedTurn, 2);
+});
+
+test("approved-not-disbursed vague completion asks for credit confirmation instead of backtracking", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_APPROVED_NOT_DISBURSED",
+    drop_stage: "APPROVED_NOT_DISBURSED"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    userTurns: 9
+  });
+
+  const reply = _test.buildScriptedReply(state, "हो गया complete।");
+
+  assert.match(reply, /loan amount|credit|account/i);
+  assert.doesNotMatch(reply, /कौन सा website screen|एक-एक step|www\.tezcredit\.com/);
+});
+
+test("credit confirmation is classified as journey completed", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_APPROVED_NOT_DISBURSED",
+    drop_stage: "APPROVED_NOT_DISBURSED"
+  }, {
+    confirmedName: true,
+    availabilityConfirmed: true,
+    userTurns: 14
+  });
+
+  const result = _test.classifyLiveConversation(state, "क्रेडिट हो गया।", [
+    { speaker: "assistant", text: "क्या loan amount आपके account में credit हो गया?" },
+    { speaker: "user", text: "क्रेडिट हो गया।" }
+  ]);
+
+  assert.equal(result.outcome, "JOURNEY_COMPLETED");
+  assert.equal(result.intent, "JOURNEY_COMPLETED");
+});
+
+test("max duration uses completion close when journey is already completed", () => {
+  const state = session("Hinglish", {
+    name: "Prasheel",
+    playbook_type: "TEZ_APPROVED_NOT_DISBURSED",
+    drop_stage: "JOURNEY_COMPLETED",
+    source_status: "JOURNEY_COMPLETED",
+    source_metadata: { journeyProgress: { journeyCompleted: true } }
+  }, {
+    journeyCompleted: true
+  });
+
+  const closing = _test.maxCallClosingText(state);
+
+  assert.match(closing, /journey complete|journey complete हो गई/i);
+  assert.doesNotMatch(closing, /बाकी चरण|pending steps/i);
+});
+
 test("voicebot rewrites assistant replies that repeat the previous line", () => {
   const repeated = "आपका loan offer ₹18,000 तक ready है, बस bank verification बाकी है। क्या app खोल सकते हैं?";
   const state = session("Hinglish", {
