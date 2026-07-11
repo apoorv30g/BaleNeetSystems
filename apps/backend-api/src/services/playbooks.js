@@ -1,5 +1,6 @@
 const config = require("../config");
 const { query } = require("../db/pool");
+const { getTrainingExamplesForPrompt } = require("./trainingData");
 const { isTezJourneyLead, tezJourneyContext, tezJourneyPromptNotes } = require("./tezJourney");
 
 const PLAYBOOKS = {
@@ -273,6 +274,7 @@ async function buildPrompt(lead, { transcript = [], lastUserMessage = "", conver
   const stateNotes = conversationStateNotes(lead, conversationState, lastUserMessage);
   const journeyNotes = journeyContextNotes(lead);
   const suggestedLines = suggestedVoiceLines(lead);
+  const learnedExamples = await getTrainingExamplesForPrompt(lead.tenant_id);
   const journeyUrl = isTezJourneyLead(lead) ? config.tezCreditUrl : config.loanAppUrl;
 
   return `
@@ -310,6 +312,9 @@ ${playbook.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")}
 Crisp spoken lines for this journey:
 ${suggestedLines}
 
+Learned handling notes from uploaded call recordings:
+${learnedExamples || "- No uploaded recording insights available yet."}
+
 Recent transcript:
 ${recentTranscript || "No prior conversation except the opening greeting."}
 
@@ -325,6 +330,7 @@ Rules:
 - Never state a numeric interest rate, fee, EMI, penalty, or tenure unless that exact value appears in the customer data above.
 - Never claim guaranteed approval, guaranteed disbursal, or guaranteed eligibility.
 - Use the crisp spoken lines as examples. Do not read them all at once.
+- Use learned handling notes only as intent/reply guidance. Never copy personal data from old recordings, and never override the current customer data or compliance rules.
 - Follow the current required playbook action. Do not restart from the beginning unless the user asks.
 - If the known call memory says the name is already confirmed, never ask the name or reference details again.
 - If the customer answers a question, progress to the next relevant action.

@@ -324,6 +324,61 @@ async function migrate() {
     );
   `);
 
+  await query(`
+    CREATE TABLE IF NOT EXISTS voice_training_recordings (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+      uploaded_by UUID REFERENCES users(id) ON DELETE SET NULL,
+      filename TEXT NOT NULL,
+      mime_type TEXT,
+      size_bytes INTEGER DEFAULT 0,
+      notes TEXT,
+      audio_data BYTEA,
+      status TEXT DEFAULT 'uploaded',
+      transcript TEXT,
+      analysis JSONB DEFAULT '{}'::jsonb,
+      error TEXT,
+      trained_at TIMESTAMP,
+      deleted_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await query(`DROP TRIGGER IF EXISTS voice_training_recordings_set_updated_at ON voice_training_recordings;`);
+  await query(`
+    CREATE TRIGGER voice_training_recordings_set_updated_at
+      BEFORE UPDATE ON voice_training_recordings
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS voice_training_examples (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+      source_recording_id UUID REFERENCES voice_training_recordings(id) ON DELETE SET NULL,
+      intent_key TEXT NOT NULL,
+      normalized_phrase TEXT NOT NULL,
+      user_phrase TEXT NOT NULL,
+      recommended_reply TEXT NOT NULL,
+      language TEXT DEFAULT 'Hinglish',
+      confidence NUMERIC DEFAULT 0.6,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(tenant_id, intent_key, normalized_phrase)
+    );
+  `);
+
+  await query(`DROP TRIGGER IF EXISTS voice_training_examples_set_updated_at ON voice_training_examples;`);
+  await query(`
+    CREATE TRIGGER voice_training_examples_set_updated_at
+      BEFORE UPDATE ON voice_training_examples
+      FOR EACH ROW
+      EXECUTE FUNCTION set_updated_at();
+  `);
+
   await query(
     `UPDATE users
      SET role='platform_admin'
@@ -350,6 +405,8 @@ async function migrate() {
   await query(`CREATE INDEX IF NOT EXISTS idx_stt_call ON call_stt_events(call_id);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_voicebot_events_created ON voicebot_events(created_at DESC);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_voicebot_events_call_sid ON voicebot_events(call_sid);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_voice_training_recordings_tenant_status ON voice_training_recordings(tenant_id, status, created_at DESC);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_voice_training_examples_tenant_intent ON voice_training_examples(tenant_id, intent_key) WHERE is_active=true;`);
 
   // Additional indexes for production query patterns
   await query(`CREATE INDEX IF NOT EXISTS idx_leads_created_at ON leads(campaign_id, created_at DESC);`);

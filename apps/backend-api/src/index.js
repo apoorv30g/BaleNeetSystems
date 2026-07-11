@@ -9,6 +9,7 @@ const { query, pool } = require("./db/pool");
 const { redisClient, callQueue } = require("./queue");
 const logger = require("./utils/logger");
 const { attachVoicebot } = require("./routes/voicebot");
+const { startTrainingScheduler } = require("./services/trainingScheduler");
 
 const app = express();
 const server = http.createServer(app);
@@ -124,6 +125,7 @@ app.use("/campaigns", apiLimiter, require("./routes/campaigns"));
 app.use("/playbooks", apiLimiter, require("./routes/playbooks"));
 app.use("/analytics", apiLimiter, require("./routes/analytics"));
 app.use("/compliance", apiLimiter, require("./routes/compliance"));
+app.use("/training", apiLimiter, require("./routes/training"));
 app.use("/webhooks", require("./routes/webhooks"));
 
 app.use((err, req, res, next) => {
@@ -141,6 +143,7 @@ app.use((err, req, res, next) => {
 });
 
 attachVoicebot(server);
+const trainingScheduler = startTrainingScheduler();
 
 server.listen(config.port, () => logger.info("backend_started", { port: config.port }));
 
@@ -150,6 +153,7 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("shutdown_initiated", { signal });
+  trainingScheduler.stop();
   server.close(async () => {
     try {
       await pool.end();
