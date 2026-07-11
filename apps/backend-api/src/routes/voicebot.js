@@ -62,14 +62,16 @@ const STT_FINAL_WATCHDOG_MS = Math.max(500, Number(process.env.VOICEBOT_STT_FINA
 const VAD_ENABLED = process.env.VOICEBOT_VAD_ENABLED !== "false";
 const AUDIO_CACHE_ENABLED = process.env.VOICEBOT_AUDIO_CACHE_ENABLED !== "false";
 const BARGE_IN_CLEAR_ENABLED = process.env.VOICEBOT_BARGE_IN_CLEAR_ENABLED !== "false";
-const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 900);
-const BARGE_IN_MIN_CHUNKS = Number(process.env.VOICEBOT_BARGE_IN_MIN_CHUNKS || 10);
+const BARGE_IN_GRACE_MS = Number(process.env.VOICEBOT_BARGE_IN_GRACE_MS || 700);
+const BARGE_IN_MIN_CHUNKS = Number(process.env.VOICEBOT_BARGE_IN_MIN_CHUNKS || 3);
 const INTRO_BARGE_IN_ENABLED = process.env.VOICEBOT_INTRO_BARGE_IN_ENABLED === "true";
 const SCREENING_RESPONSE_ENABLED = process.env.VOICEBOT_SCREENING_RESPONSE_ENABLED !== "false";
 const TTS_PREROLL_MS = Number(process.env.VOICEBOT_TTS_PREROLL_MS || 300);
 const VOICEBOT_MEDIA_VERSION = "2026-06-04-audible-preroll-volume-v1";
 const INTRO_START_MODE = process.env.VOICEBOT_INTRO_START_MODE || "first_media";
 const PCM_CACHE_MAX = Number(process.env.VOICEBOT_PCM_CACHE_MAX || 200);
+const PLAYBACK_MARK_WAIT_MS = Math.max(100, Number(process.env.VOICEBOT_PLAYBACK_MARK_WAIT_MS || 900));
+const SPEECH_QUEUE_STALE_MS = Math.max(500, Number(process.env.VOICEBOT_SPEECH_QUEUE_STALE_MS || 8000));
 const MAX_CALL_SECONDS = Math.max(15, Number(process.env.VOICEBOT_MAX_CALL_SECONDS || 300));
 const MAX_CALL_CLOSING_LEAD_SECONDS = Math.min(
   Math.max(1, Number(process.env.VOICEBOT_MAX_CALL_CLOSING_LEAD_SECONDS || 5)),
@@ -214,6 +216,9 @@ function attachVoicebot(server) {
       activeSpeechMark: "",
       activeSpeechMediaStartedAt: 0,
       activeSpeechChunksSent: 0,
+      speechQueue: Promise.resolve(),
+      speechQueueDepth: 0,
+      pendingPlaybackMark: null,
       ending: false,
       introTimer: null,
       noSpeechPromptTimer: null,
@@ -247,6 +252,7 @@ function attachVoicebot(server) {
       clearSttFinalWatchdog(session);
       clearInterimTimer(session);
       clearNoSpeechTimers(session);
+      resolvePendingPlayback(session, "ws_closed");
       session.stt?.close();
       markCallCompleted(session).catch(err => logger.warn("voicebot_close_status_update_failed", {
         error: err.message,
@@ -327,6 +333,11 @@ async function handleMessage(ws, session, data) {
         }
       }
     }
+    return;
+  }
+
+  if (event === "mark") {
+    await handlePlaybackMark(session, message);
     return;
   }
 
@@ -3386,6 +3397,18 @@ function noSpeechTurnConfig() {
   };
 }
 
+function playbackLockConfig() {
+  return {
+    playbackMarkWaitMs: PLAYBACK_MARK_WAIT_MS,
+    speechQueueStaleMs: SPEECH_QUEUE_STALE_MS,
+    bargeInGraceMs: BARGE_IN_GRACE_MS,
+    bargeInMinChunks: BARGE_IN_MIN_CHUNKS,
+    bargeInClearEnabled: BARGE_IN_CLEAR_ENABLED,
+    fastAckEnabled: FAST_ACK_ENABLED,
+    outboundChunkBytes: outboundChunkBytes()
+  };
+}
+
 function clearNoSpeechTimers(session) {
   if (session.noSpeechPromptTimer) {
     clearTimeout(session.noSpeechPromptTimer);
@@ -3475,6 +3498,41 @@ function normalizeTranscript(text) {
 }
 
 async function speakText(ws, session, text, markName) {
+  if (!session.speechQueue) session.speechQueue = Promise.resolve();
+  const queuedAt = Date.now();
+  const queuedBehindSpeech = Boolean(session.speaking || session.pendingPlaybackMark);
+  const previous = session.speechQueue.catch(() => {});
+  session.speechQueueDepth = Number(session.speechQueueDepth || 0) + 1;
+
+  const task = previous.then(async () => {
+    const queueWaitMs = Date.now() - queuedAt;
+    if (queuedBehindSpeech || queueWaitMs > 50) {
+      await logVoicebotEvent(session, "assistant_speech_serialized", {
+        markName,
+        queueWaitMs,
+        queueDepth: session.speechQueueDepth,
+        pendingPlaybackMark: session.pendingPlaybackMark?.name || "",
+        speaking: session.speaking
+      });
+    }
+    if (!session.ending && queueWaitMs > SPEECH_QUEUE_STALE_MS) {
+      await logVoicebotEvent(session, "assistant_speech_queue_stale_dropped", {
+        markName,
+        queueWaitMs,
+        staleAfterMs: SPEECH_QUEUE_STALE_MS
+      });
+      return null;
+    }
+    return speakTextNow(ws, session, text, markName);
+  }).finally(() => {
+    session.speechQueueDepth = Math.max(0, Number(session.speechQueueDepth || 0) - 1);
+  });
+
+  session.speechQueue = task.catch(() => {});
+  return task;
+}
+
+async function speakTextNow(ws, session, text, markName) {
   if (ws.readyState !== ws.OPEN || session.closed) return;
   const correctedText = normalizeTezCreditReply(session, text);
   rememberAssistantReply(session, correctedText);
@@ -3500,7 +3558,21 @@ async function speakText(ws, session, text, markName) {
         ...sendResult,
         elapsedMs: Date.now() - startedAt
       });
-      if (!session.closed && ws.readyState === ws.OPEN) sendMark(ws, session, markName);
+      if (!session.closed && ws.readyState === ws.OPEN && !isSpeechCancelled(session, speechSeq)) {
+        const playbackMarkName = buildPlaybackMarkName(markName, speechSeq);
+        const playbackWait = waitForPlaybackMark(ws, session, playbackMarkName, {
+          markName,
+          speechSeq,
+          sendResult
+        });
+        sendMark(ws, session, playbackMarkName);
+        const playback = await playbackWait;
+        await logVoicebotEvent(session, "assistant_playback_released", {
+          markName,
+          playbackMarkName,
+          ...playback
+        });
+      }
       return;
     }
     sendMark(ws, session, `${markName}_text_only`);
@@ -3511,13 +3583,83 @@ async function speakText(ws, session, text, markName) {
     sendMark(ws, session, `${markName}_tts_failed`);
   } finally {
     stopKeepalive();
-    if (session.activeSpeechSeq === speechSeq) {
-      session.speaking = false;
-      session.activeSpeechMark = "";
-      session.activeSpeechMediaStartedAt = 0;
-      session.activeSpeechChunksSent = 0;
-    }
+    clearActiveSpeechState(session, speechSeq);
   }
+}
+
+function clearActiveSpeechState(session = {}, speechSeq = 0) {
+  if (speechSeq && session.activeSpeechSeq && session.activeSpeechSeq !== speechSeq) return;
+  session.speaking = false;
+  session.activeSpeechSeq = 0;
+  session.activeSpeechMark = "";
+  session.activeSpeechMediaStartedAt = 0;
+  session.activeSpeechChunksSent = 0;
+}
+
+function isSpeechCancelled(session = {}, speechSeq = 0) {
+  return Boolean(speechSeq && Number(session.cancelSpeechSeq || 0) >= speechSeq);
+}
+
+function buildPlaybackMarkName(markName = "speech", speechSeq = 0) {
+  const base = String(markName || "speech")
+    .replace(/[^a-z0-9_-]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40) || "speech";
+  return `${base}_${Number(speechSeq || 0)}`;
+}
+
+function waitForPlaybackMark(ws, session, playbackMarkName, details = {}) {
+  if (!playbackMarkName || ws.readyState !== ws.OPEN || session.closed) {
+    return Promise.resolve({ status: "skipped", waitMs: 0 });
+  }
+
+  resolvePendingPlayback(session, "replaced");
+  const startedAt = Date.now();
+
+  return new Promise(resolve => {
+    const timeout = setTimeout(() => {
+      resolvePendingPlayback(session, "timeout");
+    }, PLAYBACK_MARK_WAIT_MS);
+
+    session.pendingPlaybackMark = {
+      name: playbackMarkName,
+      markName: details.markName || "",
+      speechSeq: details.speechSeq || 0,
+      sendResult: details.sendResult || {},
+      startedAt,
+      timeout,
+      resolve: status => resolve({
+        status,
+        waitMs: Date.now() - startedAt,
+        timeoutMs: PLAYBACK_MARK_WAIT_MS
+      })
+    };
+  });
+}
+
+function resolvePendingPlayback(session = {}, status = "resolved") {
+  const pending = session.pendingPlaybackMark;
+  if (!pending) return false;
+  if (pending.timeout) clearTimeout(pending.timeout);
+  session.pendingPlaybackMark = null;
+  if (typeof pending.resolve === "function") pending.resolve(status);
+  return true;
+}
+
+async function handlePlaybackMark(session, message = {}) {
+  const mark = message.mark || message.Mark || {};
+  const markName = mark.name || mark.Name || "";
+  const pendingName = session.pendingPlaybackMark?.name || "";
+
+  if (markName && markName === pendingName) {
+    resolvePendingPlayback(session, "mark_received");
+    return;
+  }
+
+  await logVoicebotEvent(session, "playback_mark_unmatched", {
+    markName,
+    pendingMarkName: pendingName
+  });
 }
 
 function rememberAssistantReply(session = {}, text = "") {
@@ -3574,6 +3716,8 @@ function cancelAssistantSpeech(ws, session, reason = "") {
       stream_sid: session.streamSid
     }));
   }
+  resolvePendingPlayback(session, "cancelled");
+  clearActiveSpeechState(session, speechSeq);
   logVoicebotEvent(session, "assistant_speech_cancelled", {
     reason,
     speechSeq,
@@ -3829,15 +3973,16 @@ async function sendMedia(ws, session, audioBase64, speechSeq = session.activeSpe
     paddedBytes: audio.length,
     sampleRate: session.mediaSampleRate || 8000,
     prerollMs: TTS_PREROLL_MS,
+    playbackDurationMs: pcmDurationMs(rawAudio.length, session),
     stoppedEarly: chunks * chunkBytes < audio.length,
     mediaVersion: VOICEBOT_MEDIA_VERSION
   };
 }
 
 function outboundChunkBytes() {
-  const configured = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 3200);
-  const bounded = Number.isFinite(configured) ? Math.min(Math.max(configured, 320), 100000) : 3200;
-  return Math.floor(bounded / 320) * 320 || 3200;
+  const configured = Number(process.env.EXOTEL_MEDIA_CHUNK_BYTES || 640);
+  const bounded = Number.isFinite(configured) ? Math.min(Math.max(configured, 320), 100000) : 640;
+  return Math.floor(bounded / 320) * 320 || 640;
 }
 
 function prependPreroll(audio, session) {
@@ -4265,6 +4410,9 @@ module.exports = {
     noSpeechPromptText,
     noSpeechClosingText,
     noSpeechTurnConfig,
+    playbackLockConfig,
+    buildPlaybackMarkName,
+    resolvePendingPlayback,
     shouldRecoverMissingSttFinal,
     isLikelyMisheardTranscript,
     coreVoicePrewarmItems,

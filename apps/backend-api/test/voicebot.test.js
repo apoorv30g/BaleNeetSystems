@@ -658,6 +658,24 @@ test("voicebot uses strict three-second customer turn-taking", () => {
   assert.equal(_test.noSpeechPromptText(session("English")), "Hello, am I audible?");
 });
 
+test("voicebot playback lock uses conservative overlap-prevention defaults", () => {
+  assert.deepEqual(_test.playbackLockConfig(), {
+    playbackMarkWaitMs: 900,
+    speechQueueStaleMs: 8000,
+    bargeInGraceMs: 700,
+    bargeInMinChunks: 3,
+    bargeInClearEnabled: true,
+    fastAckEnabled: true,
+    outboundChunkBytes: 640
+  });
+});
+
+test("voicebot playback mark names are unique and Exotel-safe strings", () => {
+  assert.equal(_test.buildPlaybackMarkName("reply played!", 12), "reply_played_12");
+  assert.equal(_test.buildPlaybackMarkName("", 3), "speech_3");
+  assert.ok(_test.buildPlaybackMarkName("x".repeat(80), 5).length <= 43);
+});
+
 test("missing Sarvam finals recover after a short watchdog instead of a long silence", () => {
   assert.deepEqual(_test.sttFinalWatchdogConfig(), {
     delayMs: 1200,
