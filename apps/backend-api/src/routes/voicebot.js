@@ -209,6 +209,7 @@ function attachVoicebot(server) {
       availabilityConfirmedTurn: 0,
       panStage: "",
       panOutcome: "",
+      panShouldClose: false,
       screeningAnswered: false,
       screeningTranscript: "",
       screeningDetectedAt: 0,
@@ -1106,9 +1107,18 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
-  if (isTerminalIntent(text)) {
+  // PAN Verification has its own scripted busy/callback/not-interested handling with exact
+  // playbook wording (see buildPanVerificationReply) -- let it own those two outcomes instead
+  // of closing here with generic text. Voicemail, call screening, wrong number, etc. still
+  // close here since that flow has no equivalent handling for them.
+  const genericTerminalOutcome = isTerminalIntent(text) ? terminalOutcome(text) : null;
+  const panOwnsThisTermination = genericTerminalOutcome
+    && isPanVerificationLead(session.lead)
+    && ["CALLBACK", "NOT_INTERESTED"].includes(genericTerminalOutcome);
+
+  if (genericTerminalOutcome && !panOwnsThisTermination) {
     session.ending = true;
-    const outcome = terminalOutcome(text);
+    const outcome = genericTerminalOutcome;
     const closingText = terminalClosingText(outcome, session);
     if (session.callId) {
       await addTranscript(session.callId, "assistant", closingText);
@@ -1173,6 +1183,20 @@ async function processUserTranscript(ws, session, event) {
     source: scriptedReply ? "scripted" : "llm",
     provider: scriptedReply ? "scripted" : normalizeProviderName(process.env.LLM_PROVIDER || "sarvam")
   });
+  if (session.panShouldClose) {
+    const outcome = panOutcomeToCallOutcome(session.panOutcome);
+    if (session.callId) {
+      await addTranscript(session.callId, "assistant", reply);
+      await finalizeCall(session, {
+        outcome,
+        summary: `Latest user response: "${String(text || "").slice(0, 180)}". PAN verification call ended: ${session.panOutcome || "closed"}.`
+      });
+    }
+    await logVoicebotEvent(session, "pan_verification_closed", { panOutcome: session.panOutcome, outcome });
+    await speakAndClose(ws, session, reply, "pan_verification_close");
+    return;
+  }
+
   if (session.callId) {
     await addTranscript(session.callId, "assistant", reply);
     const transcript = await getTranscript(session.callId);
@@ -2287,6 +2311,7 @@ function buildPanVerificationReply(session = {}, text = "", english = false) {
   if (mentionsApplicationAlreadyDone(text)) {
     session.panOutcome = "already_completed";
     session.panStage = "closed";
+    session.panShouldClose = true;
     return english
       ? "Thank you for letting us know. No further action is required from your side."
       : "बताने के लिए धन्यवाद। आपकी तरफ से किसी और action की जरूरत नहीं है।";
@@ -2295,6 +2320,7 @@ function buildPanVerificationReply(session = {}, text = "", english = false) {
   if (wantsCallbackLater(text)) {
     session.panOutcome = "callback_requested";
     session.panStage = "closed";
+    session.panShouldClose = true;
     return english
       ? "Sure. Please let us know a convenient time, and we'll reach out again."
       : "ज़रूर। कृपया अपना convenient time बताइए, हम दोबारा contact करेंगे।";
@@ -2303,6 +2329,7 @@ function buildPanVerificationReply(session = {}, text = "", english = false) {
   if (mentionsNotInterestedInLoan(text)) {
     session.panOutcome = "not_interested";
     session.panStage = "closed";
+    session.panShouldClose = true;
     return english
       ? "That's completely fine. Thank you for your time. Have a great day."
       : "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
@@ -2329,6 +2356,7 @@ function buildPanVerificationReply(session = {}, text = "", english = false) {
     if (mentionsBusyRightNow(text) || isBareNegative(text)) {
       session.panOutcome = "busy";
       session.panStage = "closed";
+      session.panShouldClose = true;
       return english
         ? `No problem. You can continue your application anytime by visiting ${website}.`
         : `कोई बात नहीं। आप ${website} पर जाकर कभी भी अपनी application continue कर सकते हैं।`;
@@ -2339,13 +2367,16 @@ function buildPanVerificationReply(session = {}, text = "", english = false) {
         ? "Are you still interested in applying for a personal loan of up to Rs. 50,000?"
         : "क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?";
     }
-    return "";
+    return english
+      ? "Sorry, I did not catch that. Is this a good time to talk for a minute?"
+      : "माफ कीजिए, समझ नहीं पाई। क्या अभी एक मिनट बात करने का सही समय है?";
   }
 
   if (stage === "interest") {
     if (isBareNegative(text)) {
       session.panOutcome = "not_interested";
       session.panStage = "closed";
+      session.panShouldClose = true;
       return english
         ? "That's completely fine. Thank you for your time. Have a great day."
         : "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
@@ -2356,13 +2387,16 @@ function buildPanVerificationReply(session = {}, text = "", english = false) {
         ? "Would you like to continue your application today?"
         : "क्या आप आज अपनी application continue करना चाहेंगे?";
     }
-    return "";
+    return english
+      ? "Sorry, I did not catch that. Are you still interested in applying for a personal loan of up to Rs. 50,000?"
+      : "माफ कीजिए, समझ नहीं पाई। क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?";
   }
 
   if (stage === "continue_today") {
     if (isBareNegative(text)) {
       session.panOutcome = "declined_continue";
       session.panStage = "closed";
+      session.panShouldClose = true;
       return english
         ? `No problem. You can continue your application anytime by visiting ${website}.`
         : `कोई बात नहीं। आप ${website} पर जाकर कभी भी अपनी application continue कर सकते हैं।`;
@@ -2374,10 +2408,39 @@ function buildPanVerificationReply(session = {}, text = "", english = false) {
         ? `A temporary technical issue affected PAN verification. The issue has now been resolved. You can now revisit ${website} and complete your application. Do you have access to your registered mobile phone? Please visit ${website} and click on "Apply for Loan," then log in using your registered mobile number and complete the PAN verification step. Once verification is complete, you can proceed with the remaining application. Please note, loan approval is subject to eligibility and verification. Thank you for your time.`
         : `PAN verification में एक temporary technical issue था, जो अब resolve हो गया है। आप अब ${website} पर वापस जाकर अपनी application complete कर सकते हैं। क्या आपके पास अपना registered mobile phone अभी available है? कृपया ${website} पर जाइए और "Apply for Loan" पर click कीजिए, फिर अपने registered mobile number से login करके PAN verification step complete कीजिए। Verification complete होने के बाद आप बाकी application आगे बढ़ा सकते हैं। ध्यान दीजिए, loan approval eligibility और verification पर subject है। आपके समय के लिए धन्यवाद।`;
     }
-    return "";
+    return english
+      ? "Sorry, I did not catch that. Would you like to continue your application today?"
+      : "माफ कीजिए, समझ नहीं पाई। क्या आप आज अपनी application continue करना चाहेंगे?";
   }
 
-  return "";
+  if (stage === "instructions_given") {
+    session.panStage = "closed";
+    session.panShouldClose = true;
+    return english
+      ? "Thank you for your time. Have a great day."
+      : "आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
+  }
+
+  // stage === "closed" (busy/not-interested/declined/already-completed/callback-requested), or
+  // any state reached after the flow has concluded -- keep it short and polite, never fall through
+  // to generic/Tez-flavored scripted logic. session.panShouldClose was already set when this stage
+  // was first entered, so the caller will have already ended the call; this is just a safety net.
+  return english
+    ? "Thank you for your time. Have a great day."
+    : "आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
+}
+
+// Maps buildPanVerificationReply's internal outcome tracking to the calls.outcome enum
+// (see OUTCOMES in services/outcomes.js) so Analytics reflects why the call actually ended.
+function panOutcomeToCallOutcome(panOutcome) {
+  return {
+    busy: "CALLBACK",
+    declined_continue: "CALLBACK",
+    callback_requested: "CALLBACK",
+    not_interested: "NOT_INTERESTED",
+    already_completed: "JOURNEY_COMPLETED",
+    continuing: "INTERESTED"
+  }[panOutcome] || "IN_PROGRESS";
 }
 
 function asksApprovalGuarantee(text) {
@@ -3761,12 +3824,12 @@ function panVerificationOpeningGreeting(lead = {}, english = false) {
   const product = productNameForLead(lead);
   if (english) {
     return name
-      ? `Hi, this is an automated call from ${product} regarding your recent loan application. Am I speaking with ${name}?`
-      : `Hi, this is an automated call from ${product} regarding your recent loan application. Am I speaking with the loan applicant?`;
+      ? `Hi, this is a call from ${product} regarding your recent loan application. Am I speaking with ${name}?`
+      : `Hi, this is a call from ${product} regarding your recent loan application. Am I speaking with the loan applicant?`;
   }
   return name
-    ? `नमस्ते, यह ${product} की तरफ से एक automated call है, आपकी recent loan application के बारे में। क्या मेरी बात ${name} जी से हो रही है?`
-    : `नमस्ते, यह ${product} की तरफ से एक automated call है, आपकी recent loan application के बारे में। क्या मेरी बात loan applicant से हो रही है?`;
+    ? `नमस्ते, यह ${product} की तरफ से call है, आपकी recent loan application के बारे में। क्या मेरी बात ${name} जी से हो रही है?`
+    : `नमस्ते, यह ${product} की तरफ से call है, आपकी recent loan application के बारे में। क्या मेरी बात loan applicant से हो रही है?`;
 }
 
 function panVerificationContextMessage(lead = {}, english = false) {
