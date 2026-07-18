@@ -34,7 +34,7 @@ const {
   tezJourneyContext
 } = require("../services/tezJourney");
 
-const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || "Namaste, main Sneha TezCredit se bol rahi hoon. Kya aap mujhe sun paa rahe hain?";
+const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || `Namaste, main ${config.assistantName} ${config.brandName} se bol rahi hoon. Kya aap mujhe sun paa rahe hain?`;
 const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Haan ji, ek second.|Samjha, dekhte hain.|Theek hai, sure.|Hmm, bilkul.|Achha, okay.|Got it.|Haan, sure.");
 const FAST_ACK_TEXT = FAST_ACK_TEXTS[0] || "Haan ji.";
 const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?";
@@ -80,7 +80,7 @@ const MAX_CALL_CLOSING_LEAD_SECONDS = Math.min(
 );
 const MAX_CALL_CLOSE_TEXT_EN = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_EN || "You can follow the pending steps now.";
 const MAX_CALL_CLOSE_TEXT_HI = process.env.VOICEBOT_MAX_CALL_CLOSE_TEXT_HI || "अब आप बाकी चरण पूरे कर सकते हैं।";
-const VOICEBOT_AGENT_NAME = String(process.env.VOICEBOT_AGENT_NAME || "Sneha").trim() || "Sneha";
+const VOICEBOT_AGENT_NAME = String(process.env.VOICEBOT_AGENT_NAME || config.assistantName || "Sneha").trim() || "Sneha";
 const TEZ_WEBSITE_NAME_TEXT_EN = "The website is TezCredit: www.tezcredit.com. Open it and click Apply Now.";
 const TEZ_WEBSITE_NAME_TEXT_HI = "Website का नाम TezCredit है। www.tezcredit.com खोलिए और Apply Now पर click कीजिए।";
 const WEBSITE_LOGIN_FIRST_CHECK_MS = Math.max(1000, Number(process.env.VOICEBOT_WEBSITE_FIRST_CHECK_MS || 20000));
@@ -622,10 +622,11 @@ async function initializeSession(session, message) {
 
 async function speakIntro(ws, session) {
   if (!session.leadId) {
+    const product = productNameForLead(session.lead || {});
     await speakText(
       ws,
       session,
-      `Namaste, main ${VOICEBOT_AGENT_NAME} TezCredit se bol rahi hoon. Kya aap abhi loan application ke baare mein baat kar sakte hain?`,
+      `Namaste, main ${VOICEBOT_AGENT_NAME} ${product} se bol rahi hoon. Kya aap abhi loan application ke baare mein baat kar sakte hain?`,
       "generic_intro_played"
     );
     return;
@@ -633,7 +634,8 @@ async function speakIntro(ws, session) {
 
   const lead = session.lead || (await query(`SELECT * FROM leads WHERE id=$1`, [session.leadId])).rows[0];
   if (!lead) {
-    await speakText(ws, session, `Namaste, main ${VOICEBOT_AGENT_NAME} TezCredit se bol rahi hoon. Kya aap abhi baat kar sakte hain?`, "fallback_intro_played");
+    const product = productNameForLead(session.lead || {});
+    await speakText(ws, session, `Namaste, main ${VOICEBOT_AGENT_NAME} ${product} se bol rahi hoon. Kya aap abhi baat kar sakte hain?`, "fallback_intro_played");
     return;
   }
 
@@ -921,7 +923,8 @@ async function processUserTranscript(ws, session, event) {
   }
 
   if (!session.lead) {
-    await speakText(ws, session, "Dhanyavaad. Main aapki baat note kar rahi hoon. TezCredit team aapki request process karegi.", "generic_reply_played");
+    const product = productNameForLead(session.lead || {});
+    await speakText(ws, session, `Dhanyavaad. Main aapki baat note kar rahi hoon. ${product} team aapki request process karegi.`, "generic_reply_played");
     return;
   }
 
@@ -1781,16 +1784,17 @@ function buildScriptedReply(session, text) {
 
   if (mentionsLinkProblem(normalized)) {
     queueLeadLink(session, "link_problem");
+    const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
     return english
       ? stageLine(session, "link_problem_en", [
-        "I am sending the secure link again. Please open it on mobile data or go to www.tezcredit.com and click Apply Now.",
-        "Let me resend that link. Try opening it on mobile data, not WiFi. You can also continue from www.tezcredit.com.",
-        "Sure, sending it again. Open on mobile data; if there is still a problem, continue from www.tezcredit.com when it works."
+        `I am sending the secure link again. Please open it on mobile data or go to ${website} and click Apply Now.`,
+        `Let me resend that link. Try opening it on mobile data, not WiFi. You can also continue from ${website}.`,
+        `Sure, sending it again. Open on mobile data; if there is still a problem, continue from ${website} when it works.`
       ])
       : stageLine(session, "link_problem_hi", [
-        "मैं सुरक्षित link दोबारा भेज रही हूँ। उसे mobile data पर खोलिए या www.tezcredit.com पर Apply Now click कीजिए।",
-        "ठीक है, link फिर भेज रही हूँ। WiFi की जगह mobile data पर खोलिए। www.tezcredit.com से भी continue कर सकते हैं।",
-        "समझ गई, दोबारा भेज रही हूँ। mobile data on करके try कीजिए; नहीं हो तो www.tezcredit.com से continue कर लीजिए।"
+        `मैं सुरक्षित link दोबारा भेज रही हूँ। उसे mobile data पर खोलिए या ${website} पर Apply Now click कीजिए।`,
+        `ठीक है, link फिर भेज रही हूँ। WiFi की जगह mobile data पर खोलिए। ${website} से भी continue कर सकते हैं।`,
+        `समझ गई, दोबारा भेज रही हूँ। mobile data on करके try कीजिए; नहीं हो तो ${website} से continue कर लीजिए।`
       ]);
   }
 
@@ -1811,31 +1815,34 @@ function buildScriptedReply(session, text) {
 
   if (mentionsNetworkProblem(normalized)) {
     queueLeadLink(session, "network_problem");
+    const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
     return english
       ? stageLine(session, "network_problem_en", [
-        "No problem. I am sending the link by SMS. When internet is working, open www.tezcredit.com, click Apply Now, and continue from there.",
-        "Understood. I will send the SMS link. Once mobile data works, open www.tezcredit.com and click Apply Now.",
-        "That is okay. Use the link when your internet is back; the website is www.tezcredit.com, then Apply Now."
+        `No problem. I am sending the link by SMS. When internet is working, open ${website}, click Apply Now, and continue from there.`,
+        `Understood. I will send the SMS link. Once mobile data works, open ${website} and click Apply Now.`,
+        `That is okay. Use the link when your internet is back; the website is ${website}, then Apply Now.`
       ])
       : stageLine(session, "network_problem_hi", [
-        "कोई बात नहीं। मैं SMS link भेज रही हूँ। Internet चलते ही www.tezcredit.com खोलकर Apply Now click कीजिए और वहीं से continue कर लीजिए।",
-        "समझ गया। SMS link भेज रही हूँ। Mobile data चलते ही www.tezcredit.com पर Apply Now से आगे बढ़िए।",
-        "ठीक है। Net वापस आते ही link खोलिए; website www.tezcredit.com है, वहाँ Apply Now click करना है।"
+        `कोई बात नहीं। मैं SMS link भेज रही हूँ। Internet चलते ही ${website} खोलकर Apply Now click कीजिए और वहीं से continue कर लीजिए।`,
+        `समझ गया। SMS link भेज रही हूँ। Mobile data चलते ही ${website} पर Apply Now से आगे बढ़िए।`,
+        `ठीक है। Net वापस आते ही link खोलिए; website ${website} है, वहाँ Apply Now click करना है।`
       ]);
   }
 
   if (asksSameNumberForLink(normalized)) {
     queueLeadLink(session, "same_number_link");
+    const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
     return english
-      ? "Yes, I am sending the secure link to this same number by SMS. Open www.tezcredit.com and click Apply Now when you are ready."
-      : "हाँ जी, इसी number पर SMS से secure link भेज रही हूँ। Ready हों तो www.tezcredit.com खोलकर Apply Now click कर लीजिए।";
+      ? `Yes, I am sending the secure link to this same number by SMS. Open ${website} and click Apply Now when you are ready.`
+      : `हाँ जी, इसी number पर SMS से secure link भेज रही हूँ। Ready हों तो ${website} खोलकर Apply Now click कर लीजिए।`;
   }
 
   if (wantsToSelfComplete(normalized)) {
     queueLeadLink(session, "self_complete");
+    const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
     return english
-      ? "Sure. I am sending the secure link by SMS. You can complete it yourself on www.tezcredit.com. Do not share OTP or password with anyone."
-      : "बिल्कुल। मैं SMS से secure link भेज रही हूँ। आप www.tezcredit.com पर खुद complete कर सकते हैं। OTP या password किसी को मत बताइए।";
+      ? `Sure. I am sending the secure link by SMS. You can complete it yourself on ${website}. Do not share OTP or password with anyone.`
+      : `बिल्कुल। मैं SMS से secure link भेज रही हूँ। आप ${website} पर खुद complete कर सकते हैं। OTP या password किसी को मत बताइए।`;
   }
 
   if (mentionsWrongAnswer(normalized)) {
@@ -1857,16 +1864,17 @@ function buildScriptedReply(session, text) {
   }
 
   if (asksIdentity(normalized)) {
+    const product = productNameForLead(session.lead || {});
     return english
       ? stageLine(session, "identity_en", [
-        `I am ${VOICEBOT_AGENT_NAME}, calling from TezCredit about your loan application. I will not ask for an OTP or password.`,
-        `This is ${VOICEBOT_AGENT_NAME} from TezCredit. I am calling about your pending loan application step, never for an OTP or PIN.`,
-        `I am ${VOICEBOT_AGENT_NAME} from TezCredit, calling only about your loan application and pending steps.`
+        `I am ${VOICEBOT_AGENT_NAME}, calling from ${product} about your loan application. I will not ask for an OTP or password.`,
+        `This is ${VOICEBOT_AGENT_NAME} from ${product}. I am calling about your pending loan application step, never for an OTP or PIN.`,
+        `I am ${VOICEBOT_AGENT_NAME} from ${product}, calling only about your loan application and pending steps.`
       ])
       : stageLine(session, "identity_hi", [
-        `मैं ${VOICEBOT_AGENT_NAME}, TezCredit से आपकी loan application के बारे में call कर रही हूँ। मैं ओ टी पी या password नहीं पूछूँगी।`,
-        `मैं ${VOICEBOT_AGENT_NAME}, TezCredit से बोल रही हूँ। आपकी pending loan application step के बारे में call किया है।`,
-        `मैं ${VOICEBOT_AGENT_NAME}, TezCredit से हूँ। सिर्फ आपकी loan application और pending step के बारे में बात करनी है।`
+        `मैं ${VOICEBOT_AGENT_NAME}, ${product} से आपकी loan application के बारे में call कर रही हूँ। मैं ओ टी पी या password नहीं पूछूँगी।`,
+        `मैं ${VOICEBOT_AGENT_NAME}, ${product} से बोल रही हूँ। आपकी pending loan application step के बारे में call किया है।`,
+        `मैं ${VOICEBOT_AGENT_NAME}, ${product} से हूँ। सिर्फ आपकी loan application और pending step के बारे में बात करनी है।`
       ]);
   }
 
@@ -1899,9 +1907,11 @@ function buildScriptedReply(session, text) {
   }
 
   if (asksLegitimacyOrNbfc(normalized)) {
+    const product = productNameForLead(session.lead || {});
+    const website = String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "");
     return english
-      ? "TezCredit is the website where your loan journey is pending. Please verify details only on www.tezcredit.com and never share OTP, PIN, password, or card details on call."
-      : "TezCredit वही website है जहाँ आपकी loan journey pending है। Details सिर्फ www.tezcredit.com पर verify कीजिए, और call पर OTP, PIN, password या card details कभी मत बताइए।";
+      ? `${product} is the website where your loan journey is pending. Please verify details only on ${website} and never share OTP, PIN, password, or card details on call.`
+      : `${product} वही website है जहाँ आपकी loan journey pending है। Details सिर्फ ${website} पर verify कीजिए, और call पर OTP, PIN, password या card details कभी मत बताइए।`;
   }
 
   if (mentionsLinkReceived(normalized)) {
@@ -1992,13 +2002,15 @@ function buildScriptedReply(session, text) {
 
   if (asksForgotLogin(normalized)) {
     queueLeadLink(session, "forgot_login");
-    if (english) return "I am sending the secure link again. Open www.tezcredit.com, click Apply Now, and login with your mobile number. Never share the OTP with me.";
-    return "मैं secure link फिर भेज रही हूँ। www.tezcredit.com पर Apply Now click करके mobile number से login कीजिए, लेकिन ओ टी पी मुझे कभी मत बताइए।";
+    const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
+    if (english) return `I am sending the secure link again. Open ${website}, click Apply Now, and login with your mobile number. Never share the OTP with me.`;
+    return `मैं secure link फिर भेज रही हूँ। ${website} पर Apply Now click करके mobile number से login कीजिए, लेकिन ओ टी पी मुझे कभी मत बताइए।`;
   }
 
   if (asksSafety(normalized) || asksOtpOrSensitiveDetails(normalized)) {
-    if (english) return "Yes, use only www.tezcredit.com or the secure SMS link. I will never ask for OTP, PIN, password, Aadhaar OTP, or card details.";
-    return "हाँ, सिर्फ www.tezcredit.com या secure SMS link use कीजिए। मैं ओ टी पी, PIN, password, Aadhaar OTP या card details कभी नहीं पूछूँगी।";
+    const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
+    if (english) return `Yes, use only ${website} or the secure SMS link. I will never ask for OTP, PIN, password, Aadhaar OTP, or card details.`;
+    return `हाँ, सिर्फ ${website} या secure SMS link use कीजिए। मैं ओ टी पी, PIN, password, Aadhaar OTP या card details कभी नहीं पूछूँगी।`;
   }
 
   if (complainsInterestHigh(normalized)) {
@@ -2007,8 +2019,9 @@ function buildScriptedReply(session, text) {
   }
 
   if (asksHowToGetLoan(normalized)) {
-    if (english) return "Complete the pending step on www.tezcredit.com after clicking Apply Now. After eligibility is checked, the final amount and terms will be shown before you accept.";
-    return "www.tezcredit.com पर Apply Now click करके pending step complete कीजिए। Eligibility check के बाद final amount और terms accept करने से पहले दिखेंगे।";
+    const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
+    if (english) return `Complete the pending step on ${website} after clicking Apply Now. After eligibility is checked, the final amount and terms will be shown before you accept.`;
+    return `${website} पर Apply Now click करके pending step complete कीजिए। Eligibility check के बाद final amount और terms accept करने से पहले दिखेंगे।`;
   }
 
   if (asksInterestRate(normalized)) {
@@ -2027,8 +2040,9 @@ function buildScriptedReply(session, text) {
   }
 
   if (asksEmiOrTenure(normalized)) {
-    if (english) return "EMI and tenure options are shown with the final offer on the website. Open www.tezcredit.com and click Apply Now.";
-    return "ई एम आई और tenure options website पर final offer के साथ दिखेंगे। www.tezcredit.com खोलकर Apply Now click कीजिए।";
+    const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
+    if (english) return `EMI and tenure options are shown with the final offer on the website. Open ${website} and click Apply Now.`;
+    return `ई एम आई और tenure options website पर final offer के साथ दिखेंगे। ${website} खोलकर Apply Now click कीजिए।`;
   }
 
   if (asksChangeAmount(normalized)) {
@@ -2147,16 +2161,19 @@ function buildScriptedReply(session, text) {
 function buildPreStageObjectionReply(session = {}, normalized = "", english = false) {
   if (asksForgotLogin(normalized)) return "";
 
+  const website = String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "");
+
   if (asksLegitimacyOrNbfc(normalized)) {
+    const product = productNameForLead(session.lead || {});
     return english
-      ? "TezCredit is the website where your loan journey is pending. Please verify details only on www.tezcredit.com and never share OTP, PIN, password, or card details on call."
-      : "TezCredit वही website है जहाँ आपकी loan journey pending है। Details सिर्फ www.tezcredit.com पर verify कीजिए, और call पर OTP, PIN, password या card details कभी मत बताइए।";
+      ? `${product} is the website where your loan journey is pending. Please verify details only on ${website} and never share OTP, PIN, password, or card details on call.`
+      : `${product} वही website है जहाँ आपकी loan journey pending है। Details सिर्फ ${website} पर verify कीजिए, और call पर OTP, PIN, password या card details कभी मत बताइए।`;
   }
 
   if (asksSafety(normalized) || asksOtpOrSensitiveDetails(normalized)) {
     return english
-      ? "Yes, use only www.tezcredit.com or the secure SMS link. I will never ask for OTP, PIN, password, Aadhaar OTP, or card details."
-      : "हाँ, सिर्फ www.tezcredit.com या secure SMS link use कीजिए। मैं ओ टी पी, PIN, password, Aadhaar OTP या card details कभी नहीं पूछूँगी।";
+      ? `Yes, use only ${website} or the secure SMS link. I will never ask for OTP, PIN, password, Aadhaar OTP, or card details.`
+      : `हाँ, सिर्फ ${website} या secure SMS link use कीजिए। मैं ओ टी पी, PIN, password, Aadhaar OTP या card details कभी नहीं पूछूँगी।`;
   }
 
   if (complainsInterestHigh(normalized)) {
@@ -2167,8 +2184,8 @@ function buildPreStageObjectionReply(session = {}, normalized = "", english = fa
 
   if (asksHowToGetLoan(normalized)) {
     return english
-      ? "Complete the pending step on www.tezcredit.com after clicking Apply Now. After eligibility is checked, the final amount and terms will be shown before you accept."
-      : "www.tezcredit.com पर Apply Now click करके pending step complete कीजिए। Eligibility check के बाद final amount और terms accept करने से पहले दिखेंगे।";
+      ? `Complete the pending step on ${website} after clicking Apply Now. After eligibility is checked, the final amount and terms will be shown before you accept.`
+      : `${website} पर Apply Now click करके pending step complete कीजिए। Eligibility check के बाद final amount और terms accept करने से पहले दिखेंगे।`;
   }
 
   return "";
@@ -2273,7 +2290,8 @@ function detectLanguageSwitch(text) {
 function languageSwitchReply(language, lead = {}) {
   if (language === "English") {
     if (lead.playbook_type === "UNAPPROVED_USERS") {
-      return `Sure, I will speak in English. I am ${VOICEBOT_AGENT_NAME} from TezCredit, calling about your loan application. Can you spare two minutes?`;
+      const product = productNameForLead(lead);
+      return `Sure, I will speak in English. I am ${VOICEBOT_AGENT_NAME} from ${product}, calling about your loan application. Can you spare two minutes?`;
     }
     return "Sure, I will speak in English from now on. How can I help you with your loan today?";
   }
@@ -2778,7 +2796,10 @@ function isConversationalBackchannel(text = "") {
 function terminalClosingText(outcome, session = {}) {
   const english = isEnglishSession(session);
   if (outcome === "VOICEMAIL") return english ? "Reached voicemail. Ending this call." : "Voicemail मिला। Call close कर रहा हूँ।";
-  if (outcome === "CALL_SCREENING") return english ? `${VOICEBOT_AGENT_NAME} from TezCredit, calling about a loan application. Thank you.` : `${VOICEBOT_AGENT_NAME}, TezCredit से loan application के बारे में call कर रही हूँ। धन्यवाद।`;
+  if (outcome === "CALL_SCREENING") {
+    const product = productNameForLead(session.lead || {});
+    return english ? `${VOICEBOT_AGENT_NAME} from ${product}, calling about a loan application. Thank you.` : `${VOICEBOT_AGENT_NAME}, ${product} से loan application के बारे में call कर रही हूँ। धन्यवाद।`;
+  }
   if (outcome === "PAID") return english ? "Thanks, I have noted that you already paid. Please keep the payment receipt handy." : "धन्यवाद, मैं note कर रहा हूँ कि आपने payment कर दिया है। Receipt संभाल कर रखिए।";
   if (outcome === "PROMISE_TO_PAY") return english ? "Thanks, I have noted your payment commitment. Please pay from the secure link before the time you mentioned." : "धन्यवाद, मैं आपका payment commitment note कर रहा हूँ। बताए हुए समय से पहले secure link से payment कर दीजिए।";
   if (outcome === "CALLBACK") return english
@@ -3102,17 +3123,18 @@ function claimedPendingStages(text = "") {
 function groundingFallbackReply(session = {}, userText = "") {
   const english = isEnglishSession(session);
   if (asksWebsiteName(normalizeVoiceIntent(userText))) return english ? TEZ_WEBSITE_NAME_TEXT_EN : TEZ_WEBSITE_NAME_TEXT_HI;
+  const product = productNameForLead(session.lead || {});
   const amount = session.lead?.offer_amount || session.lead?.loan_amount;
   if (amount && asksAmount(normalizeVoiceIntent(userText))) {
     const amountText = formatLoanAmount(amount);
     return english
-      ? `Your current eligible amount in the TezCredit record is ${amountText}.`
-      : `आपकी TezCredit details में current eligible amount ${amountText} है।`;
+      ? `Your current eligible amount in the ${product} record is ${amountText}.`
+      : `आपकी ${product} details में current eligible amount ${amountText} है।`;
   }
   const stageReason = stageReasonReply(session, english);
   return english
-    ? `I can only confirm details shown in your TezCredit record. ${stageReason || "One TezCredit step is still pending."}`
-    : `मैं सिर्फ आपकी TezCredit details में दिख रही जानकारी बता सकता हूँ। ${stageReason || "TezCredit का एक step अभी pending है।"}`;
+    ? `I can only confirm details shown in your ${product} record. ${stageReason || `One ${product} step is still pending.`}`
+    : `मैं सिर्फ आपकी ${product} details में दिख रही जानकारी बता सकता हूँ। ${stageReason || `${product} का एक step अभी pending है।`}`;
 }
 
 function isConversationGatePrompt(text = "") {
@@ -3250,7 +3272,8 @@ async function safeGenerateReply(session, args) {
     return await generateReply(args);
   } catch (err) {
     await logVoicebotEvent(session, "llm_failed", { error: err.message, isWhyQuestion: args.isWhyQuestion });
-    return `माफ़ कीजिए। मैं ${VOICEBOT_AGENT_NAME}, TezCredit से call कर रही हूँ। क्या आप अपनी loan application के लिए एक मिनट दे सकते हैं?`;
+    const product = productNameForLead(session.lead || {});
+    return `माफ़ कीजिए। मैं ${VOICEBOT_AGENT_NAME}, ${product} से call कर रही हूँ। क्या आप अपनी loan application के लिए एक मिनट दे सकते हैं?`;
   }
 }
 
@@ -3517,14 +3540,15 @@ function stageFirstGreeting(lead = {}) {
 
 function namedCalleeGreeting(lead = {}, english = false) {
   const name = conversationalLeadName(lead.name);
+  const product = productNameForLead(lead);
   if (english) {
     return name
-      ? `Hi, this is ${VOICEBOT_AGENT_NAME} calling from TezCredit. Am I speaking with ${name}?`
-      : `Hi, this is ${VOICEBOT_AGENT_NAME} calling from TezCredit. Am I speaking with the loan applicant?`;
+      ? `Hi, this is ${VOICEBOT_AGENT_NAME} calling from ${product}. Am I speaking with ${name}?`
+      : `Hi, this is ${VOICEBOT_AGENT_NAME} calling from ${product}. Am I speaking with the loan applicant?`;
   }
   return name
-    ? `नमस्ते, मैं ${VOICEBOT_AGENT_NAME}, TezCredit से बोल रही हूँ। क्या मेरी बात ${name} जी से हो रही है?`
-    : `नमस्ते, मैं ${VOICEBOT_AGENT_NAME}, TezCredit से बोल रही हूँ। क्या मेरी बात loan applicant से हो रही है?`;
+    ? `नमस्ते, मैं ${VOICEBOT_AGENT_NAME}, ${product} से बोल रही हूँ। क्या मेरी बात ${name} जी से हो रही है?`
+    : `नमस्ते, मैं ${VOICEBOT_AGENT_NAME}, ${product} से बोल रही हूँ। क्या मेरी बात loan applicant से हो रही है?`;
 }
 
 function conversationalLeadName(value) {
@@ -3596,7 +3620,9 @@ function stageReasonReply(session = {}, english = false) {
 }
 
 function productNameForLead(lead = {}) {
-  return lead.source_metadata?.productName || process.env.VOICEBOT_PRODUCT_NAME || "TezCredit";
+  return lead.source_metadata?.productName
+    || process.env.VOICEBOT_PRODUCT_NAME
+    || (isTezJourneyLead(lead) ? "TezCredit" : config.brandName);
 }
 
 function parseVoicebotTexts(value) {
@@ -4179,12 +4205,14 @@ function trackTtsDynamic(session, details = {}) {
 
 function prepareTextForSpeech(text, session = {}) {
   const language = isEnglishSession(session) ? "English" : "Hindi";
+  const brand = productNameForLead(session.lead || {});
+  const isTez = isTezJourneyLead(session.lead || {});
   const base = expandCurrencyForSpeech(normalizeTezCreditReply(session, text), language);
   if (isEnglishSession(session)) {
     return base
       .replace(/(?:https?:\/\/)?www\.tezcredit\.com/gi, "double u double u double u dot Tez Credit dot com")
-      .replace(/\bLoanConnect\b/gi, "Tez Credit")
-      .replace(/\bTezCredit\b/gi, "Tez Credit")
+      .replace(/\bLoanConnect\b/gi, isTez ? "Tez Credit" : brand)
+      .replace(/\bTezCredit\b/gi, isTez ? "Tez Credit" : brand)
       .replace(/\bCIBIL\b/gi, "SIBIL")
       .replace(/\bEMI\b/gi, "E M I")
       .replace(/\bKYC\b/gi, "K Y C")
@@ -4202,8 +4230,8 @@ function prepareTextForSpeech(text, session = {}) {
     .replace(/Namaste,\s*main Sneha TezCredit se bol rahi hoon\.?\s*Kya aap mujhe sun paa rahe hain\?/i, "नमस्ते, मैं स्नेहा तेज़ क्रेडिट से बोल रही हूँ। क्या आप मुझे सुन पा रहे हैं?")
     .replace(/\bNamaste\b/gi, "नमस्ते")
     .replace(/\bAI assistant\b/gi, "ए आई असिस्टेंट")
-    .replace(/\bLoanConnect\b/gi, "तेज़ क्रेडिट")
-    .replace(/\bTezCredit\b/gi, "तेज़ क्रेडिट")
+    .replace(/\bLoanConnect\b/gi, isTez ? "तेज़ क्रेडिट" : brand)
+    .replace(/\bTezCredit\b/gi, isTez ? "तेज़ क्रेडिट" : brand)
     .replace(/\bDigiLocker\b/gi, "डिजी लॉकर")
     .replace(/\bAadhaar\b/gi, "आधार")
     .replace(/\bPAN\b/gi, "पैन")
@@ -4246,9 +4274,10 @@ function prepareTextForSpeech(text, session = {}) {
 
 function normalizeTezCreditReply(session = {}, text = "") {
   const website = String(config.tezCreditUrl || "https://www.tezcredit.com").replace(/^https?:\/\//i, "");
+  const brand = productNameForLead(session.lead || {});
   return normalizeTezCreditSurfaceText(session.lead, text, website)
-    .replace(/\bLoanConnect(?:\s+AI)?\b/gi, "TezCredit")
-    .replace(/लोन\s*कनेक्ट(?:\s*ए\s*आई)?/gi, "TezCredit");
+    .replace(/\bLoanConnect(?:\s+AI)?\b/gi, brand)
+    .replace(/लोन\s*कनेक्ट(?:\s*ए\s*आई)?/gi, brand);
 }
 
 function leadJourneyUrl(lead = {}) {

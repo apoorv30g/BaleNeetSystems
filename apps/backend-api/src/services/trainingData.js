@@ -494,7 +494,7 @@ const INTENT_RULES = [
   {
     key: "legitimacy_or_source",
     patterns: [/\b(who are you|from where|is this genuine|fraud|scam|safe)\b/iu, /(कौन|कहाँ से|सही है|फ्रॉड|सुरक्षित|सेफ)/u],
-    recommendedReply: "Say you are Sneha calling from TezCredit about their loan application. Ask them to verify only on www.tezcredit.com and never share OTP/PIN/password.",
+    recommendedReply: `Say you are ${config.assistantName} calling from ${config.brandName} about their loan application. Ask them to verify only on www.tezcredit.com and never share OTP/PIN/password.`,
     confidence: 0.82
   },
   {

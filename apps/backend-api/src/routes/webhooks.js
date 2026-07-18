@@ -198,7 +198,7 @@ router.all("/exotel/voicebot-url", async (req, res) => {
 
 router.get("/exotel/tts-health", async (req, res) => {
   try {
-    const speech = await synthesizeSpeech("Namaste, main Sneha TezCredit se bol rahi hoon.");
+    const speech = await synthesizeSpeech(`Namaste, main ${config.assistantName} ${config.brandName} se bol rahi hoon.`);
     let pcmBytes = 0;
     let pcmStats = null;
     if (speech.mode === "audio") {

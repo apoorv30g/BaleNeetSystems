@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { _test } = require("../src/routes/voicebot");
+const config = require("../src/config");
 
 function session(language = "Hinglish", overrides = {}, sessionOverrides = {}) {
   return {
@@ -45,15 +46,15 @@ test("voicebot answers fee and charge questions safely", () => {
 
 test("voicebot explains identity without asking sensitive details", () => {
   const reply = _test.buildScriptedReply(session(), "कौन बोल रहा है?");
-  assert.match(reply, /Sneha/);
-  assert.match(reply, /TezCredit/);
+  assert.match(reply, new RegExp(config.assistantName));
+  assert.match(reply, new RegExp(config.brandName));
   assert.match(reply, /ओ टी पी/);
 });
 
-test("voicebot answers where are you calling from with TezCredit", () => {
+test("voicebot answers where are you calling from with the configured brand", () => {
   const reply = _test.buildScriptedReply(session("English"), "Where are you calling from?");
-  assert.match(reply, /Sneha/);
-  assert.match(reply, /calling from TezCredit/i);
+  assert.match(reply, new RegExp(config.assistantName));
+  assert.match(reply, new RegExp(`calling from ${config.brandName}`, "i"));
   assert.doesNotMatch(reply, /LoanConnect/i);
 });
 
@@ -85,7 +86,8 @@ test("voicebot explains where the number came from", () => {
 test("voicebot handles link not opening", () => {
   const reply = _test.buildScriptedReply(session("English", {}, { tenantId: null }), "The link is not opening");
   assert.match(reply, /sending the secure link again/i);
-  assert.match(reply, /www\.tezcredit\.com/i);
+  const website = String(config.loanAppUrl || "").replace(/^https?:\/\//i, "");
+  assert.ok(reply.includes(website), `expected reply to mention ${website}: ${reply}`);
   assert.match(reply, /Apply Now/i);
 });
 
