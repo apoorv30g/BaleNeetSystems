@@ -182,11 +182,20 @@ async function migrate() {
       call_window_end INTEGER DEFAULT 20,
       max_call_attempts INTEGER DEFAULT 3,
       retry_delay_minutes INTEGER DEFAULT 360,
-      ai_disclosure TEXT DEFAULT 'This is Sneha calling from TezCredit about your loan application.',
+      ai_disclosure TEXT DEFAULT '',
       sms_webhook_url TEXT,
       whatsapp_webhook_url TEXT,
       updated_at TIMESTAMP DEFAULT NOW()
     );
+  `);
+
+  // Older deployments created this column with a hardcoded TezCredit default; clear it so
+  // getTenantSettings() falls back to the BRAND_NAME/ASSISTANT_NAME-driven default instead.
+  await query(`ALTER TABLE tenant_settings ALTER COLUMN ai_disclosure SET DEFAULT '';`);
+  await query(`
+    UPDATE tenant_settings
+    SET ai_disclosure = ''
+    WHERE ai_disclosure = 'This is Sneha calling from TezCredit about your loan application.';
   `);
 
   await query(`
