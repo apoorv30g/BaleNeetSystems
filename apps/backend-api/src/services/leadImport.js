@@ -37,7 +37,7 @@ function normalizeLeadRow(row, { campaign = {}, rowNumber = 0 } = {}) {
 function normalizeGenericRow(source, campaign, rowNumber) {
   const phone = normalizePhone(get(source, "phone", "mobile", "mobilenumber", "mobilephone"));
   const playbookType = get(source, "playbooktype") || campaign.playbook_type || "UNAPPROVED_USERS";
-  const dropStage = get(source, "dropstage") || playbookType;
+  const dropStage = get(source, "dropstage", "dropoffstage") || playbookType;
 
   if (!phone) return skipped(rowNumber, "missing_phone", source);
 

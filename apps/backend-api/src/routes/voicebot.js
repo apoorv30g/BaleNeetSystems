@@ -2317,20 +2317,21 @@ function availabilityQuestion(session = {}, english = false) {
 }
 
 function stagePurposeReply(session = {}, english = false) {
-  const stage = String(session.lead?.drop_stage || session.lead?.playbook_type || "").toUpperCase();
+  const lead = session.lead || {};
+  const stage = String(lead.drop_stage || lead.playbook_type || "").toUpperCase();
+  const isPanVerification = String(lead.playbook_type || "").toUpperCase() === "PAN_VERIFICATION_RETARGETING";
   const purpose = {
     SELFIE_PENDING: english ? "your live selfie is pending" : "आपकी live selfie pending है",
     AADHAAR_PENDING: english ? "your Aadhaar KYC is pending" : "आपकी Aadhaar KYC pending है",
     PROFILE_PENDING: english ? "one profile detail is pending" : "आपकी एक profile detail pending है",
     BANK_VERIFICATION_PENDING: english ? "your bank verification is pending" : "आपका bank verification pending है",
     E_SIGN_PENDING: english ? "your agreement e-sign is pending" : "आपका agreement e-sign pending है",
-    APPROVED_NOT_DISBURSED: english ? "your disbursal confirmation is pending" : "आपका disbursal confirmation pending है",
-    PAN_VERIFICATION_RETARGETING: english ? "your PAN verification is pending" : "आपका PAN verification pending है"
-  }[stage];
-  const product = productNameForLead(session.lead || {});
-  const website = String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "");
+    APPROVED_NOT_DISBURSED: english ? "your disbursal confirmation is pending" : "आपका disbursal confirmation pending है"
+  }[stage] || (isPanVerification ? (english ? "your PAN verification is pending" : "आपका PAN verification pending है") : "");
+  const product = productNameForLead(lead);
+  const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
 
-  if (stage === "PAN_VERIFICATION_RETARGETING") {
+  if (isPanVerification) {
     return english
       ? `Thanks. ${purpose}. Please go to ${website} to complete it.`
       : `ठीक है। ${purpose}। इसे complete करने के लिए ${website} पर जाइए।`;
@@ -3690,7 +3691,7 @@ function stageReasonReply(session = {}, english = false) {
       ? "Your loan is at the final agreement step. E-sign is needed before disbursal can move ahead."
       : "आपका loan final agreement step पर है। Disbursal आगे बढ़ाने के लिए e-sign जरूरी है।";
   }
-  if (stage === "PAN_VERIFICATION_RETARGETING") {
+  if (String(lead.playbook_type || "").toUpperCase() === "PAN_VERIFICATION_RETARGETING") {
     return english
       ? "The call is because your PAN verification is still pending, and it is needed before your loan application can move ahead."
       : "यह call इसलिए है क्योंकि आपका PAN verification अभी pending है, और application आगे बढ़ाने के लिए यह जरूरी है।";
