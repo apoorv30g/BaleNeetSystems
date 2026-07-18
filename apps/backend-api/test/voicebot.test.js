@@ -656,7 +656,8 @@ test("voicebot uses strict three-second customer turn-taking", () => {
     responseGraceMs: 3000
   });
   assert.equal(_test.noSpeechPromptText(session()), "Hello, क्या मेरी आवाज़ आपको आ रही है?");
-  assert.match(_test.noSpeechClosingText(session()), /www\.tezcredit\.com/);
+  const website = String(config.loanAppUrl || "").replace(/^https?:\/\//i, "");
+  assert.ok(_test.noSpeechClosingText(session()).includes(website));
   assert.match(_test.noSpeechClosingText(session()), /login/);
   assert.equal(_test.noSpeechPromptText(session("English")), "Hello, am I audible?");
 });

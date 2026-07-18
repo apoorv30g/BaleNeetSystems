@@ -2328,6 +2328,13 @@ function stagePurposeReply(session = {}, english = false) {
     PAN_VERIFICATION_RETARGETING: english ? "your PAN verification is pending" : "आपका PAN verification pending है"
   }[stage];
   const product = productNameForLead(session.lead || {});
+  const website = String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "");
+
+  if (stage === "PAN_VERIFICATION_RETARGETING") {
+    return english
+      ? `Thanks. ${purpose}. Please go to ${website} to complete it.`
+      : `ठीक है। ${purpose}। इसे complete करने के लिए ${website} पर जाइए।`;
+  }
 
   if (english) return `Thanks. ${purpose || `one ${product} step is pending`}. Are you able to open the website now?`;
   return `ठीक है। ${purpose || `${product} का एक step pending है`}। क्या आप अभी website खोल सकते हैं?`;
@@ -2859,9 +2866,12 @@ function terminalClosingText(outcome, session = {}) {
   }
   if (outcome === "PAID") return english ? "Thanks, I have noted that you already paid. Please keep the payment receipt handy." : "धन्यवाद, मैं note कर रहा हूँ कि आपने payment कर दिया है। Receipt संभाल कर रखिए।";
   if (outcome === "PROMISE_TO_PAY") return english ? "Thanks, I have noted your payment commitment. Please pay from the secure link before the time you mentioned." : "धन्यवाद, मैं आपका payment commitment note कर रहा हूँ। बताए हुए समय से पहले secure link से payment कर दीजिए।";
-  if (outcome === "CALLBACK") return english
-    ? "Sure, thank you. When you are free, you can continue from www.tezcredit.com by clicking Apply Now."
-    : "ठीक है, धन्यवाद। जब आप free हों, www.tezcredit.com पर Apply Now click करके process continue कर सकते हैं।";
+  if (outcome === "CALLBACK") {
+    const callbackWebsite = String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "");
+    return english
+      ? `Sure, thank you. When you are free, you can continue from ${callbackWebsite} by clicking Apply Now.`
+      : `ठीक है, धन्यवाद। जब आप free हों, ${callbackWebsite} पर Apply Now click करके process continue कर सकते हैं।`;
+  }
   if (outcome === "WRONG_NUMBER") return english ? "Sorry about that, I am marking this as a wrong number. Thank you." : "माफ कीजिए, मैं इस number को wrong number mark कर रहा हूँ। धन्यवाद।";
   if (outcome === "OPTED_OUT") return english ? "Understood. We will not call you again. Thank you." : "समझ गया। हम आपको दोबारा call नहीं करेंगे। धन्यवाद।";
   return "ठीक है, मैं call यहीं close कर रहा हूँ। धन्यवाद।";
@@ -3434,10 +3444,17 @@ function isPositiveAgreement(text) {
     .replace(/\s+/g, " ")
     .trim();
   const agreementWords = withoutConversationalFillers.split(/\s+/).filter(Boolean);
-  const onlyAgreementWords = agreementWords.length > 0
-    && agreementWords.every(word => /^(haan|han|haa|yes|yeah|yep|ok|okay|sure|ठीक|हाँ|हां|हा|ਹਾਂ|ओके)$/.test(word));
+  const AGREEMENT_WORD = /^(haan|han|haa|yes|yeah|yep|ok|okay|sure|ठीक|हाँ|हां|हा|ਹਾਂ|ओके)$/;
+  const onlyAgreementWords = agreementWords.length > 0 && agreementWords.every(word => AGREEMENT_WORD.test(word));
+  // Real speech rarely stops at a bare "yes" — tolerate trailing words ("haan ji aur", "yes okay tell me")
+  // as long as the utterance opens with a clear agreement and nothing after it reads as a negation.
+  const trailingAfterAgreement = agreementWords.slice(1).join(" ");
+  const startsWithAgreement = agreementWords.length > 0
+    && AGREEMENT_WORD.test(agreementWords[0])
+    && !/\b(nahi|nahin|not|no)\b|नहीं|नही|(?:^|\s)ना(?:\s|$)/.test(trailingAfterAgreement);
 
   return onlyAgreementWords
+    || startsWithAgreement
     || /^(haan|han|haa|yes|ok|okay|sure|ठीक|हाँ|हां|हा|ਹਾਂ|ਹਾਂਜੀ|ओके)$/.test(normalized)
     || /^(yes|haan|han|हाँ|हां|ਹਾਂ|जी|ਜੀ)\s+(sure|ji|yes|हाँ|हां|ਹਾਂ|जी|ਜੀ)$/.test(normalized)
     || /^(yes|haan|han|हाँ|हां|जी).*(speaking|this is|bol raha|bol rahi|मैं ही|बोल रहा|बोल रही)/.test(normalized)
@@ -3722,7 +3739,13 @@ function noSpeechPromptText(session = {}) {
 }
 
 function noSpeechClosingText(session = {}) {
-  return isEnglishSession(session) ? NO_SPEECH_GOODBYE_TEXT_EN : NO_SPEECH_GOODBYE_TEXT_HI;
+  const english = isEnglishSession(session);
+  if (english && process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT_EN) return process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT_EN;
+  if (!english && process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT) return process.env.VOICEBOT_NO_SPEECH_GOODBYE_TEXT;
+  const website = String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "");
+  return english
+    ? `No problem. You can log in at ${website} and continue your pending process. Thank you.`
+    : `कोई बात नहीं। आप ${website} पर login करके अपनी pending process आगे बढ़ा सकते हैं। धन्यवाद।`;
 }
 
 function scheduleSttFinalWatchdog(ws, session) {
@@ -3827,7 +3850,7 @@ async function closeAfterNoSpeech(ws, session, stage, cycleSeq) {
     await addTranscript(session.callId, "assistant", closingText);
     await finalizeCall(session, {
       outcome: "IN_PROGRESS",
-      summary: "Customer did not respond after the audible check and was directed to continue at www.tezcredit.com."
+      summary: `Customer did not respond after the audible check and was directed to continue at ${String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "")}.`
     });
   }
   await speakAndClose(ws, session, closingText, "no_speech_goodbye");

@@ -72,7 +72,7 @@ module.exports = {
   maxCallAttempts: Number(process.env.MAX_CALL_ATTEMPTS || 3),
   retryDelayMinutes: Number(process.env.CALL_RETRY_DELAY_MINUTES || 360),
   maxConcurrentCalls: Number(process.env.MAX_CONCURRENT_CALLS || process.env.EXOTEL_CHANNEL_COUNT || 1),
-    loanAppUrl: process.env.LOAN_APP_URL || "https://yourapp.com/apply",
+    loanAppUrl: process.env.LOAN_APP_URL || "https://www.asapfinance.in",
     tezCreditUrl: process.env.TEZCREDIT_URL || "https://www.tezcredit.com",
   paymentLinkBase: process.env.PAYMENT_LINK_BASE || "https://yourapp.com/pay",
   brandName: process.env.BRAND_NAME || "ASAP Finance",
