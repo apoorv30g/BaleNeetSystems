@@ -17,7 +17,7 @@ async function getTenantSettings(tenantId) {
     callWindowEnd: config.callWindowEnd,
     maxCallAttempts: config.maxCallAttempts,
     retryDelayMinutes: config.retryDelayMinutes,
-    aiDisclosure: "This is Sneha calling from TezCredit about your loan application.",
+    aiDisclosure: `This is ${config.assistantName} calling from ${config.brandName} about your loan application.`,
     smsWebhookUrl: "",
     whatsappWebhookUrl: ""
   };
@@ -39,7 +39,7 @@ function normalize(row) {
 function normalizeAiDisclosure(value) {
   const disclosure = String(value || "").trim();
   if (!disclosure || /LoanConnect/i.test(disclosure)) {
-    return "This is Sneha calling from TezCredit about your loan application.";
+    return `This is ${config.assistantName} calling from ${config.brandName} about your loan application.`;
   }
   return disclosure;
 }

@@ -75,6 +75,8 @@ module.exports = {
     loanAppUrl: process.env.LOAN_APP_URL || "https://yourapp.com/apply",
     tezCreditUrl: process.env.TEZCREDIT_URL || "https://www.tezcredit.com",
   paymentLinkBase: process.env.PAYMENT_LINK_BASE || "https://yourapp.com/pay",
+  brandName: process.env.BRAND_NAME || "ASAP Finance",
+  assistantName: process.env.ASSISTANT_NAME || "Sneha",
   supportPhone: process.env.SUPPORT_PHONE || "",
   voicebotToken: process.env.VOICEBOT_TOKEN || "",
   exotel: {

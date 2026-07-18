@@ -11,7 +11,7 @@ const { getTenantSettings } = require("../services/settings");
 const config = require("../config");
 
 const router = express.Router();
-const FAST_EXOML_GREETING = "Namaste, main Sneha TezCredit se bol rahi hoon. Yeh ek test call hai. Dhanyavaad.";
+const FAST_EXOML_GREETING = `Namaste, main ${config.assistantName} ${config.brandName} se bol rahi hoon. Yeh ek test call hai. Dhanyavaad.`;
 
 // Validates EXOTEL_WEBHOOK_SECRET if configured. Exotel cannot sign payloads, so we
 // use a shared secret passed as a query param (?secret=...) or X-Webhook-Secret header.
