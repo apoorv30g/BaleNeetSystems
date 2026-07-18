@@ -125,6 +125,12 @@ function attachVoicebot(server) {
       prompt: item.name
     }));
   }
+  for (const item of panVerificationPrewarmItems()) {
+    prewarmAudio(item.text, item.session).catch(err => logger.warn("voicebot_pan_prompt_prewarm_failed", {
+      error: err.message,
+      prompt: item.name
+    }));
+  }
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
@@ -2308,6 +2314,52 @@ function buildPanVerificationReply(session = {}, text = "", english = false) {
       : "आप हमारी eligibility criteria के अनुसार ₹50,000 तक के loan के लिए eligible हो सकते हैं।";
   }
 
+  if (asksLegitimacyOrNbfc(text)) {
+    const product = productNameForLead(lead);
+    return english
+      ? `${product} is a genuine lending platform. You can verify by visiting ${website} directly, and we will never ask for your OTP, PIN, or password on this call.`
+      : `${product} एक genuine lending platform है। आप ${website} पर सीधे जाकर verify कर सकते हैं, और हम इस call पर कभी भी OTP, PIN या password नहीं पूछेंगे।`;
+  }
+
+  if (asksSafety(text) || asksOtpOrSensitiveDetails(text)) {
+    return english
+      ? "We will never ask for your OTP, PIN, password, or card details on this call. Please only enter these on the official website."
+      : "हम इस call पर कभी भी OTP, PIN, password या card details नहीं पूछेंगे। इन्हें सिर्फ official website पर ही डालिए।";
+  }
+
+  if (asksHumanSupport(text)) {
+    return english
+      ? `There is no human transfer on this call, but support is available through ${website}.`
+      : `इस call पर human transfer नहीं है, लेकिन support ${website} के through available है।`;
+  }
+
+  if (asksDataSource(text)) {
+    return english
+      ? "This number is linked to a loan application you started with us. If that is incorrect, please let me know."
+      : "यह number एक loan application से जुड़ा है जो आपने हमारे साथ शुरू की थी। अगर यह गलत है, तो बताइए।";
+  }
+
+  if (asksWhatIsPanVerification(text)) {
+    return english
+      ? "PAN verification confirms your identity for loan eligibility, as required for lending. It only takes a minute on the website."
+      : "PAN verification आपकी identity confirm करने के लिए है, loan eligibility के लिए जरूरी है। Website पर सिर्फ एक minute लगेगा।";
+  }
+
+  if (mentionsWebsiteNotWorking(text)) {
+    return english
+      ? `Please try visiting ${website} again in a moment, or check your internet connection. You can try anytime.`
+      : `कृपया थोड़ी देर में ${website} फिर से try कीजिए, या अपना internet connection check कीजिए। आप कभी भी फिर try कर सकते हैं।`;
+  }
+
+  if (disputesApplication(text)) {
+    session.panOutcome = "disputes_application";
+    session.panStage = "closed";
+    session.panShouldClose = true;
+    return english
+      ? "I apologize for the confusion. I will note this, and we will not contact you again about this application. Thank you for your time."
+      : "गलतफहमी के लिए माफी चाहूंगी। मैं यह note कर लूंगी, और इस application के बारे में दोबारा contact नहीं करेंगे। आपके समय के लिए धन्यवाद।";
+  }
+
   if (mentionsApplicationAlreadyDone(text)) {
     session.panOutcome = "already_completed";
     session.panStage = "closed";
@@ -2461,6 +2513,22 @@ function mentionsNotInterestedInLoan(text) {
 
 function mentionsApplicationAlreadyDone(text) {
   return /(already completed|already done|already applied|maine complete kar liya|already submit|पहले ही complete|पहले ही कर लिया|पूरा कर लिया|पहले ही apply)/.test(text);
+}
+
+function asksWhatIsPanVerification(text) {
+  return /(what is pan|why pan|pan verification kya|pan kyu|pan kyun|why do (you|i) need pan|पैन वेरिफिकेशन क्या|पैन क्यों|पैन क्यूँ|pan kaisa)/.test(text);
+}
+
+function mentionsWebsiteNotWorking(text) {
+  return /(not working|not opening|not loading|site (is )?down|not accessible|website down|showing error|nahi khul raha|khul nahi raha|kaam nahi kar raha|site down|नहीं खुल रहा|काम नहीं कर रहा|error आ रहा|साइट डाउन)/.test(text);
+}
+
+function disputesApplication(text) {
+  return /(never applied|did not apply|didn.?t apply|not my application|maine apply nahi kiya|maine kabhi apply nahi kiya|मैंने कभी apply नहीं किया|मैंने apply नहीं किया|यह मैंने नहीं किया|मैंने ऐसा कुछ नहीं किया)/.test(text);
+}
+
+function mentionsNoAccessRightNow(text) {
+  return /(don.?t have (my |the )?phone|not with me|no access|phone (is )?not with me|phone nahi hai|mere paas nahi hai|phone available nahi|फोन नहीं है|मेरे पास नहीं है|अभी उपलब्ध नहीं|अभी फ़ोन नहीं)/.test(text);
 }
 
 function buildTezIdentityGateReply(session = {}, text = "", english = false) {
@@ -3838,6 +3906,55 @@ function panVerificationContextMessage(lead = {}, english = false) {
     return `You had started your loan application on ${website}, but it could not be completed due to a temporary PAN verification issue. The issue has now been resolved, and we are calling to let you know that you can continue your application. Is this a good time to talk for a minute?`;
   }
   return `आपने ${website} पर loan application शुरू की थी, लेकिन एक temporary PAN verification issue की वजह से वह complete नहीं हो पाई। अब यह issue resolve हो गया है, और हम आपको बताने के लिए call कर रहे हैं कि आप अपनी application continue कर सकते हैं। क्या अभी एक मिनट बात करने का सही समय है?`;
+}
+
+// PAN Verification's spoken lines that do NOT vary by lead (no name interpolation) -- prewarmed
+// at startup so the TTS cache is already warm on the very first real call, instead of every
+// distinct line paying a live-synthesis round trip the first time it's ever spoken.
+function panVerificationPrewarmItems() {
+  const dummyLead = { playbook_type: "PAN_VERIFICATION_RETARGETING" };
+  const website = String(leadJourneyUrl(dummyLead) || "").replace(/^https?:\/\//i, "");
+  const sessionHi = { preferredLanguage: "Hinglish", lead: dummyLead };
+  const sessionEn = { preferredLanguage: "English", lead: dummyLead };
+
+  return [
+    { name: "pan_context_hi", text: panVerificationContextMessage(dummyLead, false), session: sessionHi },
+    { name: "pan_context_en", text: panVerificationContextMessage(dummyLead, true), session: sessionEn },
+    { name: "pan_availability_unclear_hi", text: "माफ कीजिए, समझ नहीं पाई। क्या अभी एक मिनट बात करने का सही समय है?", session: sessionHi },
+    { name: "pan_availability_unclear_en", text: "Sorry, I did not catch that. Is this a good time to talk for a minute?", session: sessionEn },
+    { name: "pan_interest_hi", text: "क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?", session: sessionHi },
+    { name: "pan_interest_en", text: "Are you still interested in applying for a personal loan of up to Rs. 50,000?", session: sessionEn },
+    { name: "pan_interest_unclear_hi", text: "माफ कीजिए, समझ नहीं पाई। क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?", session: sessionHi },
+    { name: "pan_interest_unclear_en", text: "Sorry, I did not catch that. Are you still interested in applying for a personal loan of up to Rs. 50,000?", session: sessionEn },
+    { name: "pan_continue_today_hi", text: "क्या आप आज अपनी application continue करना चाहेंगे?", session: sessionHi },
+    { name: "pan_continue_today_en", text: "Would you like to continue your application today?", session: sessionEn },
+    { name: "pan_continue_today_unclear_hi", text: "माफ कीजिए, समझ नहीं पाई। क्या आप आज अपनी application continue करना चाहेंगे?", session: sessionHi },
+    { name: "pan_continue_today_unclear_en", text: "Sorry, I did not catch that. Would you like to continue your application today?", session: sessionEn },
+    {
+      name: "pan_instructions_hi",
+      text: `PAN verification में एक temporary technical issue था, जो अब resolve हो गया है। आप अब ${website} पर वापस जाकर अपनी application complete कर सकते हैं। क्या आपके पास अपना registered mobile phone अभी available है? कृपया ${website} पर जाइए और "Apply for Loan" पर click कीजिए, फिर अपने registered mobile number से login करके PAN verification step complete कीजिए। Verification complete होने के बाद आप बाकी application आगे बढ़ा सकते हैं। ध्यान दीजिए, loan approval eligibility और verification पर subject है। आपके समय के लिए धन्यवाद।`,
+      session: sessionHi
+    },
+    {
+      name: "pan_instructions_en",
+      text: `A temporary technical issue affected PAN verification. The issue has now been resolved. You can now revisit ${website} and complete your application. Do you have access to your registered mobile phone? Please visit ${website} and click on "Apply for Loan," then log in using your registered mobile number and complete the PAN verification step. Once verification is complete, you can proceed with the remaining application. Please note, loan approval is subject to eligibility and verification. Thank you for your time.`,
+      session: sessionEn
+    },
+    { name: "pan_guarantee_hi", text: "Loan approval verification और eligibility criteria पर depend करता है। अपनी application complete करने से हम आपकी eligibility evaluate कर पाएंगे।", session: sessionHi },
+    { name: "pan_guarantee_en", text: "Loan approval depends on successful verification and eligibility criteria. Completing your application allows us to evaluate your eligibility.", session: sessionEn },
+    { name: "pan_amount_hi", text: "आप हमारी eligibility criteria के अनुसार ₹50,000 तक के loan के लिए eligible हो सकते हैं।", session: sessionHi },
+    { name: "pan_amount_en", text: "You may be eligible for a loan of up to ₹50,000, subject to our eligibility criteria.", session: sessionEn },
+    { name: "pan_already_done_hi", text: "बताने के लिए धन्यवाद। आपकी तरफ से किसी और action की जरूरत नहीं है।", session: sessionHi },
+    { name: "pan_already_done_en", text: "Thank you for letting us know. No further action is required from your side.", session: sessionEn },
+    { name: "pan_callback_hi", text: "ज़रूर। कृपया अपना convenient time बताइए, हम दोबारा contact करेंगे।", session: sessionHi },
+    { name: "pan_callback_en", text: "Sure. Please let us know a convenient time, and we'll reach out again.", session: sessionEn },
+    { name: "pan_not_interested_hi", text: "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।", session: sessionHi },
+    { name: "pan_not_interested_en", text: "That's completely fine. Thank you for your time. Have a great day.", session: sessionEn },
+    { name: "pan_busy_or_declined_hi", text: `कोई बात नहीं। आप ${website} पर जाकर कभी भी अपनी application continue कर सकते हैं।`, session: sessionHi },
+    { name: "pan_busy_or_declined_en", text: `No problem. You can continue your application anytime by visiting ${website}.`, session: sessionEn },
+    { name: "pan_closing_thanks_hi", text: "आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।", session: sessionHi },
+    { name: "pan_closing_thanks_en", text: "Thank you for your time. Have a great day.", session: sessionEn }
+  ];
 }
 
 function namedCalleeGreeting(lead = {}, english = false) {
