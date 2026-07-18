@@ -207,6 +207,8 @@ function attachVoicebot(server) {
       identityPrompted: false,
       availabilityConfirmed: false,
       availabilityConfirmedTurn: 0,
+      panStage: "",
+      panOutcome: "",
       screeningAnswered: false,
       screeningTranscript: "",
       screeningDetectedAt: 0,
@@ -641,6 +643,7 @@ async function speakIntro(ws, session) {
 
   const text = firstGreeting(lead);
   session.identityPrompted = usesNamedIdentityFlow(lead);
+  if (isPanVerificationLead(lead)) session.panStage = "identity";
   if (session.callId) await addTranscript(session.callId, "assistant", text);
 
   await speakText(ws, session, text, "intro_played");
@@ -1739,6 +1742,9 @@ function buildScriptedReply(session, text) {
     return journeyCompleteClosingText(session);
   }
 
+  const panReply = buildPanVerificationReply(session, normalized, english);
+  if (panReply) return panReply;
+
   const tezAmountReply = buildTezAmountReply(session, normalized, english, amount, amountText);
   if (tezAmountReply && session.confirmedName) {
     if (!session.availabilityConfirmed) return `${tezAmountReply} ${availabilityQuestion(session, english)}`;
@@ -2244,10 +2250,154 @@ function buildTezAmountReply(session = {}, text = "", english = false, amount = 
 
 // Playbooks that get the "confirm name -> confirm availability -> state pending item" flow,
 // in addition to any lead that isTezJourneyLead() already recognizes.
-const NAMED_IDENTITY_FLOW_PLAYBOOKS = new Set(["PAN_VERIFICATION_RETARGETING"]);
+// PAN_VERIFICATION_RETARGETING is intentionally NOT here -- it has its own dedicated flow,
+// see buildPanVerificationReply().
+const NAMED_IDENTITY_FLOW_PLAYBOOKS = new Set([]);
 
 function usesNamedIdentityFlow(lead = {}) {
   return isTezJourneyLead(lead) || NAMED_IDENTITY_FLOW_PLAYBOOKS.has(String(lead?.playbook_type || "").toUpperCase());
+}
+
+function isPanVerificationLead(lead = {}) {
+  return String(lead?.playbook_type || "").toUpperCase() === "PAN_VERIFICATION_RETARGETING";
+}
+
+// Dedicated flow for the PAN Verification Retry campaign, per the exact playbook script:
+// opener (no name-confirmation step) -> availability -> interest -> continue-today -> instructions,
+// with FAQ-style interrupts (approval guarantee, loan amount, callback, not interested, already done)
+// answerable at any point.
+function buildPanVerificationReply(session = {}, text = "", english = false) {
+  const lead = session.lead || {};
+  if (!isPanVerificationLead(lead)) return "";
+
+  const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
+
+  if (asksApprovalGuarantee(text)) {
+    return english
+      ? "Loan approval depends on successful verification and eligibility criteria. Completing your application allows us to evaluate your eligibility."
+      : "Loan approval verification और eligibility criteria पर depend करता है। अपनी application complete करने से हम आपकी eligibility evaluate कर पाएंगे।";
+  }
+
+  if (asksAmount(text)) {
+    return english
+      ? "You may be eligible for a loan of up to ₹50,000, subject to our eligibility criteria."
+      : "आप हमारी eligibility criteria के अनुसार ₹50,000 तक के loan के लिए eligible हो सकते हैं।";
+  }
+
+  if (mentionsApplicationAlreadyDone(text)) {
+    session.panOutcome = "already_completed";
+    session.panStage = "closed";
+    return english
+      ? "Thank you for letting us know. No further action is required from your side."
+      : "बताने के लिए धन्यवाद। आपकी तरफ से किसी और action की जरूरत नहीं है।";
+  }
+
+  if (wantsCallbackLater(text)) {
+    session.panOutcome = "callback_requested";
+    session.panStage = "closed";
+    return english
+      ? "Sure. Please let us know a convenient time, and we'll reach out again."
+      : "ज़रूर। कृपया अपना convenient time बताइए, हम दोबारा contact करेंगे।";
+  }
+
+  if (mentionsNotInterestedInLoan(text)) {
+    session.panOutcome = "not_interested";
+    session.panStage = "closed";
+    return english
+      ? "That's completely fine. Thank you for your time. Have a great day."
+      : "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
+  }
+
+  const stage = session.panStage || "identity";
+
+  if (stage === "identity") {
+    if (!session.confirmedName) {
+      if (asksIdentity(text)) {
+        const name = conversationalLeadName(lead.name);
+        const product = productNameForLead(lead);
+        return english
+          ? `I am ${VOICEBOT_AGENT_NAME}, calling from ${product} about your loan application. Am I speaking with ${name || "the loan applicant"}?`
+          : `मैं ${VOICEBOT_AGENT_NAME}, ${product} से आपकी loan application के बारे में call कर रही हूँ। क्या मेरी बात ${name ? `${name} जी` : "loan applicant"} से हो रही है?`;
+      }
+      return panVerificationOpeningGreeting(lead, english);
+    }
+    session.panStage = "availability";
+    return panVerificationContextMessage(lead, english);
+  }
+
+  if (stage === "availability") {
+    if (mentionsBusyRightNow(text) || isBareNegative(text)) {
+      session.panOutcome = "busy";
+      session.panStage = "closed";
+      return english
+        ? `No problem. You can continue your application anytime by visiting ${website}.`
+        : `कोई बात नहीं। आप ${website} पर जाकर कभी भी अपनी application continue कर सकते हैं।`;
+    }
+    if (isPositiveAgreement(text)) {
+      session.panStage = "interest";
+      return english
+        ? "Are you still interested in applying for a personal loan of up to Rs. 50,000?"
+        : "क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?";
+    }
+    return "";
+  }
+
+  if (stage === "interest") {
+    if (isBareNegative(text)) {
+      session.panOutcome = "not_interested";
+      session.panStage = "closed";
+      return english
+        ? "That's completely fine. Thank you for your time. Have a great day."
+        : "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
+    }
+    if (isPositiveAgreement(text)) {
+      session.panStage = "continue_today";
+      return english
+        ? "Would you like to continue your application today?"
+        : "क्या आप आज अपनी application continue करना चाहेंगे?";
+    }
+    return "";
+  }
+
+  if (stage === "continue_today") {
+    if (isBareNegative(text)) {
+      session.panOutcome = "declined_continue";
+      session.panStage = "closed";
+      return english
+        ? `No problem. You can continue your application anytime by visiting ${website}.`
+        : `कोई बात नहीं। आप ${website} पर जाकर कभी भी अपनी application continue कर सकते हैं।`;
+    }
+    if (isPositiveAgreement(text)) {
+      session.panStage = "instructions_given";
+      session.panOutcome = "continuing";
+      return english
+        ? `A temporary technical issue affected PAN verification. The issue has now been resolved. You can now revisit ${website} and complete your application. Do you have access to your registered mobile phone? Please visit ${website} and click on "Apply for Loan," then log in using your registered mobile number and complete the PAN verification step. Once verification is complete, you can proceed with the remaining application. Please note, loan approval is subject to eligibility and verification. Thank you for your time.`
+        : `PAN verification में एक temporary technical issue था, जो अब resolve हो गया है। आप अब ${website} पर वापस जाकर अपनी application complete कर सकते हैं। क्या आपके पास अपना registered mobile phone अभी available है? कृपया ${website} पर जाइए और "Apply for Loan" पर click कीजिए, फिर अपने registered mobile number से login करके PAN verification step complete कीजिए। Verification complete होने के बाद आप बाकी application आगे बढ़ा सकते हैं। ध्यान दीजिए, loan approval eligibility और verification पर subject है। आपके समय के लिए धन्यवाद।`;
+    }
+    return "";
+  }
+
+  return "";
+}
+
+function asksApprovalGuarantee(text) {
+  return /(definitely get|guarantee|guaranteed|will i (definitely |surely )?get|100 ?% approve|pakka.*milega|pakka.*approve|confirm.*loan.*milega|पक्का.*मिलेगा|गारंटी|पक्का.*approve|मिलेगा ही|कन्फर्म लोन)/.test(text);
+}
+
+function mentionsBusyRightNow(text) {
+  return /(busy|not free|can.?t talk|cannot talk|no time right now|abhi busy|abhi time nahi|व्यस्त|टाइम नहीं|समय नहीं|बिज़ी)/.test(text);
+}
+
+function wantsCallbackLater(text) {
+  return /(call back|call me later|callback|baad me call|dobara call|फिर से call|बाद में call|कॉलबैक)/.test(text);
+}
+
+function mentionsNotInterestedInLoan(text) {
+  return /(not interested|no thanks|don.?t want|do not want|nahi chahiye|interest nahi|इंटरेस्टेड नहीं|नहीं चाहिए|रुचि नहीं)/.test(text);
+}
+
+function mentionsApplicationAlreadyDone(text) {
+  return /(already completed|already done|already applied|maine complete kar liya|already submit|पहले ही complete|पहले ही कर लिया|पूरा कर लिया|पहले ही apply)/.test(text);
 }
 
 function buildTezIdentityGateReply(session = {}, text = "", english = false) {
@@ -2319,7 +2469,6 @@ function availabilityQuestion(session = {}, english = false) {
 function stagePurposeReply(session = {}, english = false) {
   const lead = session.lead || {};
   const stage = String(lead.drop_stage || lead.playbook_type || "").toUpperCase();
-  const isPanVerification = String(lead.playbook_type || "").toUpperCase() === "PAN_VERIFICATION_RETARGETING";
   const purpose = {
     SELFIE_PENDING: english ? "your live selfie is pending" : "आपकी live selfie pending है",
     AADHAAR_PENDING: english ? "your Aadhaar KYC is pending" : "आपकी Aadhaar KYC pending है",
@@ -2327,15 +2476,8 @@ function stagePurposeReply(session = {}, english = false) {
     BANK_VERIFICATION_PENDING: english ? "your bank verification is pending" : "आपका bank verification pending है",
     E_SIGN_PENDING: english ? "your agreement e-sign is pending" : "आपका agreement e-sign pending है",
     APPROVED_NOT_DISBURSED: english ? "your disbursal confirmation is pending" : "आपका disbursal confirmation pending है"
-  }[stage] || (isPanVerification ? (english ? "your PAN verification is pending" : "आपका PAN verification pending है") : "");
+  }[stage];
   const product = productNameForLead(lead);
-  const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
-
-  if (isPanVerification) {
-    return english
-      ? `Thanks. ${purpose}. Please go to ${website} to complete it.`
-      : `ठीक है। ${purpose}। इसे complete करने के लिए ${website} पर जाइए।`;
-  }
 
   if (english) return `Thanks. ${purpose || `one ${product} step is pending`}. Are you able to open the website now?`;
   return `ठीक है। ${purpose || `${product} का एक step pending है`}। क्या आप अभी website खोल सकते हैं?`;
@@ -3609,8 +3751,30 @@ function firstGreeting(lead) {
 function stageFirstGreeting(lead = {}) {
   const english = normalizePreferredLanguage(lead.language) === "English";
   const stage = String(lead.drop_stage || lead.playbook_type || "");
+  if (isPanVerificationLead(lead)) return panVerificationOpeningGreeting(lead, english);
   if (isTezJourneyStage(stage) || usesNamedIdentityFlow(lead)) return namedCalleeGreeting(lead, english);
   return "";
+}
+
+function panVerificationOpeningGreeting(lead = {}, english = false) {
+  const name = conversationalLeadName(lead.name);
+  const product = productNameForLead(lead);
+  if (english) {
+    return name
+      ? `Hi, this is an automated call from ${product} regarding your recent loan application. Am I speaking with ${name}?`
+      : `Hi, this is an automated call from ${product} regarding your recent loan application. Am I speaking with the loan applicant?`;
+  }
+  return name
+    ? `नमस्ते, यह ${product} की तरफ से एक automated call है, आपकी recent loan application के बारे में। क्या मेरी बात ${name} जी से हो रही है?`
+    : `नमस्ते, यह ${product} की तरफ से एक automated call है, आपकी recent loan application के बारे में। क्या मेरी बात loan applicant से हो रही है?`;
+}
+
+function panVerificationContextMessage(lead = {}, english = false) {
+  const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
+  if (english) {
+    return `You had started your loan application on ${website}, but it could not be completed due to a temporary PAN verification issue. The issue has now been resolved, and we are calling to let you know that you can continue your application. Is this a good time to talk for a minute?`;
+  }
+  return `आपने ${website} पर loan application शुरू की थी, लेकिन एक temporary PAN verification issue की वजह से वह complete नहीं हो पाई। अब यह issue resolve हो गया है, और हम आपको बताने के लिए call कर रहे हैं कि आप अपनी application continue कर सकते हैं। क्या अभी एक मिनट बात करने का सही समय है?`;
 }
 
 function namedCalleeGreeting(lead = {}, english = false) {
@@ -3690,11 +3854,6 @@ function stageReasonReply(session = {}, english = false) {
     return english
       ? "Your loan is at the final agreement step. E-sign is needed before disbursal can move ahead."
       : "आपका loan final agreement step पर है। Disbursal आगे बढ़ाने के लिए e-sign जरूरी है।";
-  }
-  if (String(lead.playbook_type || "").toUpperCase() === "PAN_VERIFICATION_RETARGETING") {
-    return english
-      ? "The call is because your PAN verification is still pending, and it is needed before your loan application can move ahead."
-      : "यह call इसलिए है क्योंकि आपका PAN verification अभी pending है, और application आगे बढ़ाने के लिए यह जरूरी है।";
   }
   return "";
 }
