@@ -640,7 +640,7 @@ async function speakIntro(ws, session) {
   }
 
   const text = firstGreeting(lead);
-  session.identityPrompted = isTezJourneyLead(lead);
+  session.identityPrompted = usesNamedIdentityFlow(lead);
   if (session.callId) await addTranscript(session.callId, "assistant", text);
 
   await speakText(ws, session, text, "intro_played");
@@ -1555,7 +1555,7 @@ function updateConversationMemory(session, text) {
   const extractedNameMatches = !knownLeadName || !extractedName || namesReferToSamePerson(knownLeadName, extractedName);
   const confirmsKnownName = askedName
     && confirmsIdentityResponse(normalized)
-    && (Boolean(knownLeadName) || isTezJourneyLead(session.lead));
+    && (Boolean(knownLeadName) || usesNamedIdentityFlow(session.lead));
   const shortName = askedName && !knownLeadName ? shortNameAnswer(text) : "";
 
   if (!session.confirmedName && extractedNameMatches && (extractedName || confirmsKnownName || shortName)) {
@@ -2188,6 +2188,42 @@ function buildPreStageObjectionReply(session = {}, normalized = "", english = fa
       : `${website} पर Apply Now click करके pending step complete कीजिए। Eligibility check के बाद final amount और terms accept करने से पहले दिखेंगे।`;
   }
 
+  if (asksInterestRate(normalized)) {
+    return english
+      ? "The exact interest rate appears on the final offer screen after eligibility. You can reject it if it does not suit you."
+      : "ब्याज दर फ़ाइनल ऑफर स्क्रीन पर एलिजिबिलिटी के बाद दिखेगी। पसंद न हो तो आप मना कर सकते हैं।";
+  }
+
+  if (asksPenalty(normalized)) {
+    return english
+      ? "Any late fee or penalty is shown on the payment screen. Paying as soon as possible helps avoid extra charges."
+      : "Late fee या penalty payment screen पर साफ दिखेगी। जल्दी payment करने से extra charges कम हो सकते हैं।";
+  }
+
+  if (asksFeesOrCharges(normalized)) {
+    return english
+      ? "Any fee or charge is shown clearly on the final offer screen before acceptance. Please never share OTP or card details."
+      : "कोई भी fee या charge final offer screen पर accept करने से पहले साफ दिखेगा। ओ टी पी या card details मत बताइए।";
+  }
+
+  if (asksEmiOrTenure(normalized)) {
+    return english
+      ? `EMI and tenure options are shown with the final offer on the website. Open ${website} and click Apply Now.`
+      : `ई एम आई और tenure options website पर final offer के साथ दिखेंगे। ${website} खोलकर Apply Now click कीजिए।`;
+  }
+
+  if (asksDataSource(normalized)) {
+    return english
+      ? "This number is linked to a loan enquiry or application record. If that is wrong, tell me and I will mark it."
+      : "यह number loan enquiry या application record से जुड़ा दिख रहा है। अगर यह गलत है, बताइए, मैं mark कर दूँगा।";
+  }
+
+  if (asksHumanSupport(normalized)) {
+    return english
+      ? "There is no human transfer on this call. I can note the issue, and support is available on the website."
+      : "इस call पर human transfer नहीं है। मैं issue note कर सकता हूँ, और support website पर available है।";
+  }
+
   return "";
 }
 
@@ -2206,15 +2242,26 @@ function buildTezAmountReply(session = {}, text = "", english = false, amount = 
   return "";
 }
 
+// Playbooks that get the "confirm name -> confirm availability -> state pending item" flow,
+// in addition to any lead that isTezJourneyLead() already recognizes.
+const NAMED_IDENTITY_FLOW_PLAYBOOKS = new Set(["PAN_VERIFICATION_RETARGETING"]);
+
+function usesNamedIdentityFlow(lead = {}) {
+  return isTezJourneyLead(lead) || NAMED_IDENTITY_FLOW_PLAYBOOKS.has(String(lead?.playbook_type || "").toUpperCase());
+}
+
 function buildTezIdentityGateReply(session = {}, text = "", english = false) {
-  if (!isTezJourneyLead(session.lead)) return "";
+  if (!usesNamedIdentityFlow(session.lead)) return "";
   if (!session.identityPrompted && !askedForNameRecently(session.lastSpokenText)) return "";
+
+  const product = productNameForLead(session.lead || {});
+  const website = String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "");
 
   if (asksIdentity(text)) {
     const name = conversationalLeadName(session.lead?.name);
     const identity = english
-      ? `I am ${VOICEBOT_AGENT_NAME}, calling from TezCredit about your pending loan application.`
-      : `मैं ${VOICEBOT_AGENT_NAME}, TezCredit से आपकी pending loan application के बारे में call कर रही हूँ।`;
+      ? `I am ${VOICEBOT_AGENT_NAME}, calling from ${product} about your pending loan application.`
+      : `मैं ${VOICEBOT_AGENT_NAME}, ${product} से आपकी pending loan application के बारे में call कर रही हूँ।`;
     if (!session.confirmedName) {
       return english
         ? `${identity} Am I speaking with ${name || "the loan applicant"}?`
@@ -2225,14 +2272,20 @@ function buildTezIdentityGateReply(session = {}, text = "", english = false) {
   }
 
   if (!session.confirmedName) {
+    const info = buildPreStageObjectionReply(session, text, english);
+    if (info) return `${info} ${namedCalleeGreeting(session.lead, english)}`;
     return namedCalleeGreeting(session.lead, english);
   }
 
   if (asksWebsiteName(text)) {
-    if (session.availabilityConfirmed) return english ? TEZ_WEBSITE_NAME_TEXT_EN : TEZ_WEBSITE_NAME_TEXT_HI;
+    if (session.availabilityConfirmed) {
+      return isTezJourneyLead(session.lead)
+        ? (english ? TEZ_WEBSITE_NAME_TEXT_EN : TEZ_WEBSITE_NAME_TEXT_HI)
+        : (english ? `The website is ${product}: ${website}.` : `Website का नाम ${product} है: ${website}।`);
+    }
     const websiteName = english
-      ? "The website is TezCredit: www.tezcredit.com."
-      : "Website का नाम TezCredit है: www.tezcredit.com।";
+      ? `The website is ${product}: ${website}.`
+      : `Website का नाम ${product} है: ${website}।`;
     return `${websiteName} ${availabilityQuestion(session, english)}`;
   }
 
@@ -2240,10 +2293,12 @@ function buildTezIdentityGateReply(session = {}, text = "", english = false) {
     if (asksReason(text)) {
       const reason = stageReasonReply(session, english)
         || (english
-          ? "I am calling because one TezCredit loan step is pending."
-          : "यह call इसलिए है क्योंकि TezCredit का एक loan step pending है।");
+          ? `I am calling because one ${product} loan step is pending.`
+          : `यह call इसलिए है क्योंकि ${product} का एक loan step pending है।`);
       return `${reason} ${availabilityQuestion(session, english)}`;
     }
+    const info = buildPreStageObjectionReply(session, text, english);
+    if (info) return `${info} ${availabilityQuestion(session, english)}`;
     return availabilityQuestion(session, english);
   }
 
@@ -2269,11 +2324,13 @@ function stagePurposeReply(session = {}, english = false) {
     PROFILE_PENDING: english ? "one profile detail is pending" : "आपकी एक profile detail pending है",
     BANK_VERIFICATION_PENDING: english ? "your bank verification is pending" : "आपका bank verification pending है",
     E_SIGN_PENDING: english ? "your agreement e-sign is pending" : "आपका agreement e-sign pending है",
-    APPROVED_NOT_DISBURSED: english ? "your disbursal confirmation is pending" : "आपका disbursal confirmation pending है"
+    APPROVED_NOT_DISBURSED: english ? "your disbursal confirmation is pending" : "आपका disbursal confirmation pending है",
+    PAN_VERIFICATION_RETARGETING: english ? "your PAN verification is pending" : "आपका PAN verification pending है"
   }[stage];
+  const product = productNameForLead(session.lead || {});
 
-  if (english) return `Thanks. ${purpose || "one TezCredit step is pending"}. Are you able to open the website now?`;
-  return `ठीक है। ${purpose || "TezCredit का एक step pending है"}। क्या आप अभी website खोल सकते हैं?`;
+  if (english) return `Thanks. ${purpose || `one ${product} step is pending`}. Are you able to open the website now?`;
+  return `ठीक है। ${purpose || `${product} का एक step pending है`}। क्या आप अभी website खोल सकते हैं?`;
 }
 
 function detectLanguageSwitch(text) {
@@ -3372,7 +3429,7 @@ function isUnclearGreetingResponse(text = "") {
 function isPositiveAgreement(text) {
   const normalized = normalizeVoiceIntent(text);
   const withoutConversationalFillers = normalized
-    .replace(/\b(ji|please|tell me|go ahead)\b/g, " ")
+    .replace(/\b(ji|please|tell me|go ahead|bataiye|batao|boliye|bolo|aage|batayiye)\b/g, " ")
     .replace(/(जी|ਜੀ|बताइए|बताओ|बोलिए|बोलो)/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -3534,7 +3591,7 @@ function firstGreeting(lead) {
 function stageFirstGreeting(lead = {}) {
   const english = normalizePreferredLanguage(lead.language) === "English";
   const stage = String(lead.drop_stage || lead.playbook_type || "");
-  if (isTezJourneyStage(stage)) return namedCalleeGreeting(lead, english);
+  if (isTezJourneyStage(stage) || usesNamedIdentityFlow(lead)) return namedCalleeGreeting(lead, english);
   return "";
 }
 
@@ -3615,6 +3672,11 @@ function stageReasonReply(session = {}, english = false) {
     return english
       ? "Your loan is at the final agreement step. E-sign is needed before disbursal can move ahead."
       : "आपका loan final agreement step पर है। Disbursal आगे बढ़ाने के लिए e-sign जरूरी है।";
+  }
+  if (stage === "PAN_VERIFICATION_RETARGETING") {
+    return english
+      ? "The call is because your PAN verification is still pending, and it is needed before your loan application can move ahead."
+      : "यह call इसलिए है क्योंकि आपका PAN verification अभी pending है, और application आगे बढ़ाने के लिए यह जरूरी है।";
   }
   return "";
 }
