@@ -8,16 +8,26 @@ const { toExotelPcmBase64 } = require("../providers/audio");
 const { transcribeAudioUrl } = require("../providers/deepgram");
 const { classifyConversation, isOptOut } = require("../services/outcomes");
 const { getTenantSettings } = require("../services/settings");
+const { attachVoiceConfig } = require("../services/playbooks");
+const logger = require("../utils/logger");
 const config = require("../config");
 
 const router = express.Router();
 const FAST_EXOML_GREETING = `Namaste, main ${config.assistantName} ${config.brandName} se bol rahi hoon. Yeh ek test call hai. Dhanyavaad.`;
 
-// Validates EXOTEL_WEBHOOK_SECRET if configured. Exotel cannot sign payloads, so we
-// use a shared secret passed as a query param (?secret=...) or X-Webhook-Secret header.
+// Validates EXOTEL_WEBHOOK_SECRET. Exotel cannot sign payloads, so we use a shared secret
+// passed as a query param (?secret=...) or X-Webhook-Secret header. In production the secret
+// is REQUIRED — without it anyone who discovers the URL can forge call events, opt-outs, and
+// drive the voicebot. Unauthenticated access is only permitted in dev/test.
 function webhookAuth(req, res, next) {
   const secret = process.env.EXOTEL_WEBHOOK_SECRET;
-  if (!secret) return next(); // not configured — allow all (dev/test)
+  if (!secret) {
+    if (config.nodeEnv === "production") {
+      logger.error("webhook_secret_missing", { path: req.path });
+      return res.status(403).json({ error: "Webhook secret not configured" });
+    }
+    return next(); // dev/test convenience only
+  }
   const provided = req.query.secret || req.headers["x-webhook-secret"] || "";
   if (provided !== secret) {
     return res.status(403).json({ error: "Forbidden" });
@@ -275,7 +285,8 @@ function escapeXml(str) {
 
 async function findLead(leadId) {
   const leadResult = await query(`SELECT * FROM leads WHERE id=$1`, [leadId]);
-  return leadResult.rows[0];
+  const lead = leadResult.rows[0];
+  return lead ? attachVoiceConfig(lead) : lead;
 }
 
 async function latestCallForLead(leadId) {

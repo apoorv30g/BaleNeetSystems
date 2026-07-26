@@ -7,7 +7,7 @@ function isBulbulV3(model) {
 function buildTtsPayload(text, options = {}) {
   const targetLanguageCode = options.languageCode || process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
   const speaker = options.speaker || process.env.SARVAM_TTS_SPEAKER || "shubh";
-  const model = options.model || process.env.SARVAM_TTS_MODEL || "bulbul:v3";
+  const model = options.model || config.ai.sarvamTtsModel;
   const pace = Number(options.pace ?? process.env.SARVAM_TTS_PACE ?? 1.0);
   const loudness = Number(options.loudness ?? process.env.SARVAM_TTS_LOUDNESS ?? 1.5);
   const payload = {

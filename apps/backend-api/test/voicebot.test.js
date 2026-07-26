@@ -1351,6 +1351,14 @@ test("LLM grounding rejects invented facts and allows known TezCredit facts", ()
   assert.ok(_test.assistantGroundingIssues(state, "Your tenure is 6 months.").includes("unsupported_financial_term"));
   assert.ok(_test.assistantGroundingIssues(state, "Your loan is guaranteed.").includes("unsupported_guarantee"));
   assert.ok(_test.assistantGroundingIssues(state, "Please tell me your OTP.").includes("sensitive_data_request"));
+  // Question-form and Hindi OTP requests must also be caught (hard compliance rule).
+  assert.ok(_test.assistantGroundingIssues(state, "What is your OTP?").includes("sensitive_data_request"));
+  assert.ok(_test.assistantGroundingIssues(state, "आपका ओटीपी क्या है?").includes("sensitive_data_request"));
+  assert.ok(_test.assistantGroundingIssues(state, "OTP बता दीजिए मुझे").includes("sensitive_data_request"));
+  assert.ok(_test.assistantGroundingIssues(state, "aapka pin number kya hai").includes("sensitive_data_request"));
+  // The bot's own disclaimers must NOT be flagged.
+  assert.ok(!_test.assistantGroundingIssues(state, "I will never ask for your OTP or PIN.").includes("sensitive_data_request"));
+  assert.ok(!_test.assistantGroundingIssues(state, "मैं ओ टी पी कभी नहीं पूछूँगी।").includes("sensitive_data_request"));
   assert.ok(_test.assistantGroundingIssues(state, "Your selfie is pending.").includes("stage_mismatch:SELFIE"));
   assert.deepEqual(
     _test.assistantGroundingIssues(state, "Your bank verification is pending. Open www.tezcredit.com. Your amount is ₹18,000. Never share OTP."),

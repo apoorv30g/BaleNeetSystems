@@ -21,6 +21,8 @@ const {
 } = require("../services/outcomes");
 const logger = require("../utils/logger");
 const config = require("../config");
+const { attachVoiceConfig } = require("../services/playbooks");
+const { pickVariantIndex, variantWeightsForPlaybook } = require("../services/variantStats");
 const { sendLeadLink } = require("../providers/notifications");
 const { expandCurrencyForSpeech } = require("../services/speechText");
 const {
@@ -125,12 +127,7 @@ function attachVoicebot(server) {
       prompt: item.name
     }));
   }
-  for (const item of panVerificationPrewarmItems()) {
-    prewarmAudio(item.text, item.session).catch(err => logger.warn("voicebot_pan_prompt_prewarm_failed", {
-      error: err.message,
-      prompt: item.name
-    }));
-  }
+  prewarmScriptedFlows().catch(err => logger.warn("voicebot_flow_prewarm_failed", { error: err.message }));
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
@@ -217,6 +214,7 @@ function attachVoicebot(server) {
       panOutcome: "",
       panShouldClose: false,
       panUnclearCount: 0,
+      panInstructionRepeats: 0,
       screeningAnswered: false,
       screeningTranscript: "",
       screeningDetectedAt: 0,
@@ -565,13 +563,19 @@ async function initializeSession(session, message) {
   }
 
   const leadResult = session.lead ? { rows: [session.lead] } : await query(`SELECT * FROM leads WHERE id=$1`, [session.leadId]);
-  const lead = leadResult.rows[0];
+  const lead = leadResult.rows[0] ? await attachVoiceConfig(leadResult.rows[0]) : null;
   if (!lead) return;
 
   session.tenantId = lead.tenant_id;
   session.lead = lead;
   session.preferredLanguage = normalizePreferredLanguage(lead.language);
   session.campaignId = session.campaignId || lead.campaign_id;
+
+  // Load learned gate-variant weights once per call so the sync flow engine can sample
+  // phrasings without per-turn queries (self-optimizing scripts).
+  if (usesScriptedFlow(lead)) {
+    session.variantWeights = await variantWeightsForPlaybook(lead.tenant_id, String(lead.playbook_type || "")).catch(() => null);
+  }
 
   const callResult = session.requestedCallId
     ? await query(
@@ -642,16 +646,18 @@ async function speakIntro(ws, session) {
     return;
   }
 
-  const lead = session.lead || (await query(`SELECT * FROM leads WHERE id=$1`, [session.leadId])).rows[0];
+  let lead = session.lead || (await query(`SELECT * FROM leads WHERE id=$1`, [session.leadId])).rows[0];
   if (!lead) {
     const product = productNameForLead(session.lead || {});
     await speakText(ws, session, `Namaste, main ${VOICEBOT_AGENT_NAME} ${product} se bol rahi hoon. Kya aap abhi baat kar sakte hain?`, "fallback_intro_played");
     return;
   }
+  lead = await attachVoiceConfig(lead);
+  if (!session.lead) session.lead = lead;
 
   const text = firstGreeting(lead);
   session.identityPrompted = usesNamedIdentityFlow(lead);
-  if (isPanVerificationLead(lead)) session.panStage = "identity";
+  if (usesScriptedFlow(lead)) session.panStage = flowInitialStage(lead);
   if (session.callId) await addTranscript(session.callId, "assistant", text);
 
   await speakText(ws, session, text, "intro_played");
@@ -1114,13 +1120,13 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
-  // PAN Verification has its own scripted busy/callback/not-interested handling with exact
-  // playbook wording (see buildPanVerificationReply) -- let it own those two outcomes instead
+  // Scripted-flow playbooks have their own busy/callback/not-interested handling with exact
+  // playbook wording (see runScriptedFlow) -- let the flow own those two outcomes instead
   // of closing here with generic text. Voicemail, call screening, wrong number, etc. still
-  // close here since that flow has no equivalent handling for them.
+  // close here since flows have no equivalent handling for them.
   const genericTerminalOutcome = isTerminalIntent(text) ? terminalOutcome(text) : null;
   const panOwnsThisTermination = genericTerminalOutcome
-    && isPanVerificationLead(session.lead)
+    && usesScriptedFlow(session.lead)
     && ["CALLBACK", "NOT_INTERESTED"].includes(genericTerminalOutcome);
 
   if (genericTerminalOutcome && !panOwnsThisTermination) {
@@ -1151,6 +1157,19 @@ async function processUserTranscript(ws, session, event) {
       transcript: promptTranscript,
       conversationState: buildConversationState(session)
     });
+    // Feed the self-training loop: a scripted-flow turn the script couldn't answer is the
+    // richest signal for new FAQ entries (see services/flowLearning.js mining).
+    if (usesScriptedFlow(session.lead)) {
+      await logVoicebotEvent(session, "flow_llm_fallback", { text, panStage: session.panStage || "" });
+    }
+  }
+  // Record which gate-question variant was just spoken (self-optimizing scripts). The nightly
+  // variant-stats job joins these events to the call's final outcome.
+  if (session.pendingVariantEvents && session.pendingVariantEvents.length) {
+    for (const ev of session.pendingVariantEvents) {
+      await logVoicebotEvent(session, "flow_variant_spoken", ev);
+    }
+    session.pendingVariantEvents = [];
   }
   const replyPromise = scriptedReply
     ? Promise.resolve(scriptedReply)
@@ -1191,7 +1210,7 @@ async function processUserTranscript(ws, session, event) {
     provider: scriptedReply ? "scripted" : normalizeProviderName(process.env.LLM_PROVIDER || "sarvam")
   });
   if (session.panShouldClose) {
-    const outcome = panOutcomeToCallOutcome(session.panOutcome);
+    const outcome = panOutcomeToCallOutcome(session.panOutcome, flowConfigForLead(session.lead || {}));
     if (session.callId) {
       await addTranscript(session.callId, "assistant", reply);
       await finalizeCall(session, {
@@ -1589,7 +1608,7 @@ function updateConversationMemory(session, text) {
   const extractedNameMatches = !knownLeadName || !extractedName || namesReferToSamePerson(knownLeadName, extractedName);
   const confirmsKnownName = askedName
     && confirmsIdentityResponse(normalized)
-    && (Boolean(knownLeadName) || usesNamedIdentityFlow(session.lead));
+    && (Boolean(knownLeadName) || usesNamedIdentityFlow(session.lead) || flowRequiresNameConfirm(session.lead));
   const shortName = askedName && !knownLeadName ? shortNameAnswer(text) : "";
 
   if (!session.confirmedName && extractedNameMatches && (extractedName || confirmsKnownName || shortName)) {
@@ -1773,8 +1792,11 @@ function buildScriptedReply(session, text) {
     return journeyCompleteClosingText(session);
   }
 
-  const panReply = buildPanVerificationReply(session, normalized, english);
-  if (panReply) return panReply;
+  // Scripted-flow playbooks are fully self-contained: the engine either answers or returns ""
+  // to hand ONE grounded turn to the LLM. Never fall through into Tez/generic logic for them.
+  if (usesScriptedFlow(lead)) {
+    return runScriptedFlow(session, normalized, english);
+  }
 
   const tezAmountReply = buildTezAmountReply(session, normalized, english, amount, amountText);
   if (tezAmountReply && session.confirmedName) {
@@ -1902,16 +1924,17 @@ function buildScriptedReply(session, text) {
 
   if (asksIdentity(normalized)) {
     const product = productNameForLead(session.lead || {});
+    const agent = agentNameForLead(session.lead || {});
     return english
       ? stageLine(session, "identity_en", [
-        `I am ${VOICEBOT_AGENT_NAME}, calling from ${product} about your loan application. I will not ask for an OTP or password.`,
-        `This is ${VOICEBOT_AGENT_NAME} from ${product}. I am calling about your pending loan application step, never for an OTP or PIN.`,
-        `I am ${VOICEBOT_AGENT_NAME} from ${product}, calling only about your loan application and pending steps.`
+        `I am ${agent}, calling from ${product} about your loan application. I will not ask for an OTP or password.`,
+        `This is ${agent} from ${product}. I am calling about your pending loan application step, never for an OTP or PIN.`,
+        `I am ${agent} from ${product}, calling only about your loan application and pending steps.`
       ])
       : stageLine(session, "identity_hi", [
-        `मैं ${VOICEBOT_AGENT_NAME}, ${product} से आपकी loan application के बारे में call कर रही हूँ। मैं ओ टी पी या password नहीं पूछूँगी।`,
-        `मैं ${VOICEBOT_AGENT_NAME}, ${product} से बोल रही हूँ। आपकी pending loan application step के बारे में call किया है।`,
-        `मैं ${VOICEBOT_AGENT_NAME}, ${product} से हूँ। सिर्फ आपकी loan application और pending step के बारे में बात करनी है।`
+        `मैं ${agent}, ${product} से आपकी loan application के बारे में call कर रही हूँ। मैं ओ टी पी या password नहीं पूछूँगी।`,
+        `मैं ${agent}, ${product} से बोल रही हूँ। आपकी pending loan application step के बारे में call किया है।`,
+        `मैं ${agent}, ${product} से हूँ। सिर्फ आपकी loan application और pending step के बारे में बात करनी है।`
       ]);
   }
 
@@ -2293,237 +2316,370 @@ function isPanVerificationLead(lead = {}) {
   return String(lead?.playbook_type || "").toUpperCase() === "PAN_VERIFICATION_RETARGETING";
 }
 
-// Repeats the current gate question on an unrecognized answer, but gives up gracefully after
-// 3 consecutive misses instead of looping forever on a confused or garbled caller.
-function panUnclearReply(session, english, repeatQuestionEn, repeatQuestionHi) {
+// ===================== Scripted flow engine =====================
+// Interprets a playbook-defined conversation flow (voice_config.flow) so every client's
+// campaign gets the same battle-tested mechanics -- gates, FAQ interrupts, unclear
+// escalation, repeat handling, auto-hangup -- from data instead of per-client code.
+// Flow configs reference intents BY NAME from this registry; playbook authors never
+// supply raw regex (keeps user input out of the regex engine).
+const FLOW_INTENTS = {
+  guarantee: text => asksApprovalGuarantee(text),
+  website_name: text => asksWebsiteName(text) || mentionsUnknownWebsite(text),
+  how_long: text => asksHowLongItTakes(text),
+  amount: text => asksAmount(text),
+  rate_fees: text => asksInterestRate(text) || asksEmiOrTenure(text) || asksFeesOrCharges(text),
+  documents: text => asksDocumentsNeeded(text),
+  send_link: text => asksSendLink(text),
+  legitimacy: text => asksLegitimacyOrNbfc(text),
+  safety: text => asksSafety(text) || asksOtpOrSensitiveDetails(text),
+  human_support: text => asksHumanSupport(text),
+  data_source: text => asksDataSource(text),
+  what_is_step: text => asksWhatIsPanVerification(text),
+  website_down: text => mentionsWebsiteNotWorking(text),
+  dispute: text => disputesApplication(text),
+  already_done: text => mentionsApplicationAlreadyDone(text),
+  callback: text => wantsCallbackLater(text),
+  not_interested: text => mentionsNotInterestedInLoan(text),
+  busy: text => mentionsBusyRightNow(text),
+  no_access: text => mentionsNoAccessRightNow(text)
+};
+
+// Safe, brand-neutral FAQ answers merged under any custom flow's own list. Product-specific
+// answers (amount, rate, documents...) must come from the playbook itself.
+const GENERIC_FLOW_FAQS = [
+  { intent: "website_name", answer: { hi: "Website का नाम {{brand}} है: {{website}}।", en: "The website is {{brand}}: {{website}}." } },
+  { intent: "legitimacy", answer: { hi: "{{brand}} एक genuine lending platform है। आप {{website}} पर सीधे जाकर verify कर सकते हैं, और हम इस call पर कभी भी OTP, PIN या password नहीं पूछेंगे।", en: "{{brand}} is a genuine lending platform. You can verify by visiting {{website}} directly, and we will never ask for your OTP, PIN, or password on this call." } },
+  { intent: "safety", answer: { hi: "हम इस call पर कभी भी OTP, PIN, password या card details नहीं पूछेंगे। इन्हें सिर्फ official website पर ही डालिए।", en: "We will never ask for your OTP, PIN, password, or card details on this call. Please only enter these on the official website." } },
+  { intent: "human_support", answer: { hi: "इस call पर human transfer नहीं है, लेकिन support {{website}} के through available है।", en: "There is no human transfer on this call, but support is available through {{website}}." } },
+  { intent: "data_source", answer: { hi: "यह number एक loan application से जुड़ा है जो आपने हमारे साथ शुरू की थी। अगर यह गलत है, तो बताइए।", en: "This number is linked to a loan application you started with us. If that is incorrect, please let me know." } },
+  { intent: "website_down", answer: { hi: "कृपया थोड़ी देर में {{website}} फिर से try कीजिए, या अपना internet connection check कीजिए। आप कभी भी फिर try कर सकते हैं।", en: "Please try visiting {{website}} again in a moment, or check your internet connection. You can try anytime." } },
+  { intent: "send_link", answer: { hi: "किसी link की जरूरत नहीं है। आप browser में सीधे {{website}} खोल लीजिए।", en: "There is no link needed. Just open {{website}} directly in your browser." } },
+  { intent: "how_long", answer: { hi: "Website पर सिर्फ एक-दो minute लगते हैं।", en: "It takes only a minute or two on the website." } }
+];
+
+const GENERIC_FLOW_TERMINALS = [
+  { intent: "dispute", outcome: "disputes_application", text: { hi: "गलतफहमी के लिए माफी चाहूंगी। मैं यह note कर लूंगी, और इस application के बारे में दोबारा contact नहीं करेंगे। आपके समय के लिए धन्यवाद।", en: "I apologize for the confusion. I will note this, and we will not contact you again about this application. Thank you for your time." } },
+  { intent: "already_done", outcome: "already_completed", text: { hi: "बताने के लिए धन्यवाद। आपकी तरफ से किसी और action की जरूरत नहीं है।", en: "Thank you for letting us know. No further action is required from your side." } },
+  { intent: "callback", outcome: "callback_requested", text: { hi: "ज़रूर। कृपया अपना convenient time बताइए, हम दोबारा contact करेंगे।", en: "Sure. Please let us know a convenient time, and we'll reach out again." } },
+  { intent: "not_interested", outcome: "not_interested", text: { hi: "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।", en: "That's completely fine. Thank you for your time. Have a great day." } },
+  { intent: "busy", outcome: "busy", text: { hi: "कोई बात नहीं। आप {{website}} पर जाकर कभी भी अपनी application continue कर सकते हैं।", en: "No problem. You can continue your application anytime by visiting {{website}}." } }
+];
+
+const FLOW_DEFAULT_TEXTS = {
+  declineClose: { hi: "कोई बात नहीं। आप {{website}} पर जाकर कभी भी अपनी application continue कर सकते हैं।", en: "No problem. You can continue your application anytime by visiting {{website}}." },
+  noAccess: { hi: "कोई बात नहीं। जब भी आपके पास access हो, आप {{website}} पर जाकर यह complete कर सकते हैं।", en: "No problem. You can complete this anytime once you have access, by visiting {{website}}." },
+  thanksClose: { hi: "आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।", en: "Thank you for your time. Have a great day." },
+  unclearGiveUp: { hi: "आपकी आवाज़ साफ नहीं आ रही। कोई बात नहीं, आप कभी भी {{website}} पर जाकर अपनी application complete कर सकते हैं। धन्यवाद।", en: "I am having trouble hearing you clearly. No problem, you can complete your application anytime by visiting {{website}}. Thank you." }
+};
+
+// The PAN Verification Retry campaign expressed as flow data -- the engine's seed config and
+// the reference example for authoring new client flows in the dashboard.
+const DEFAULT_PAN_FLOW = {
+  opening: {
+    confirmName: true,
+    text: { hi: "नमस्ते, यह {{brand}} की तरफ से call है, आपकी recent loan application के बारे में। क्या मेरी बात {{name}} जी से हो रही है?", en: "Hi, this is a call from {{brand}} regarding your recent loan application. Am I speaking with {{name}}?" },
+    textNoName: { hi: "नमस्ते, यह {{brand}} की तरफ से call है, आपकी recent loan application के बारे में। क्या मेरी बात loan applicant से हो रही है?", en: "Hi, this is a call from {{brand}} regarding your recent loan application. Am I speaking with the loan applicant?" }
+  },
+  gates: [
+    {
+      id: "availability",
+      question: { hi: "जी, धन्यवाद। आपने {{website}} पर loan application शुरू की थी, लेकिन एक temporary PAN verification issue की वजह से वह complete नहीं हो पाई। अब यह issue resolve हो गया है, और हम आपको बताने के लिए call कर रहे हैं कि आप अपनी application continue कर सकते हैं। क्या अभी एक मिनट बात करने का सही समय है?", en: "Thank you. You had started your loan application on {{website}}, but it could not be completed due to a temporary PAN verification issue. The issue has now been resolved, and we are calling to let you know that you can continue your application. Is this a good time to talk for a minute?" },
+      reprompt: { hi: "क्या अभी एक मिनट बात करने का सही समय है?", en: "Is this a good time to talk for a minute?" },
+      onNo: { outcome: "busy" }
+    },
+    {
+      id: "interest",
+      question: { hi: "बहुत बढ़िया। क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?", en: "Great! Are you still interested in applying for a personal loan of up to Rs. 50,000?" },
+      reprompt: { hi: "क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?", en: "Are you still interested in applying for a personal loan of up to Rs. 50,000?" },
+      onNo: { outcome: "not_interested", text: { hi: "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।", en: "That's completely fine. Thank you for your time. Have a great day." } }
+    },
+    {
+      id: "continue_today",
+      question: { hi: "अच्छा जी। क्या आप आज अपनी application continue करना चाहेंगे?", en: "Perfect. Would you like to continue your application today?" },
+      reprompt: { hi: "क्या आप आज अपनी application continue करना चाहेंगे?", en: "Would you like to continue your application today?" },
+      onNo: { outcome: "declined_continue" }
+    }
+  ],
+  instructions: {
+    outcome: "continuing",
+    text: { hi: "बहुत बढ़िया! PAN verification में एक temporary technical issue था, जो अब resolve हो गया है। आप अब {{website}} पर वापस जाकर अपनी application complete कर सकते हैं। क्या आपके पास अपना registered mobile phone अभी available है? कृपया {{website}} पर जाइए और \"Apply for Loan\" पर click कीजिए, फिर अपने registered mobile number से login करके PAN verification step complete कीजिए। Verification complete होने के बाद आप बाकी application आगे बढ़ा सकते हैं। ध्यान दीजिए, loan approval eligibility और verification पर subject है। आपके समय के लिए धन्यवाद।", en: "Excellent! A temporary technical issue affected PAN verification. The issue has now been resolved. You can now revisit {{website}} and complete your application. Do you have access to your registered mobile phone? Please visit {{website}} and click on \"Apply for Loan,\" then log in using your registered mobile number and complete the PAN verification step. Once verification is complete, you can proceed with the remaining application. Please note, loan approval is subject to eligibility and verification. Thank you for your time." },
+    condensed: { hi: "आपको बस {{website}} पर जाकर \"Apply for Loan\" click करना है, फिर registered mobile number से login करके PAN verification complete करना है।", en: "Simply visit {{website}}, click \"Apply for Loan,\" log in with your registered mobile number, and complete the PAN verification step." }
+  },
+  faqs: [
+    { intent: "guarantee", answer: { hi: "Loan approval verification और eligibility criteria पर depend करता है। अपनी application complete करने से हम आपकी eligibility evaluate कर पाएंगे।", en: "Loan approval depends on successful verification and eligibility criteria. Completing your application allows us to evaluate your eligibility." } },
+    { intent: "website_name", answer: { hi: "Website का नाम {{brand}} है: {{website}}।", en: "The website is {{brand}}: {{website}}." } },
+    { intent: "how_long", answer: { hi: "Website पर सिर्फ एक-दो minute लगते हैं।", en: "It takes only a minute or two on the website." } },
+    { intent: "amount", answer: { hi: "आप हमारी eligibility criteria के अनुसार ₹50,000 तक के loan के लिए eligible हो सकते हैं।", en: "You may be eligible for a loan of up to ₹50,000, subject to our eligibility criteria." } },
+    { intent: "rate_fees", answer: { hi: "Exact rate, fees और EMI options eligibility के बाद final offer screen पर दिखेंगे, accept करने से पहले। पसंद न हों तो मना कर सकते हैं।", en: "The exact rate, fees, and EMI options are shown on the final offer screen after eligibility, before you accept. You can reject if they do not suit you." } },
+    { intent: "documents", answer: { hi: "इस step के लिए सिर्फ आपकी PAN details चाहिए। अगर कुछ और चाहिए होगा तो website पर दिख जाएगा।", en: "Only your PAN details are needed for this step. The website will show if anything else is required." } },
+    { intent: "what_is_step", answer: { hi: "PAN verification आपकी identity confirm करने के लिए है, loan eligibility के लिए जरूरी है। Website पर सिर्फ एक minute लगेगा।", en: "PAN verification confirms your identity for loan eligibility, as required for lending. It only takes a minute on the website." } }
+  ]
+};
+
+function flowVarsForLead(lead = {}) {
+  return {
+    brand: productNameForLead(lead),
+    assistant: agentNameForLead(lead),
+    website: String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, ""),
+    name: conversationalLeadName(lead.name)
+  };
+}
+
+function renderFlowText(textObj, english, vars = {}) {
+  const raw = textObj ? String((english ? textObj.en : textObj.hi) || textObj.hi || textObj.en || "") : "";
+  return raw.replace(/\{\{(\w+)\}\}/g, (_, key) => String(vars[key] ?? ""));
+}
+
+function gateQuestionVariants(gate) {
+  if (Array.isArray(gate.questionVariants) && gate.questionVariants.length) return gate.questionVariants;
+  return [gate.question];
+}
+
+// Renders a gate's question, picking among its phrasing variants weighted by past success
+// (self-optimizing scripts). The chosen variant is recorded on the session so the async
+// turn handler can log a flow_variant_spoken event tying this phrasing to the call outcome.
+function renderGateQuestion(session, lead, gate, english, vars) {
+  const variants = gateQuestionVariants(gate);
+  if (variants.length <= 1) return renderFlowText(variants[0] || gate.question, english, vars);
+  const weights = session.variantWeights?.[gate.id] || {};
+  const index = pickVariantIndex(variants.length, weights);
+  session.pendingVariantEvents = session.pendingVariantEvents || [];
+  session.pendingVariantEvents.push({
+    playbookKey: String(lead.playbook_type || ""),
+    gateId: String(gate.id),
+    variantIndex: index
+  });
+  return renderFlowText(variants[index], english, vars);
+}
+
+function normalizeFlowConfig(raw) {
+  if (!raw || typeof raw !== "object" || !Array.isArray(raw.gates) || !raw.gates.length) return null;
+  const customFaqIntents = new Set((raw.faqs || []).map(f => f.intent));
+  return {
+    opening: raw.opening || DEFAULT_PAN_FLOW.opening,
+    gates: raw.gates,
+    instructions: raw.instructions || null,
+    faqs: [...(raw.faqs || []), ...GENERIC_FLOW_FAQS.filter(f => !customFaqIntents.has(f.intent))],
+    terminals: raw.terminals && raw.terminals.length ? raw.terminals : GENERIC_FLOW_TERMINALS,
+    unclearGiveUp: raw.unclearGiveUp || FLOW_DEFAULT_TEXTS.unclearGiveUp,
+    outcomes: raw.outcomes || {}
+  };
+}
+
+const NORMALIZED_PAN_FLOW = normalizeFlowConfig(DEFAULT_PAN_FLOW);
+
+// flowConfigForLead runs several times per turn; lead objects are replaced (not mutated)
+// whenever their config changes, so memoizing per lead object is safe.
+const flowConfigCache = new WeakMap();
+
+function flowConfigForLead(lead = {}) {
+  if (flowConfigCache.has(lead)) return flowConfigCache.get(lead);
+  const flow = computeFlowConfigForLead(lead);
+  try { flowConfigCache.set(lead, flow); } catch { /* primitives etc. -- skip caching */ }
+  return flow;
+}
+
+function computeFlowConfigForLead(lead = {}) {
+  const raw = lead.voice_config?.flow;
+  const custom = normalizeFlowConfig(raw);
+  if (custom) return custom;
+  if (isPanVerificationLead(lead)) {
+    // A partial flow (e.g. only learned FAQ entries from the self-training loop) layers on
+    // top of the built-in PAN definition instead of replacing it.
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const merged = normalizeFlowConfig({
+        ...DEFAULT_PAN_FLOW,
+        ...raw,
+        gates: Array.isArray(raw.gates) && raw.gates.length ? raw.gates : DEFAULT_PAN_FLOW.gates,
+        faqs: [...(raw.faqs || []), ...DEFAULT_PAN_FLOW.faqs]
+      });
+      if (merged) return merged;
+    }
+    return NORMALIZED_PAN_FLOW;
+  }
+  return null;
+}
+
+// Learned FAQ entries match by plain lowercase substring against the normalized transcript --
+// deliberately NOT regex, so mined/authored phrases can never break or hang the matcher.
+function matchesFaqPhrases(faq, text) {
+  if (!Array.isArray(faq.phrases)) return false;
+  return faq.phrases.some(phrase => {
+    const needle = String(phrase || "").toLowerCase().trim();
+    return needle.length >= 3 && text.includes(needle);
+  });
+}
+
+function usesScriptedFlow(lead = {}) {
+  return Boolean(flowConfigForLead(lead));
+}
+
+function flowOpeningText(lead = {}, english = false) {
+  const flow = flowConfigForLead(lead);
+  if (!flow) return "";
+  const vars = flowVarsForLead(lead);
+  if (flow.opening.confirmName && !vars.name) return renderFlowText(flow.opening.textNoName || flow.opening.text, english, vars);
+  return renderFlowText(flow.opening.text, english, vars);
+}
+
+function flowInitialStage(lead = {}) {
+  const flow = flowConfigForLead(lead);
+  if (!flow) return "";
+  return flow.opening.confirmName ? "identity" : String(flow.gates[0].id);
+}
+
+function flowRequiresNameConfirm(lead = {}) {
+  return Boolean(flowConfigForLead(lead)?.opening?.confirmName);
+}
+
+// Repeats the current gate question on an unrecognized answer, with differently-phrased
+// retries (a human never repeats the same apology twice) and a graceful give-up on strike 3.
+function flowUnclearReply(session, english, repeatQuestion, flow, vars) {
   session.panUnclearCount = (session.panUnclearCount || 0) + 1;
   if (session.panUnclearCount >= 3) {
-    const website = String(leadJourneyUrl(session.lead || {}) || "").replace(/^https?:\/\//i, "");
     session.panOutcome = "unclear_gave_up";
     session.panStage = "closed";
     session.panShouldClose = true;
-    return english
-      ? `I am having trouble hearing you clearly. No problem, you can complete your application anytime by visiting ${website}. Thank you.`
-      : `आपकी आवाज़ साफ नहीं आ रही। कोई बात नहीं, आप कभी भी ${website} पर जाकर अपनी application complete कर सकते हैं। धन्यवाद।`;
+    return renderFlowText(flow.unclearGiveUp, english, vars);
   }
-  return english
-    ? `Sorry, I did not catch that. ${repeatQuestionEn}`
-    : `माफ कीजिए, समझ नहीं पाई। ${repeatQuestionHi}`;
+  if (session.panUnclearCount === 2) {
+    return english ? `Your voice broke up a little. ${repeatQuestion}` : `आवाज़ थोड़ी कट रही है। ${repeatQuestion}`;
+  }
+  return english ? `Sorry, I did not catch that. ${repeatQuestion}` : `माफ कीजिए, समझ नहीं पाई। ${repeatQuestion}`;
 }
 
-// Dedicated flow for the PAN Verification Retry campaign, per the exact playbook script:
-// opener (no name-confirmation step) -> availability -> interest -> continue-today -> instructions,
-// with FAQ-style interrupts (approval guarantee, loan amount, callback, not interested, already done)
-// answerable at any point.
-function buildPanVerificationReply(session = {}, text = "", english = false) {
+// A substantive question the scripted layer can't answer deserves one LLM turn (grounded by
+// the playbook prompt) instead of "sorry, didn't catch that" -- capped so a drifting LLM
+// conversation can't take over the call.
+function looksLikeSubstantiveQuestion(text = "") {
+  return transcriptWordCount(text) >= 3
+    && /(kya|kaise|kyun|kyu|kab|kahan|kaun|kitn|why|how|what|when|where|which|can i|will i|should i|क्या|कैसे|क्यों|क्यूँ|क्यूं|कब|कहाँ|कहां|कौन|कितन)/.test(text);
+}
+
+// Interprets a flow config for the current turn. Order per turn: FAQ interrupts (answer,
+// stay in place) -> terminal intents (answer, close) -> the stage machine.
+function runScriptedFlow(session = {}, text = "", english = false) {
   const lead = session.lead || {};
-  if (!isPanVerificationLead(lead)) return "";
+  const flow = flowConfigForLead(lead);
+  if (!flow) return "";
+  const vars = flowVarsForLead(lead);
 
-  const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
-
-  if (asksApprovalGuarantee(text)) {
-    return english
-      ? "Loan approval depends on successful verification and eligibility criteria. Completing your application allows us to evaluate your eligibility."
-      : "Loan approval verification और eligibility criteria पर depend करता है। अपनी application complete करने से हम आपकी eligibility evaluate कर पाएंगे।";
+  // Substring phrases are looser than the named-intent detectors, so a clear yes/no answer to
+  // the pending gate question must always win over a learned phrase buried inside it
+  // ("haan loan chahiye" is a gate-yes, not a question about loans).
+  const clearGateAnswer = isPositiveAgreement(text) || isBareNegative(text) || isConversationalBackchannel(text);
+  for (const faq of flow.faqs) {
+    const detector = FLOW_INTENTS[faq.intent];
+    if (detector && detector(text)) return renderFlowText(faq.answer, english, vars);
+    if (!clearGateAnswer && matchesFaqPhrases(faq, text)) return renderFlowText(faq.answer, english, vars);
   }
 
-  if (asksAmount(text)) {
-    return english
-      ? "You may be eligible for a loan of up to ₹50,000, subject to our eligibility criteria."
-      : "आप हमारी eligibility criteria के अनुसार ₹50,000 तक के loan के लिए eligible हो सकते हैं।";
+  for (const terminal of flow.terminals) {
+    const detector = FLOW_INTENTS[terminal.intent];
+    if (detector && detector(text)) {
+      session.panOutcome = terminal.outcome;
+      session.panStage = "closed";
+      session.panShouldClose = true;
+      return renderFlowText(terminal.text || FLOW_DEFAULT_TEXTS.declineClose, english, vars);
+    }
   }
 
-  if (asksLegitimacyOrNbfc(text)) {
-    const product = productNameForLead(lead);
-    return english
-      ? `${product} is a genuine lending platform. You can verify by visiting ${website} directly, and we will never ask for your OTP, PIN, or password on this call.`
-      : `${product} एक genuine lending platform है। आप ${website} पर सीधे जाकर verify कर सकते हैं, और हम इस call पर कभी भी OTP, PIN या password नहीं पूछेंगे।`;
-  }
-
-  if (asksSafety(text) || asksOtpOrSensitiveDetails(text)) {
-    return english
-      ? "We will never ask for your OTP, PIN, password, or card details on this call. Please only enter these on the official website."
-      : "हम इस call पर कभी भी OTP, PIN, password या card details नहीं पूछेंगे। इन्हें सिर्फ official website पर ही डालिए।";
-  }
-
-  if (asksHumanSupport(text)) {
-    return english
-      ? `There is no human transfer on this call, but support is available through ${website}.`
-      : `इस call पर human transfer नहीं है, लेकिन support ${website} के through available है।`;
-  }
-
-  if (asksDataSource(text)) {
-    return english
-      ? "This number is linked to a loan application you started with us. If that is incorrect, please let me know."
-      : "यह number एक loan application से जुड़ा है जो आपने हमारे साथ शुरू की थी। अगर यह गलत है, तो बताइए।";
-  }
-
-  if (asksWhatIsPanVerification(text)) {
-    return english
-      ? "PAN verification confirms your identity for loan eligibility, as required for lending. It only takes a minute on the website."
-      : "PAN verification आपकी identity confirm करने के लिए है, loan eligibility के लिए जरूरी है। Website पर सिर्फ एक minute लगेगा।";
-  }
-
-  if (mentionsWebsiteNotWorking(text)) {
-    return english
-      ? `Please try visiting ${website} again in a moment, or check your internet connection. You can try anytime.`
-      : `कृपया थोड़ी देर में ${website} फिर से try कीजिए, या अपना internet connection check कीजिए। आप कभी भी फिर try कर सकते हैं।`;
-  }
-
-  if (disputesApplication(text)) {
-    session.panOutcome = "disputes_application";
-    session.panStage = "closed";
-    session.panShouldClose = true;
-    return english
-      ? "I apologize for the confusion. I will note this, and we will not contact you again about this application. Thank you for your time."
-      : "गलतफहमी के लिए माफी चाहूंगी। मैं यह note कर लूंगी, और इस application के बारे में दोबारा contact नहीं करेंगे। आपके समय के लिए धन्यवाद।";
-  }
-
-  if (mentionsApplicationAlreadyDone(text)) {
-    session.panOutcome = "already_completed";
-    session.panStage = "closed";
-    session.panShouldClose = true;
-    return english
-      ? "Thank you for letting us know. No further action is required from your side."
-      : "बताने के लिए धन्यवाद। आपकी तरफ से किसी और action की जरूरत नहीं है।";
-  }
-
-  if (wantsCallbackLater(text)) {
-    session.panOutcome = "callback_requested";
-    session.panStage = "closed";
-    session.panShouldClose = true;
-    return english
-      ? "Sure. Please let us know a convenient time, and we'll reach out again."
-      : "ज़रूर। कृपया अपना convenient time बताइए, हम दोबारा contact करेंगे।";
-  }
-
-  if (mentionsNotInterestedInLoan(text)) {
-    session.panOutcome = "not_interested";
-    session.panStage = "closed";
-    session.panShouldClose = true;
-    return english
-      ? "That's completely fine. Thank you for your time. Have a great day."
-      : "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
-  }
-
-  const stage = session.panStage || "identity";
+  const stage = session.panStage || flowInitialStage(lead);
 
   if (stage === "identity") {
     if (!session.confirmedName) {
+      const nameText = english
+        ? `Am I speaking with ${vars.name || "the loan applicant"}?`
+        : `क्या मेरी बात ${vars.name ? `${vars.name} जी` : "loan applicant"} से हो रही है?`;
       if (asksIdentity(text)) {
-        const name = conversationalLeadName(lead.name);
-        const product = productNameForLead(lead);
         return english
-          ? `I am ${VOICEBOT_AGENT_NAME}, calling from ${product} about your loan application. Am I speaking with ${name || "the loan applicant"}?`
-          : `मैं ${VOICEBOT_AGENT_NAME}, ${product} से आपकी loan application के बारे में call कर रही हूँ। क्या मेरी बात ${name ? `${name} जी` : "loan applicant"} से हो रही है?`;
+          ? `I am ${vars.assistant}, calling from ${vars.brand} about your loan application. ${nameText}`
+          : `मैं ${vars.assistant}, ${vars.brand} से आपकी loan application के बारे में call कर रही हूँ। ${nameText}`;
       }
-      return panVerificationOpeningGreeting(lead, english);
+      // Repeating the whole opening verbatim sounds broken -- re-ask just the name question,
+      // with the same 3-strike give-up protection as the later gates.
+      return flowUnclearReply(session, english, nameText, flow, vars);
     }
-    session.panStage = "availability";
-    return panVerificationContextMessage(lead, english);
+    session.panStage = String(flow.gates[0].id);
+    session.panUnclearCount = 0;
+    return renderGateQuestion(session, lead, flow.gates[0], english, vars);
   }
 
-  if (stage === "availability") {
-    if (mentionsBusyRightNow(text) || isBareNegative(text)) {
-      session.panOutcome = "busy";
-      session.panStage = "closed";
-      session.panShouldClose = true;
-      return english
-        ? `No problem. You can continue your application anytime by visiting ${website}.`
-        : `कोई बात नहीं। आप ${website} पर जाकर कभी भी अपनी application continue कर सकते हैं।`;
-    }
-    if (isPositiveAgreement(text)) {
-      session.panStage = "interest";
-      session.panUnclearCount = 0;
-      return english
-        ? "Are you still interested in applying for a personal loan of up to Rs. 50,000?"
-        : "क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?";
-    }
-    return panUnclearReply(
-      session,
-      english,
-      "Is this a good time to talk for a minute?",
-      "क्या अभी एक मिनट बात करने का सही समय है?"
-    );
-  }
+  const gateIndex = flow.gates.findIndex(gate => String(gate.id) === stage);
+  if (gateIndex >= 0) {
+    const gate = flow.gates[gateIndex];
+    const reprompt = renderFlowText(gate.reprompt || gate.question, english, vars);
 
-  if (stage === "interest") {
     if (isBareNegative(text)) {
-      session.panOutcome = "not_interested";
+      session.panOutcome = gate.onNo?.outcome || "declined";
       session.panStage = "closed";
       session.panShouldClose = true;
-      return english
-        ? "That's completely fine. Thank you for your time. Have a great day."
-        : "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
+      return renderFlowText(gate.onNo?.text || FLOW_DEFAULT_TEXTS.declineClose, english, vars);
     }
-    if (isPositiveAgreement(text)) {
-      session.panStage = "continue_today";
+    if (asksRepeatOrClarify(text)) {
+      return english ? `Sure. ${reprompt}` : `जी ज़रूर। ${reprompt}`;
+    }
+    if (isPositiveAgreement(text) || isConversationalBackchannel(text)) {
       session.panUnclearCount = 0;
-      return english
-        ? "Would you like to continue your application today?"
-        : "क्या आप आज अपनी application continue करना चाहेंगे?";
-    }
-    return panUnclearReply(
-      session,
-      english,
-      "Are you still interested in applying for a personal loan of up to Rs. 50,000?",
-      "क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?"
-    );
-  }
-
-  if (stage === "continue_today") {
-    if (isBareNegative(text)) {
-      session.panOutcome = "declined_continue";
-      session.panStage = "closed";
-      session.panShouldClose = true;
-      return english
-        ? `No problem. You can continue your application anytime by visiting ${website}.`
-        : `कोई बात नहीं। आप ${website} पर जाकर कभी भी अपनी application continue कर सकते हैं।`;
-    }
-    if (isPositiveAgreement(text)) {
+      const nextGate = flow.gates[gateIndex + 1];
+      if (nextGate) {
+        session.panStage = String(nextGate.id);
+        return renderGateQuestion(session, lead, nextGate, english, vars);
+      }
       session.panStage = "instructions_given";
-      session.panOutcome = "continuing";
-      session.panUnclearCount = 0;
-      return english
-        ? `A temporary technical issue affected PAN verification. The issue has now been resolved. You can now revisit ${website} and complete your application. Do you have access to your registered mobile phone? Please visit ${website} and click on "Apply for Loan," then log in using your registered mobile number and complete the PAN verification step. Once verification is complete, you can proceed with the remaining application. Please note, loan approval is subject to eligibility and verification. Thank you for your time.`
-        : `PAN verification में एक temporary technical issue था, जो अब resolve हो गया है। आप अब ${website} पर वापस जाकर अपनी application complete कर सकते हैं। क्या आपके पास अपना registered mobile phone अभी available है? कृपया ${website} पर जाइए और "Apply for Loan" पर click कीजिए, फिर अपने registered mobile number से login करके PAN verification step complete कीजिए। Verification complete होने के बाद आप बाकी application आगे बढ़ा सकते हैं। ध्यान दीजिए, loan approval eligibility और verification पर subject है। आपके समय के लिए धन्यवाद।`;
+      session.panOutcome = flow.instructions?.outcome || "continuing";
+      if (flow.instructions?.text) return renderFlowText(flow.instructions.text, english, vars);
+      session.panStage = "closed";
+      session.panShouldClose = true;
+      return renderFlowText(FLOW_DEFAULT_TEXTS.thanksClose, english, vars);
     }
-    return panUnclearReply(
-      session,
-      english,
-      "Would you like to continue your application today?",
-      "क्या आप आज अपनी application continue करना चाहेंगे?"
-    );
+    // One grounded LLM turn for a substantive question the scripted layer can't answer,
+    // instead of "sorry, didn't catch that" -- capped per call so the LLM can't take over.
+    if (looksLikeSubstantiveQuestion(text) && Number(session.flowLlmTurns || 0) < 2) {
+      session.flowLlmTurns = Number(session.flowLlmTurns || 0) + 1;
+      return "";
+    }
+    return flowUnclearReply(session, english, reprompt, flow, vars);
   }
 
   if (stage === "instructions_given") {
+    if (FLOW_INTENTS.no_access(text) || isBareNegative(text)) {
+      session.panStage = "closed";
+      session.panShouldClose = true;
+      session.panOutcome = "no_access_now";
+      return renderFlowText(flow.instructions?.onNoAccess || FLOW_DEFAULT_TEXTS.noAccess, english, vars);
+    }
+    // A question or unclear response after the long instructions should never mean an
+    // abrupt hangup -- recap the key action once, and only close on the following turn.
+    if (!(isPositiveAgreement(text) || isConversationalBackchannel(text))) {
+      session.panInstructionRepeats = (session.panInstructionRepeats || 0) + 1;
+      const condensed = renderFlowText(flow.instructions?.condensed || flow.instructions?.text || FLOW_DEFAULT_TEXTS.thanksClose, english, vars);
+      if (session.panInstructionRepeats < 2) return condensed;
+      session.panStage = "closed";
+      session.panShouldClose = true;
+      return english
+        ? `${condensed} Thank you, and have a great day.`
+        : `${condensed} धन्यवाद, आपका दिन शुभ हो।`;
+    }
     session.panStage = "closed";
     session.panShouldClose = true;
-    if (mentionsNoAccessRightNow(text) || isBareNegative(text)) {
-      session.panOutcome = "no_access_now";
-      return english
-        ? `No problem. You can complete this anytime once you have access, by visiting ${website}.`
-        : `कोई बात नहीं। जब भी आपके पास access हो, आप ${website} पर जाकर यह complete कर सकते हैं।`;
-    }
-    return english
-      ? "Thank you for your time. Have a great day."
-      : "आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
+    return renderFlowText(FLOW_DEFAULT_TEXTS.thanksClose, english, vars);
   }
 
-  // stage === "closed" (busy/not-interested/declined/already-completed/callback-requested), or
-  // any state reached after the flow has concluded -- keep it short and polite, never fall through
-  // to generic/Tez-flavored scripted logic. session.panShouldClose was already set when this stage
-  // was first entered, so the caller will have already ended the call; this is just a safety net.
-  return english
-    ? "Thank you for your time. Have a great day."
-    : "आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।";
+  // stage === "closed", or any state after the flow has concluded -- keep it short and polite,
+  // never fall through to generic/Tez-flavored scripted logic. panShouldClose was already set
+  // when this stage was first entered, so the caller has usually ended the call; safety net.
+  return renderFlowText(FLOW_DEFAULT_TEXTS.thanksClose, english, vars);
 }
 
-// Maps buildPanVerificationReply's internal outcome tracking to the calls.outcome enum
-// (see OUTCOMES in services/outcomes.js) so Analytics reflects why the call actually ended.
-function panOutcomeToCallOutcome(panOutcome) {
-  return {
+// Maps the flow's internal outcome tracking to the calls.outcome enum (see OUTCOMES in
+// services/outcomes.js) so Analytics reflects why the call actually ended. Playbook flows
+// can override/extend the mapping via voice_config.flow.outcomes.
+function panOutcomeToCallOutcome(panOutcome, flow = null) {
+  const overrides = flow?.outcomes || {};
+  return overrides[panOutcome] || {
     busy: "CALLBACK",
+    declined: "CALLBACK",
     declined_continue: "CALLBACK",
     callback_requested: "CALLBACK",
     not_interested: "NOT_INTERESTED",
@@ -2547,8 +2703,11 @@ function wantsCallbackLater(text) {
   return /(call back|call me later|callback|baad me call|dobara call|फिर से call|बाद में call|कॉलबैक)/.test(text);
 }
 
+// Must cover at least everything outcomes.js isDecline() matches: the generic terminal-intent
+// pipeline DEFERS decline turns to scripted flows (see panOwnsThisTermination), so any phrase
+// isDecline catches but this misses would loop as "didn't catch that" instead of closing.
 function mentionsNotInterestedInLoan(text) {
-  return /(not interested|no thanks|don.?t want|do not want|nahi chahiye|interest nahi|इंटरेस्टेड नहीं|नहीं चाहिए|रुचि नहीं)/.test(text);
+  return /(not interested|no thanks|don.?t want|do not want|not needed|not required|nahi chahiye|nahi karna|nahi lena|interest nahi|rehne do|rehne dijiye|इंटरेस्टेड नहीं|नहीं चाहिए|नही चाहिए|नहीं करना|नही करना|नहीं लेना|नही लेना|रहने दो|रहने दीजिए|रुचि नहीं|दिलचस्पी नहीं)/.test(text);
 }
 
 function mentionsApplicationAlreadyDone(text) {
@@ -2571,6 +2730,18 @@ function mentionsNoAccessRightNow(text) {
   return /(don.?t have (my |the )?phone|not with me|no access|phone (is )?not with me|phone nahi hai|mere paas nahi hai|phone available nahi|फोन नहीं है|मेरे पास नहीं है|अभी उपलब्ध नहीं|अभी फ़ोन नहीं)/.test(text);
 }
 
+function asksHowLongItTakes(text) {
+  return /(how long|how much time|kitna time|kitni der|time lagega|der lagegi|kitna samay|कितना टाइम|कितना समय|कितनी देर|समय लगेगा|टाइम लगेगा|देर लगेगी)/.test(text);
+}
+
+function asksDocumentsNeeded(text) {
+  return /(document|documents|kagaz|kaagaz|dastavez|paper.?work|kya kya chahiye|डॉक्यूमेंट|दस्तावेज|कागज|कागज़|क्या क्या चाहिए)/.test(text);
+}
+
+function asksSendLink(text) {
+  return /(link bhej|bhej do link|bhejo link|send.*link|link send|sms.*link|link.*sms|whatsapp.*link|link.*whatsapp|message.*link|link.*message|लिंक भेज|लिंक.*भेज|भेज.*लिंक)/.test(text);
+}
+
 function buildTezIdentityGateReply(session = {}, text = "", english = false) {
   if (!usesNamedIdentityFlow(session.lead)) return "";
   if (!session.identityPrompted && !askedForNameRecently(session.lastSpokenText)) return "";
@@ -2580,9 +2751,10 @@ function buildTezIdentityGateReply(session = {}, text = "", english = false) {
 
   if (asksIdentity(text)) {
     const name = conversationalLeadName(session.lead?.name);
+    const agent = agentNameForLead(session.lead || {});
     const identity = english
-      ? `I am ${VOICEBOT_AGENT_NAME}, calling from ${product} about your pending loan application.`
-      : `मैं ${VOICEBOT_AGENT_NAME}, ${product} से आपकी pending loan application के बारे में call कर रही हूँ।`;
+      ? `I am ${agent}, calling from ${product} about your pending loan application.`
+      : `मैं ${agent}, ${product} से आपकी pending loan application के बारे में call कर रही हूँ।`;
     if (!session.confirmedName) {
       return english
         ? `${identity} Am I speaking with ${name || "the loan applicant"}?`
@@ -2669,7 +2841,7 @@ function languageSwitchReply(language, lead = {}) {
   if (language === "English") {
     if (lead.playbook_type === "UNAPPROVED_USERS") {
       const product = productNameForLead(lead);
-      return `Sure, I will speak in English. I am ${VOICEBOT_AGENT_NAME} from ${product}, calling about your loan application. Can you spare two minutes?`;
+      return `Sure, I will speak in English. I am ${agentNameForLead(lead)} from ${product}, calling about your loan application. Can you spare two minutes?`;
     }
     return "Sure, I will speak in English from now on. How can I help you with your loan today?";
   }
@@ -3097,7 +3269,7 @@ function isSimpleGreeting(text = "") {
 }
 
 function asksRepeatOrClarify(text = "") {
-  return /(what|sorry|pardon|repeat|again|samjha nahi|samajh nahi|kya bol|kya kaha|क्या बोल|क्या कहा|समझ नहीं|समझ नही|दोबारा|फिर से|है जी|haan ji kya|ये क्या|यह क्या|kya hai ye|what is this)/.test(text);
+  return /(what|sorry|pardon|repeat|again|samjha nahi|samajh nahi|kya bol|kya kaha|phir se bol|phir se bata|dobara bol|dobara bata|dubara bol|क्या बोल|क्या कहा|समझ नहीं|समझ नही|दोबारा|फिर से|है जी|haan ji kya|ये क्या|यह क्या|kya hai ye|what is this)/.test(text);
 }
 
 function asksNextStep(text = "") {
@@ -3176,7 +3348,8 @@ function terminalClosingText(outcome, session = {}) {
   if (outcome === "VOICEMAIL") return english ? "Reached voicemail. Ending this call." : "Voicemail मिला। Call close कर रहा हूँ।";
   if (outcome === "CALL_SCREENING") {
     const product = productNameForLead(session.lead || {});
-    return english ? `${VOICEBOT_AGENT_NAME} from ${product}, calling about a loan application. Thank you.` : `${VOICEBOT_AGENT_NAME}, ${product} से loan application के बारे में call कर रही हूँ। धन्यवाद।`;
+    const agent = agentNameForLead(session.lead || {});
+    return english ? `${agent} from ${product}, calling about a loan application. Thank you.` : `${agent}, ${product} से loan application के बारे में call कर रही हूँ। धन्यवाद।`;
   }
   if (outcome === "PAID") return english ? "Thanks, I have noted that you already paid. Please keep the payment receipt handy." : "धन्यवाद, मैं note कर रहा हूँ कि आपने payment कर दिया है। Receipt संभाल कर रखिए।";
   if (outcome === "PROMISE_TO_PAY") return english ? "Thanks, I have noted your payment commitment. Please pay from the secure link before the time you mentioned." : "धन्यवाद, मैं आपका payment commitment note कर रहा हूँ। बताए हुए समय से पहले secure link से payment कर दीजिए।";
@@ -3195,7 +3368,7 @@ function callScreeningReply(session = {}) {
   const configured = process.env.VOICEBOT_SCREENING_RESPONSE_TEXT;
   if (configured) return configured;
   const product = productNameForLead(session.lead || {});
-  return `This is ${VOICEBOT_AGENT_NAME} from ${product}, calling about a loan eligibility check. Please connect the call if the customer is available.`;
+  return `This is ${agentNameForLead(session.lead || {})} from ${product}, calling about a loan eligibility check. Please connect the call if the customer is available.`;
 }
 
 function shouldTreatAsCallScreening(session = {}, text = "") {
@@ -3471,10 +3644,16 @@ function extractCurrencyAmounts(text = "") {
   return amounts;
 }
 
+// Hard compliance rule: the bot must NEVER ask the customer for an OTP/PIN/password/card.
+// This is the last-line filter on generated (LLM) replies -- if it fires, the reply is
+// discarded and replaced with a safe grounded fallback (see groundGeneratedAssistantReply).
+// Kept deliberately broad on the "asking" side (imperative verbs AND question forms like
+// "kya hai" / "what is your"), and negation-aware so the bot's own "we never ask for OTP"
+// disclaimers are not misflagged.
 function requestsSensitiveData(text = "") {
-  const sensitive = /(otp|o t p|pin|password|card details?|aadhaar otp|ओ टी पी|ओटीपी|पिन|पासवर्ड|कार्ड details?)/;
-  const request = /(share|tell|say|give|read|बताइए|बताएं|बोलिए|बोलें|दीजिए|दें)/;
-  const negated = /(do not|don t|never|not ask|मत|नहीं पूछ|नही पूछ|share नहीं|share नही)/;
+  const sensitive = /(otp|o t p|pin\b|password|cvv|card (details?|number)|aadhaar otp|ओ ?टी ?पी|ओटीपी|पिन|पासवर्ड|सी वी वी|कार्ड (details?|नंबर|number))/;
+  const request = /(share|tell|say|give|read|type|enter|send|what.?s your|what is your|number kya|kya hai|kya h\b|बता|बताइए|बताएं|बताओ|बोलिए|बोलें|दीजिए|दे दो|दे दीजिए|दें|लिखिए|डालिए|क्या है|नंबर क्या|भेज)/;
+  const negated = /(do not|don.?t|never|not ask|won.?t ask|will not ask|only on the website|सिर्फ.*website|मत |नहीं पूछ|नही पूछ|कभी नहीं|कभी नही|share नहीं|share नही|मत बताइए|मत बताओ|मत बताना)/;
   return sensitive.test(text) && request.test(text) && !negated.test(text);
 }
 
@@ -3654,7 +3833,7 @@ async function safeGenerateReply(session, args) {
   } catch (err) {
     await logVoicebotEvent(session, "llm_failed", { error: err.message, isWhyQuestion: args.isWhyQuestion });
     const product = productNameForLead(session.lead || {});
-    return `माफ़ कीजिए। मैं ${VOICEBOT_AGENT_NAME}, ${product} से call कर रही हूँ। क्या आप अपनी loan application के लिए एक मिनट दे सकते हैं?`;
+    return `माफ़ कीजिए। मैं ${agentNameForLead(session.lead || {})}, ${product} से call कर रही हूँ। क्या आप अपनी loan application के लिए एक मिनट दे सकते हैं?`;
   }
 }
 
@@ -3758,7 +3937,7 @@ function isPositiveAgreement(text) {
     .replace(/\s+/g, " ")
     .trim();
   const agreementWords = withoutConversationalFillers.split(/\s+/).filter(Boolean);
-  const AGREEMENT_WORD = /^(haan|han|haa|yes|yeah|yep|ok|okay|sure|ठीक|हाँ|हां|हा|ਹਾਂ|ओके)$/;
+  const AGREEMENT_WORD = /^(haan|han|haa|yes|yeah|yep|ok|okay|sure|theek|thik|ठीक|हाँ|हां|हा|ਹਾਂ|ओके)$/;
   const onlyAgreementWords = agreementWords.length > 0 && agreementWords.every(word => AGREEMENT_WORD.test(word));
   // Real speech rarely stops at a bare "yes" — tolerate trailing words ("haan ji aur", "yes okay tell me")
   // as long as the utterance opens with a clear agreement and nothing after it reads as a negation.
@@ -3922,110 +4101,119 @@ function firstGreeting(lead) {
 function stageFirstGreeting(lead = {}) {
   const english = normalizePreferredLanguage(lead.language) === "English";
   const stage = String(lead.drop_stage || lead.playbook_type || "");
-  if (isPanVerificationLead(lead)) return panVerificationOpeningGreeting(lead, english);
+  if (usesScriptedFlow(lead)) return flowOpeningText(lead, english);
   if (isTezJourneyStage(stage) || usesNamedIdentityFlow(lead)) return namedCalleeGreeting(lead, english);
   return "";
 }
 
-function panVerificationOpeningGreeting(lead = {}, english = false) {
-  const name = conversationalLeadName(lead.name);
-  const product = productNameForLead(lead);
-  if (english) {
-    return name
-      ? `Hi, this is a call from ${product} regarding your recent loan application. Am I speaking with ${name}?`
-      : `Hi, this is a call from ${product} regarding your recent loan application. Am I speaking with the loan applicant?`;
+// Prewarm items for every static line a scripted flow can speak, skipping name-varying texts.
+// Both the engine and this extractor render through renderFlowText on the SAME config object,
+// so cached audio is byte-identical to what live calls actually speak.
+function flowPrewarmItems(lead, prefix = "flow") {
+  const flow = flowConfigForLead(lead);
+  if (!flow) return [];
+  const items = [];
+  const seen = new Set();
+
+  const push = (name, textObj) => {
+    for (const english of [false, true]) {
+      const raw = textObj ? String((english ? textObj.en : textObj.hi) || "") : "";
+      if (!raw || raw.includes("{{name}}")) continue;
+      const text = renderFlowText(textObj, english, flowVarsForLead(lead));
+      const langKey = `${english ? "en" : "hi"}:${text}`;
+      if (!text || seen.has(langKey)) continue;
+      seen.add(langKey);
+      items.push({
+        name: `${prefix}_${name}_${english ? "en" : "hi"}`,
+        text,
+        session: { preferredLanguage: english ? "English" : "Hinglish", lead }
+      });
+    }
+  };
+  const pushRendered = (name, hi, en) => push(name, { hi, en });
+
+  push("opening_noname", flow.opening?.textNoName);
+  for (const gate of flow.gates) {
+    gateQuestionVariants(gate).forEach((variant, i) => push(`gate_${gate.id}_v${i}`, variant));
+    const vars = flowVarsForLead(lead);
+    const repromptHi = renderFlowText(gate.reprompt || gate.question, false, vars);
+    const repromptEn = renderFlowText(gate.reprompt || gate.question, true, vars);
+    pushRendered(`gate_${gate.id}_unclear1`, `माफ कीजिए, समझ नहीं पाई। ${repromptHi}`, `Sorry, I did not catch that. ${repromptEn}`);
+    pushRendered(`gate_${gate.id}_unclear2`, `आवाज़ थोड़ी कट रही है। ${repromptHi}`, `Your voice broke up a little. ${repromptEn}`);
+    pushRendered(`gate_${gate.id}_repeat`, `जी ज़रूर। ${repromptHi}`, `Sure. ${repromptEn}`);
+    push(`gate_${gate.id}_no`, gate.onNo?.text || FLOW_DEFAULT_TEXTS.declineClose);
   }
-  return name
-    ? `नमस्ते, यह ${product} की तरफ से call है, आपकी recent loan application के बारे में। क्या मेरी बात ${name} जी से हो रही है?`
-    : `नमस्ते, यह ${product} की तरफ से call है, आपकी recent loan application के बारे में। क्या मेरी बात loan applicant से हो रही है?`;
+  if (flow.instructions) {
+    push("instructions", flow.instructions.text);
+    const condensed = flow.instructions.condensed || flow.instructions.text;
+    push("condensed", condensed);
+    const vars = flowVarsForLead(lead);
+    pushRendered(
+      "condensed_close",
+      `${renderFlowText(condensed, false, vars)} धन्यवाद, आपका दिन शुभ हो।`,
+      `${renderFlowText(condensed, true, vars)} Thank you, and have a great day.`
+    );
+    push("no_access", flow.instructions.onNoAccess || FLOW_DEFAULT_TEXTS.noAccess);
+  }
+  push("thanks_close", FLOW_DEFAULT_TEXTS.thanksClose);
+  push("unclear_giveup", flow.unclearGiveUp);
+  for (const faq of flow.faqs) push(`faq_${faq.intent}`, faq.answer);
+  for (const terminal of flow.terminals) push(`terminal_${terminal.intent}`, terminal.text || FLOW_DEFAULT_TEXTS.declineClose);
+
+  return items;
 }
 
-function panVerificationContextMessage(lead = {}, english = false) {
-  const website = String(leadJourneyUrl(lead) || "").replace(/^https?:\/\//i, "");
-  if (english) {
-    return `You had started your loan application on ${website}, but it could not be completed due to a temporary PAN verification issue. The issue has now been resolved, and we are calling to let you know that you can continue your application. Is this a good time to talk for a minute?`;
+// Warms the TTS cache for the built-in PAN flow plus every playbook in the DB that defines a
+// voice_config (custom brand and/or custom flow). Called at startup and after playbook saves.
+async function prewarmScriptedFlows() {
+  const leads = [{ playbook_type: "PAN_VERIFICATION_RETARGETING", voice_config: null }];
+  try {
+    const result = await query(
+      `SELECT tenant_id, key, voice_config FROM playbooks WHERE is_active=true AND voice_config IS NOT NULL`
+    );
+    for (const row of result.rows) {
+      leads.push({ tenant_id: row.tenant_id, playbook_type: row.key, voice_config: row.voice_config });
+    }
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) {
+      logger.warn("voicebot_flow_prewarm_query_failed", { error: err.message });
+    }
   }
-  return `आपने ${website} पर loan application शुरू की थी, लेकिन एक temporary PAN verification issue की वजह से वह complete नहीं हो पाई। अब यह issue resolve हो गया है, और हम आपको बताने के लिए call कर रहे हैं कि आप अपनी application continue कर सकते हैं। क्या अभी एक मिनट बात करने का सही समय है?`;
+
+  for (const lead of leads) {
+    for (const item of flowPrewarmItems(lead, `flow_${String(lead.playbook_type || "").toLowerCase()}`)) {
+      prewarmAudio(item.text, item.session).catch(err => logger.warn("voicebot_flow_prewarm_failed", {
+        error: err.message,
+        prompt: item.name
+      }));
+    }
+  }
 }
 
-// PAN Verification's spoken lines that do NOT vary by lead (no name interpolation) -- prewarmed
-// at startup so the TTS cache is already warm on the very first real call, instead of every
-// distinct line paying a live-synthesis round trip the first time it's ever spoken.
-function panVerificationPrewarmItems() {
-  const dummyLead = { playbook_type: "PAN_VERIFICATION_RETARGETING" };
-  const website = String(leadJourneyUrl(dummyLead) || "").replace(/^https?:\/\//i, "");
-  const sessionHi = { preferredLanguage: "Hinglish", lead: dummyLead };
-  const sessionEn = { preferredLanguage: "English", lead: dummyLead };
-
-  return [
-    { name: "pan_context_hi", text: panVerificationContextMessage(dummyLead, false), session: sessionHi },
-    { name: "pan_context_en", text: panVerificationContextMessage(dummyLead, true), session: sessionEn },
-    { name: "pan_availability_unclear_hi", text: "माफ कीजिए, समझ नहीं पाई। क्या अभी एक मिनट बात करने का सही समय है?", session: sessionHi },
-    { name: "pan_availability_unclear_en", text: "Sorry, I did not catch that. Is this a good time to talk for a minute?", session: sessionEn },
-    { name: "pan_interest_hi", text: "क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?", session: sessionHi },
-    { name: "pan_interest_en", text: "Are you still interested in applying for a personal loan of up to Rs. 50,000?", session: sessionEn },
-    { name: "pan_interest_unclear_hi", text: "माफ कीजिए, समझ नहीं पाई। क्या आप अब भी ₹50,000 तक के personal loan के लिए apply करने में interested हैं?", session: sessionHi },
-    { name: "pan_interest_unclear_en", text: "Sorry, I did not catch that. Are you still interested in applying for a personal loan of up to Rs. 50,000?", session: sessionEn },
-    { name: "pan_continue_today_hi", text: "क्या आप आज अपनी application continue करना चाहेंगे?", session: sessionHi },
-    { name: "pan_continue_today_en", text: "Would you like to continue your application today?", session: sessionEn },
-    { name: "pan_continue_today_unclear_hi", text: "माफ कीजिए, समझ नहीं पाई। क्या आप आज अपनी application continue करना चाहेंगे?", session: sessionHi },
-    { name: "pan_continue_today_unclear_en", text: "Sorry, I did not catch that. Would you like to continue your application today?", session: sessionEn },
-    {
-      name: "pan_instructions_hi",
-      text: `PAN verification में एक temporary technical issue था, जो अब resolve हो गया है। आप अब ${website} पर वापस जाकर अपनी application complete कर सकते हैं। क्या आपके पास अपना registered mobile phone अभी available है? कृपया ${website} पर जाइए और "Apply for Loan" पर click कीजिए, फिर अपने registered mobile number से login करके PAN verification step complete कीजिए। Verification complete होने के बाद आप बाकी application आगे बढ़ा सकते हैं। ध्यान दीजिए, loan approval eligibility और verification पर subject है। आपके समय के लिए धन्यवाद।`,
-      session: sessionHi
-    },
-    {
-      name: "pan_instructions_en",
-      text: `A temporary technical issue affected PAN verification. The issue has now been resolved. You can now revisit ${website} and complete your application. Do you have access to your registered mobile phone? Please visit ${website} and click on "Apply for Loan," then log in using your registered mobile number and complete the PAN verification step. Once verification is complete, you can proceed with the remaining application. Please note, loan approval is subject to eligibility and verification. Thank you for your time.`,
-      session: sessionEn
-    },
-    { name: "pan_guarantee_hi", text: "Loan approval verification और eligibility criteria पर depend करता है। अपनी application complete करने से हम आपकी eligibility evaluate कर पाएंगे।", session: sessionHi },
-    { name: "pan_guarantee_en", text: "Loan approval depends on successful verification and eligibility criteria. Completing your application allows us to evaluate your eligibility.", session: sessionEn },
-    { name: "pan_amount_hi", text: "आप हमारी eligibility criteria के अनुसार ₹50,000 तक के loan के लिए eligible हो सकते हैं।", session: sessionHi },
-    { name: "pan_amount_en", text: "You may be eligible for a loan of up to ₹50,000, subject to our eligibility criteria.", session: sessionEn },
-    { name: "pan_already_done_hi", text: "बताने के लिए धन्यवाद। आपकी तरफ से किसी और action की जरूरत नहीं है।", session: sessionHi },
-    { name: "pan_already_done_en", text: "Thank you for letting us know. No further action is required from your side.", session: sessionEn },
-    { name: "pan_callback_hi", text: "ज़रूर। कृपया अपना convenient time बताइए, हम दोबारा contact करेंगे।", session: sessionHi },
-    { name: "pan_callback_en", text: "Sure. Please let us know a convenient time, and we'll reach out again.", session: sessionEn },
-    { name: "pan_not_interested_hi", text: "बिल्कुल ठीक है। आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।", session: sessionHi },
-    { name: "pan_not_interested_en", text: "That's completely fine. Thank you for your time. Have a great day.", session: sessionEn },
-    { name: "pan_busy_or_declined_hi", text: `कोई बात नहीं। आप ${website} पर जाकर कभी भी अपनी application continue कर सकते हैं।`, session: sessionHi },
-    { name: "pan_busy_or_declined_en", text: `No problem. You can continue your application anytime by visiting ${website}.`, session: sessionEn },
-    { name: "pan_closing_thanks_hi", text: "आपके समय के लिए धन्यवाद। आपका दिन शुभ हो।", session: sessionHi },
-    { name: "pan_closing_thanks_en", text: "Thank you for your time. Have a great day.", session: sessionEn },
-    { name: "pan_legitimacy_hi", text: `ASAP Finance एक genuine lending platform है। आप ${website} पर सीधे जाकर verify कर सकते हैं, और हम इस call पर कभी भी OTP, PIN या password नहीं पूछेंगे।`, session: sessionHi },
-    { name: "pan_legitimacy_en", text: `ASAP Finance is a genuine lending platform. You can verify by visiting ${website} directly, and we will never ask for your OTP, PIN, or password on this call.`, session: sessionEn },
-    { name: "pan_safety_hi", text: "हम इस call पर कभी भी OTP, PIN, password या card details नहीं पूछेंगे। इन्हें सिर्फ official website पर ही डालिए।", session: sessionHi },
-    { name: "pan_safety_en", text: "We will never ask for your OTP, PIN, password, or card details on this call. Please only enter these on the official website.", session: sessionEn },
-    { name: "pan_human_support_hi", text: `इस call पर human transfer नहीं है, लेकिन support ${website} के through available है।`, session: sessionHi },
-    { name: "pan_human_support_en", text: `There is no human transfer on this call, but support is available through ${website}.`, session: sessionEn },
-    { name: "pan_data_source_hi", text: "यह number एक loan application से जुड़ा है जो आपने हमारे साथ शुरू की थी। अगर यह गलत है, तो बताइए।", session: sessionHi },
-    { name: "pan_data_source_en", text: "This number is linked to a loan application you started with us. If that is incorrect, please let me know.", session: sessionEn },
-    { name: "pan_what_is_hi", text: "PAN verification आपकी identity confirm करने के लिए है, loan eligibility के लिए जरूरी है। Website पर सिर्फ एक minute लगेगा।", session: sessionHi },
-    { name: "pan_what_is_en", text: "PAN verification confirms your identity for loan eligibility, as required for lending. It only takes a minute on the website.", session: sessionEn },
-    { name: "pan_website_down_hi", text: `कृपया थोड़ी देर में ${website} फिर से try कीजिए, या अपना internet connection check कीजिए। आप कभी भी फिर try कर सकते हैं।`, session: sessionHi },
-    { name: "pan_website_down_en", text: `Please try visiting ${website} again in a moment, or check your internet connection. You can try anytime.`, session: sessionEn },
-    { name: "pan_disputes_hi", text: "गलतफहमी के लिए माफी चाहूंगी। मैं यह note कर लूंगी, और इस application के बारे में दोबारा contact नहीं करेंगे। आपके समय के लिए धन्यवाद।", session: sessionHi },
-    { name: "pan_disputes_en", text: "I apologize for the confusion. I will note this, and we will not contact you again about this application. Thank you for your time.", session: sessionEn },
-    { name: "pan_no_access_hi", text: `कोई बात नहीं। जब भी आपके पास access हो, आप ${website} पर जाकर यह complete कर सकते हैं।`, session: sessionHi },
-    { name: "pan_no_access_en", text: `No problem. You can complete this anytime once you have access, by visiting ${website}.`, session: sessionEn },
-    { name: "pan_unclear_gaveup_hi", text: `आपकी आवाज़ साफ नहीं आ रही। कोई बात नहीं, आप कभी भी ${website} पर जाकर अपनी application complete कर सकते हैं। धन्यवाद।`, session: sessionHi },
-    { name: "pan_unclear_gaveup_en", text: `I am having trouble hearing you clearly. No problem, you can complete your application anytime by visiting ${website}. Thank you.`, session: sessionEn }
-  ];
+// Fire-and-forget hook for the playbook upsert route: newly saved flow text is synthesized
+// immediately so the very next call speaks from cache.
+function prewarmPlaybookFlow(tenantId, key, voiceConfig) {
+  const lead = { tenant_id: tenantId, playbook_type: key, voice_config: voiceConfig || null };
+  for (const item of flowPrewarmItems(lead, `flow_${String(key || "").toLowerCase()}`)) {
+    prewarmAudio(item.text, item.session).catch(err => logger.warn("voicebot_flow_prewarm_failed", {
+      error: err.message,
+      prompt: item.name
+    }));
+  }
 }
 
 function namedCalleeGreeting(lead = {}, english = false) {
   const name = conversationalLeadName(lead.name);
   const product = productNameForLead(lead);
+  const agent = agentNameForLead(lead);
   if (english) {
     return name
-      ? `Hi, this is ${VOICEBOT_AGENT_NAME} calling from ${product}. Am I speaking with ${name}?`
-      : `Hi, this is ${VOICEBOT_AGENT_NAME} calling from ${product}. Am I speaking with the loan applicant?`;
+      ? `Hi, this is ${agent} calling from ${product}. Am I speaking with ${name}?`
+      : `Hi, this is ${agent} calling from ${product}. Am I speaking with the loan applicant?`;
   }
   return name
-    ? `नमस्ते, मैं ${VOICEBOT_AGENT_NAME}, ${product} से बोल रही हूँ। क्या मेरी बात ${name} जी से हो रही है?`
-    : `नमस्ते, मैं ${VOICEBOT_AGENT_NAME}, ${product} से बोल रही हूँ। क्या मेरी बात loan applicant से हो रही है?`;
+    ? `नमस्ते, मैं ${agent}, ${product} से बोल रही हूँ। क्या मेरी बात ${name} जी से हो रही है?`
+    : `नमस्ते, मैं ${agent}, ${product} से बोल रही हूँ। क्या मेरी बात loan applicant से हो रही है?`;
 }
 
 function conversationalLeadName(value) {
@@ -4096,10 +4284,17 @@ function stageReasonReply(session = {}, english = false) {
   return "";
 }
 
+// Brand resolution order: the lead's playbook voice_config wins (per-campaign branding),
+// then per-lead import metadata, then env override, then the deployment default.
 function productNameForLead(lead = {}) {
-  return lead.source_metadata?.productName
+  return lead.voice_config?.brand?.name
+    || lead.source_metadata?.productName
     || process.env.VOICEBOT_PRODUCT_NAME
     || (isTezJourneyLead(lead) ? "TezCredit" : config.brandName);
+}
+
+function agentNameForLead(lead = {}) {
+  return lead.voice_config?.brand?.assistant || VOICEBOT_AGENT_NAME;
 }
 
 function parseVoicebotTexts(value) {
@@ -4764,7 +4959,8 @@ function normalizeTezCreditReply(session = {}, text = "") {
 }
 
 function leadJourneyUrl(lead = {}) {
-  return isTezJourneyLead(lead) ? config.tezCreditUrl : config.loanAppUrl;
+  return lead.voice_config?.brand?.website
+    || (isTezJourneyLead(lead) ? config.tezCreditUrl : config.loanAppUrl);
 }
 
 function ttsLanguageCodeForSession(session = {}) {
@@ -5244,6 +5440,7 @@ async function getTranscript(callId) {
 
 module.exports = {
   attachVoicebot,
+  prewarmPlaybookFlow,
   _test: {
     beginUserTurn,
     buildConversationState,

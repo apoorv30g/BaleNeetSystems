@@ -46,7 +46,10 @@ async function addJobsInChunks(jobs, chunkSize = 200) {
 
 function csvEscape(value) {
   if (value === null || value === undefined) return "";
-  const text = String(value);
+  let text = String(value);
+  // Formula-injection guard: lead names/fields come from uploaded files, and a value like
+  // "=cmd|..." would execute when an admin opens the export in Excel. Prefix with ' to neutralize.
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 

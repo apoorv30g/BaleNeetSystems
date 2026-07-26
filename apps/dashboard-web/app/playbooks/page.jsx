@@ -18,11 +18,16 @@ const blankForm = {
   successCondition: "",
   stopCondition: "",
   outcomeFields: "intent, confidence, reason, next action, objection",
-  steps: ""
+  steps: "",
+  brandName: "",
+  brandAssistant: "",
+  brandWebsite: "",
+  advancedConfig: ""
 };
 
 export default function Playbooks() {
   const [playbooks, setPlaybooks] = useState({});
+  const [proposals, setProposals] = useState([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editingKey, setEditingKey] = useState("");
   const [form, setForm] = useState(blankForm);
@@ -31,14 +36,43 @@ export default function Playbooks() {
 
   async function load() {
     setPlaybooks(await apiFetch("/playbooks"));
+    apiFetch("/playbooks/proposals/pending").then(setProposals).catch(() => {});
   }
 
   useEffect(() => {
     load().catch(err => setError(err.message));
   }, []);
 
+  async function removeLearned(key, phrases) {
+    if (!confirm("Remove this learned reply? The bot will stop using it on future calls.")) return;
+    setError("");
+    setMessage("");
+    try {
+      await apiFetch(`/playbooks/${key}/learned/remove`, { method: "POST", body: JSON.stringify({ phrases }) });
+      setMessage("Learned reply removed.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function decideProposal(id, decision) {
+    setError("");
+    setMessage("");
+    try {
+      await apiFetch(`/playbooks/proposals/${id}/${decision}`, { method: "POST" });
+      setMessage(decision === "approve"
+        ? "Learned reply approved — live on the next call."
+        : "Proposal rejected.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   function editPlaybook(key, playbook) {
     const parsed = parsePlaybookSteps(playbook.steps || []);
+    const { brand, ...restConfig } = playbook.voiceConfig || {};
     setEditingKey(key);
     setForm({
       key,
@@ -54,7 +88,11 @@ export default function Playbooks() {
       successCondition: parsed.successCondition,
       stopCondition: parsed.stopCondition,
       outcomeFields: parsed.outcomeFields || blankForm.outcomeFields,
-      steps: parsed.steps.join("\n")
+      steps: parsed.steps.join("\n"),
+      brandName: brand?.name || "",
+      brandAssistant: brand?.assistant || "",
+      brandWebsite: brand?.website || "",
+      advancedConfig: Object.keys(restConfig).length ? JSON.stringify(restConfig, null, 2) : ""
     });
     setFormOpen(true);
   }
@@ -63,10 +101,31 @@ export default function Playbooks() {
     e.preventDefault();
     setError("");
     setMessage("");
+    let advanced = {};
+    if (String(form.advancedConfig || "").trim()) {
+      try {
+        advanced = JSON.parse(form.advancedConfig);
+      } catch {
+        setError("Advanced call flow config must be valid JSON.");
+        return;
+      }
+    }
+    const brandName = form.brandName.trim();
+    const brandAssistant = form.brandAssistant.trim();
+    const brandWebsite = form.brandWebsite.trim();
+    const voiceConfig = {
+      ...advanced,
+      ...((brandName || brandAssistant || brandWebsite)
+        ? { brand: { name: brandName, assistant: brandAssistant, website: brandWebsite } }
+        : {})
+    };
     try {
       const path = editingKey ? `/playbooks/${editingKey}` : "/playbooks";
       const method = editingKey ? "PUT" : "POST";
-      await apiFetch(path, { method, body: JSON.stringify({ ...form, steps: buildPlaybookSteps(form) }) });
+      await apiFetch(path, {
+        method,
+        body: JSON.stringify({ ...form, steps: buildPlaybookSteps(form), voiceConfig: Object.keys(voiceConfig).length ? voiceConfig : undefined })
+      });
       setMessage(editingKey ? "Playbook updated." : "Playbook created.");
       setForm(blankForm);
       setEditingKey("");
@@ -126,9 +185,71 @@ export default function Playbooks() {
           <textarea className="input min-h-20" placeholder="Stop condition, e.g. opt-out, wrong number, voicemail" value={form.stopCondition} onChange={e => setForm({ ...form, stopCondition: e.target.value })} />
           <input className="input lg:col-span-2" placeholder="Outcome fields to capture" value={form.outcomeFields} onChange={e => setForm({ ...form, outcomeFields: e.target.value })} />
           <textarea className="input min-h-40 lg:col-span-2" placeholder="Additional conversation steps, one per line" value={form.steps} onChange={e => setForm({ ...form, steps: e.target.value })} />
+          <div className="lg:col-span-2">
+            <div className="mb-2 text-xs font-bold text-slate-500">Client brand — spoken by the voicebot on every call for this playbook</div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <input
+                className="input"
+                placeholder="Company name, e.g. ASAP Finance"
+                value={form.brandName}
+                onChange={e => setForm({ ...form, brandName: e.target.value })}
+              />
+              <input
+                className="input"
+                placeholder="Assistant name, e.g. Sneha"
+                value={form.brandAssistant}
+                onChange={e => setForm({ ...form, brandAssistant: e.target.value })}
+              />
+              <input
+                className="input"
+                placeholder="Website, e.g. https://www.asapfinance.in"
+                value={form.brandWebsite}
+                onChange={e => setForm({ ...form, brandWebsite: e.target.value })}
+              />
+            </div>
+            <p className="mt-1 text-xs text-slate-400">Used to fill "{"{{brand}}"}", "{"{{assistant}}"}" and "{"{{website}}"}" in the call script — leave blank to keep this client's existing brand unchanged.</p>
+          </div>
+          <div className="lg:col-span-2">
+            <div className="mb-2 text-xs font-bold text-slate-500">Advanced: scripted call flow (JSON, optional) — leave blank unless customizing gates/FAQs/terminals</div>
+            <textarea
+              className="input min-h-32 w-full font-mono text-xs"
+              placeholder={'{\n  "flow": { "opening": {...}, "gates": [...], "instructions": {...}, "faqs": [...] }\n}'}
+              value={form.advancedConfig}
+              onChange={e => setForm({ ...form, advancedConfig: e.target.value })}
+            />
+          </div>
           <button className="btn">{editingKey ? "Save Playbook" : "Create Playbook"}</button>
           <button type="button" onClick={() => { setFormOpen(false); setEditingKey(""); setForm(blankForm); }} className="btn-secondary">Cancel</button>
         </form>
+      )}
+
+      {proposals.length > 0 && (
+        <div className="card mt-8 p-6">
+          <div className="text-xs font-bold uppercase tracking-widest text-amber-600">Self-training review queue</div>
+          <h2 className="mt-2 text-xl font-black text-slate-950">Suggested replies from recent calls</h2>
+          <p className="mt-1 text-sm text-slate-500">Mined from turns the bot could not understand. Nothing is spoken to customers until you approve it.</p>
+          <div className="mt-4 space-y-4">
+            {proposals.map(item => (
+              <div key={item.id} className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                <div className="text-xs font-bold text-slate-500">{item.playbook_key}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(item.proposal?.phrases || []).map(phrase => (
+                    <span key={phrase} className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">"{phrase}"</span>
+                  ))}
+                </div>
+                <div className="mt-3 rounded-lg bg-white p-3 text-sm text-slate-700">
+                  <div><span className="font-semibold text-slate-500">Hindi: </span>{item.proposal?.answer?.hi}</div>
+                  {item.proposal?.answer?.en && <div className="mt-1"><span className="font-semibold text-slate-500">English: </span>{item.proposal.answer.en}</div>}
+                </div>
+                {item.proposal?.rationale && <p className="mt-2 text-xs text-slate-500">{item.proposal.rationale}</p>}
+                <div className="mt-3 flex gap-2">
+                  <button onClick={() => decideProposal(item.id, "approve")} className="btn">Approve</button>
+                  <button onClick={() => decideProposal(item.id, "reject")} className="btn-secondary">Reject</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       <div className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -156,6 +277,27 @@ export default function Playbooks() {
                 <div key={`${key}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">{index + 1}. {step}</div>
               ))}
             </div>
+            {(playbook.voiceConfig?.flow?.faqs || []).some(f => f.learned) && (
+              <div className="mt-5">
+                <div className="text-xs font-bold uppercase tracking-widest text-emerald-600">Learned from calls</div>
+                <div className="mt-2 space-y-2">
+                  {(playbook.voiceConfig.flow.faqs || []).filter(f => f.learned).map((faq, index) => (
+                    <div key={`${key}-learned-${index}`} className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm">
+                      <div className="flex flex-wrap gap-1">
+                        {(faq.phrases || []).map(phrase => (
+                          <span key={phrase} className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-slate-600">"{phrase}"</span>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-slate-700">{faq.answer?.hi}</p>
+                      <button
+                        onClick={() => removeLearned(key, faq.phrases)}
+                        className="mt-2 text-xs font-semibold text-red-600 hover:underline"
+                      >Remove</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ))}
         {!Object.keys(playbooks).length && <div className="card p-6 text-sm text-slate-500">No playbooks loaded.</div>}

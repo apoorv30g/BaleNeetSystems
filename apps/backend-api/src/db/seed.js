@@ -6,6 +6,13 @@ async function seed() {
   const email = process.env.ADMIN_EMAIL || "admin@loanconnect.ai";
   const password = process.env.ADMIN_PASSWORD || "Admin@123";
 
+  // The default password is public knowledge (it's in this repo). Never seed it into a
+  // production database — require an explicit ADMIN_PASSWORD instead.
+  if (process.env.NODE_ENV === "production" && !process.env.ADMIN_PASSWORD) {
+    console.error("Refusing to seed default admin password in production. Set ADMIN_PASSWORD and re-run.");
+    process.exit(1);
+  }
+
   const existing = await query(`SELECT id FROM users WHERE email=$1`, [email]);
   if (existing.rows.length) {
     console.log("Admin already exists");

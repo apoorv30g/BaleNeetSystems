@@ -14,6 +14,9 @@ export default function Compliance() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
+  const [auditSummary, setAuditSummary] = useState(null);
+  const [flagged, setFlagged] = useState([]);
+
   async function load() {
     const [settingsData, dncData, logsData] = await Promise.all([
       apiFetch("/compliance/settings"),
@@ -24,6 +27,20 @@ export default function Compliance() {
     setSettingsForm(settingsData);
     setDnc(dncData);
     setLogs(logsData);
+    apiFetch("/compliance/audit/summary").then(setAuditSummary).catch(() => {});
+    apiFetch("/compliance/audit/flagged").then(setFlagged).catch(() => {});
+  }
+
+  async function toggleShareLearnings(enabled) {
+    setError("");
+    setMessage("");
+    try {
+      await apiFetch("/compliance/share-learnings", { method: "PUT", body: JSON.stringify({ enabled }) });
+      setMessage(enabled ? "Joined the shared learning network." : "Left the shared learning network.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function saveSettings(e) {
@@ -84,6 +101,64 @@ export default function Compliance() {
         <div className="stat-card"><p className="text-sm font-semibold text-slate-500">Max Attempts</p><p className="mt-3 text-3xl font-black text-slate-950">{settings?.maxCallAttempts || 3}</p></div>
         <div className="stat-card"><p className="text-sm font-semibold text-slate-500">Retry Delay</p><p className="mt-3 text-3xl font-black text-slate-950">{settings?.retryDelayMinutes || 360}m</p></div>
         <div className="stat-card"><p className="text-sm font-semibold text-slate-500">DNC Entries</p><p className="mt-3 text-3xl font-black text-slate-950">{dnc.length}</p></div>
+      </section>
+
+      <section className="mt-8 card p-6">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest text-sky-600">Compliance autopilot</div>
+            <h2 className="mt-2 text-lg font-black text-slate-950">Every call audited, not sampled</h2>
+            <p className="mt-1 text-sm text-slate-500">Automated checks: disclosure spoken, no OTP requests, no guaranteed-approval promises, no threats, opt-out honored, calling window respected.</p>
+          </div>
+          {auditSummary && (
+            <div className="text-right">
+              <p className="text-4xl font-black text-slate-950">{Number(auditSummary.avg_score || 0).toFixed(0)}</p>
+              <p className="text-xs font-semibold text-slate-500">avg score (7d, {auditSummary.audited || 0} calls)</p>
+            </div>
+          )}
+        </div>
+        {auditSummary && (
+          <div className="mt-4 grid grid-cols-3 gap-3">
+            <div className="rounded-lg bg-emerald-50 p-3 text-center"><p className="text-2xl font-black text-emerald-700">{auditSummary.passed || 0}</p><p className="text-xs font-semibold text-slate-500">Passed</p></div>
+            <div className="rounded-lg bg-amber-50 p-3 text-center"><p className="text-2xl font-black text-amber-700">{auditSummary.warned || 0}</p><p className="text-xs font-semibold text-slate-500">Warnings</p></div>
+            <div className="rounded-lg bg-red-50 p-3 text-center"><p className="text-2xl font-black text-red-700">{auditSummary.failed || 0}</p><p className="text-xs font-semibold text-slate-500">Failed</p></div>
+          </div>
+        )}
+        {flagged.length > 0 && (
+          <div className="mt-5">
+            <h3 className="text-sm font-bold text-slate-700">Flagged calls</h3>
+            <div className="mt-2 max-h-72 space-y-2 overflow-auto">
+              {flagged.map(call => (
+                <div key={call.call_id} className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-700">{call.lead_name || call.phone || "Lead"}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${call.verdict === "fail" ? "bg-red-600 text-white" : "bg-amber-500 text-white"}`}>{call.verdict} · {call.score}</span>
+                  </div>
+                  <div className="mt-1 space-y-1">
+                    {(call.flags || []).map((flag, i) => (
+                      <div key={i} className="text-xs text-slate-600"><span className="font-semibold">{flag.check}:</span> {flag.evidence}</div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {!auditSummary?.audited && <p className="mt-4 text-sm text-slate-500">No calls audited yet. Audits run nightly, or an admin can trigger a run.</p>}
+      </section>
+
+      <section className="mt-8 card p-6">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest text-violet-600">Shared learning network</div>
+            <h2 className="mt-2 text-lg font-black text-slate-950">Learn from the whole network</h2>
+            <p className="mt-1 text-sm text-slate-500">Opt in to contribute anonymized question patterns (never answers, brand names, or customer data) and receive suggested replies for questions other lenders' customers ask. All suggestions still require your approval.</p>
+          </div>
+          <button
+            onClick={() => toggleShareLearnings(!settings?.shareLearnings)}
+            className={settings?.shareLearnings ? "btn" : "btn-secondary"}
+          >{settings?.shareLearnings ? "Enabled — click to leave" : "Join network"}</button>
+        </div>
       </section>
 
       <section className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">

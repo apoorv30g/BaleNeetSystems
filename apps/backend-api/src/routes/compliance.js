@@ -2,6 +2,7 @@ const express = require("express");
 const { query } = require("../db/pool");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { getTenantSettings } = require("../services/settings");
+const { auditSummary, flaggedCalls, runComplianceAuditBatch } = require("../services/complianceAudit");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -122,6 +123,39 @@ router.get("/logs", async (req, res) => {
     [req.user.tenantId]
   );
   res.json(result.rows);
+});
+
+// ---- Compliance autopilot ----
+
+router.get("/audit/summary", async (req, res) => {
+  res.json(await auditSummary(req.user.tenantId, { sinceDays: Number(req.query.days || 7) }));
+});
+
+router.get("/audit/flagged", async (req, res) => {
+  res.json(await flaggedCalls(req.user.tenantId, { limit: Number(req.query.limit || 50) }));
+});
+
+router.post("/audit/run", requireRole("admin"), async (req, res) => {
+  const result = await runComplianceAuditBatch({ sinceHours: Number(req.body?.sinceHours || 26) });
+  res.json(result);
+});
+
+// ---- Cross-client learning network opt-in ----
+
+router.put("/share-learnings", requireRole("admin"), async (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  await query(
+    `INSERT INTO tenant_settings (tenant_id, share_learnings, updated_at)
+     VALUES ($1,$2,NOW())
+     ON CONFLICT (tenant_id) DO UPDATE SET share_learnings=EXCLUDED.share_learnings, updated_at=NOW()`,
+    [req.user.tenantId, enabled]
+  );
+  await query(
+    `INSERT INTO audit_logs (tenant_id, user_id, action, details)
+     VALUES ($1,$2,'share_learnings_toggle',$3)`,
+    [req.user.tenantId, req.user.userId, { enabled }]
+  );
+  res.json({ ok: true, shareLearnings: enabled });
 });
 
 module.exports = router;

@@ -217,6 +217,77 @@ async function migrate() {
     );
   `);
 
+  // Per-playbook voice configuration: brand identity today ({brand: {name, assistant, website}}),
+  // full scripted-flow definitions later. Lets one deployment serve multiple client brands.
+  await query(`ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS voice_config JSONB;`);
+
+  // Self-training loop: nightly mining of call transcripts produces improvement proposals
+  // (new FAQ answers for phrasings the bot failed to understand). A human approves each one
+  // before it becomes spoken content -- never auto-deployed.
+  await query(`
+    CREATE TABLE IF NOT EXISTS flow_improvement_proposals (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+      playbook_key TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'faq',
+      status TEXT NOT NULL DEFAULT 'pending',
+      evidence JSONB DEFAULT '[]'::jsonb,
+      proposal JSONB NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      decided_at TIMESTAMP,
+      decided_by UUID
+    );
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_flow_proposals_pending ON flow_improvement_proposals(tenant_id, status, created_at DESC);`);
+
+  // Cross-client learning network: anonymized phrase->topic mappings contributed by tenants
+  // that opted in (tenant_settings.share_learnings). Deliberately has NO tenant_id, NO answer
+  // text, NO brand text -- understanding is shared, answers stay per-client.
+  await query(`ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS share_learnings BOOLEAN DEFAULT false;`);
+  await query(`
+    CREATE TABLE IF NOT EXISTS shared_phrase_pool (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      topic TEXT NOT NULL,
+      phrase TEXT NOT NULL,
+      contributed_count INT DEFAULT 1,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(topic, phrase)
+    );
+  `);
+
+  // Compliance autopilot: every audited call gets a deterministic rule-check score;
+  // flagged calls surface on the compliance dashboard.
+  await query(`
+    CREATE TABLE IF NOT EXISTS call_compliance_audits (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      call_id UUID UNIQUE REFERENCES calls(id) ON DELETE CASCADE,
+      tenant_id UUID,
+      campaign_id UUID,
+      score INT NOT NULL,
+      verdict TEXT NOT NULL,
+      checks JSONB DEFAULT '{}'::jsonb,
+      flags JSONB DEFAULT '[]'::jsonb,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_compliance_audits_tenant ON call_compliance_audits(tenant_id, verdict, created_at DESC);`);
+
+  // Self-optimizing scripts: nightly-aggregated outcome stats per flow gate variant,
+  // consumed by the engine's weighted variant picker.
+  await query(`
+    CREATE TABLE IF NOT EXISTS flow_variant_stats (
+      tenant_id UUID,
+      playbook_key TEXT NOT NULL,
+      gate_id TEXT NOT NULL,
+      variant_index INT NOT NULL,
+      spoken INT DEFAULT 0,
+      successes INT DEFAULT 0,
+      weight NUMERIC DEFAULT 0.5,
+      updated_at TIMESTAMP DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, playbook_key, gate_id, variant_index)
+    );
+  `);
+
   await query(`DROP TRIGGER IF EXISTS playbooks_set_updated_at ON playbooks;`);
   await query(`
     CREATE TRIGGER playbooks_set_updated_at

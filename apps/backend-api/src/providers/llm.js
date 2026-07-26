@@ -70,6 +70,9 @@ async function generateWithProvider(provider, args) {
 
 function normalizeProvider(value) {
   const provider = String(value || "").trim().toLowerCase();
+  // "sarvam-m" here is a legacy PROVIDER-name alias some env configs still use, not the
+  // deprecated sarvam-m chat MODEL. The actual model name is resolved separately via
+  // config.ai.sarvamChatModel, which already guards against the deprecated model id.
   if (["sarvam", "sarvam-chat", "sarvam-m"].includes(provider)) return "sarvam";
   if (["gemini", "google", "google-gemini"].includes(provider)) return "gemini";
   if (["none", "off", "false"].includes(provider)) return "";

@@ -19,7 +19,8 @@ async function getTenantSettings(tenantId) {
     retryDelayMinutes: config.retryDelayMinutes,
     aiDisclosure: `This is ${config.assistantName} calling from ${config.brandName} about your loan application.`,
     smsWebhookUrl: "",
-    whatsappWebhookUrl: ""
+    whatsappWebhookUrl: "",
+    shareLearnings: false
   };
 }
 
@@ -32,7 +33,8 @@ function normalize(row) {
     retryDelayMinutes: Number(row.retry_delay_minutes),
     aiDisclosure: normalizeAiDisclosure(row.ai_disclosure),
     smsWebhookUrl: row.sms_webhook_url || "",
-    whatsappWebhookUrl: row.whatsapp_webhook_url || ""
+    whatsappWebhookUrl: row.whatsapp_webhook_url || "",
+    shareLearnings: Boolean(row.share_learnings)
   };
 }
 

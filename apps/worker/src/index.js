@@ -56,15 +56,23 @@ const worker = new Worker("lead-calls", async (job) => {
     [tenantId, campaignId, leadId]
   );
 
+  let dispatched;
   try {
-    const result = await triggerOutboundCall({ to: lead.phone, leadId, campaignId, callId: callRow.rows[0].id });
-    await query(`UPDATE calls SET call_sid=$1, status='dialing', updated_at=NOW() WHERE id=$2`, [result.callSid, callRow.rows[0].id]);
+    dispatched = await triggerOutboundCall({ to: lead.phone, leadId, campaignId, callId: callRow.rows[0].id });
+    await query(`UPDATE calls SET call_sid=$1, status='dialing', updated_at=NOW() WHERE id=$2`, [dispatched.callSid, callRow.rows[0].id]);
     await query(`UPDATE leads SET status='called', attempt_count=attempt_count+1, last_called_at=NOW() WHERE id=$1`, [leadId]);
-    await holdDispatchSlot({ leadId, campaignId, callId: callRow.rows[0].id, callSid: result.callSid, dryRun: result.dryRun });
   } catch (err) {
     await query(`UPDATE calls SET status='failed', error=$1, updated_at=NOW() WHERE id=$2`, [err.message, callRow.rows[0].id]);
     await query(`UPDATE leads SET status='failed', attempt_count=attempt_count+1, last_called_at=NOW() WHERE id=$1`, [leadId]);
     throw err;
+  }
+
+  // The call is already placed at this point; a transient failure while pacing/polling must
+  // NOT mark the call failed or burn a second attempt — log it and release the slot.
+  try {
+    await holdDispatchSlot({ leadId, campaignId, callId: callRow.rows[0].id, callSid: dispatched.callSid, dryRun: dispatched.dryRun });
+  } catch (err) {
+    console.error("holdDispatchSlot failed after successful dispatch", { leadId, campaignId, error: err.message });
   }
 }, { connection: { url: config.redisUrl }, concurrency: config.maxConcurrentCalls });
 
@@ -105,6 +113,13 @@ async function gracefulShutdown(signal) {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("unhandledRejection", (reason) => {
+  console.error("[worker] Unhandled rejection:", reason instanceof Error ? reason.message : String(reason));
+});
+process.on("uncaughtException", (err) => {
+  console.error("[worker] Uncaught exception:", err.message, err.stack);
+  process.exit(1);
+});
 
 async function holdDispatchSlot({ leadId, campaignId, callId, callSid, dryRun = false }) {
   if (dryRun) return;

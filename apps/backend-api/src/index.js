@@ -170,3 +170,15 @@ async function gracefulShutdown(signal) {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// A rejected promise from any async route/handler must not take down every live call
+// (Node's default since v15 is to crash). Log it and keep serving.
+process.on("unhandledRejection", (reason) => {
+  logger.error("unhandled_rejection", { error: reason instanceof Error ? reason.message : String(reason) });
+});
+// After an uncaught synchronous exception the process state is undefined — log and exit;
+// the orchestrator (Railway) restarts the service.
+process.on("uncaughtException", (err) => {
+  logger.error("uncaught_exception", { error: err.message, stack: err.stack });
+  process.exit(1);
+});

@@ -8,7 +8,7 @@ async function generateSarvamReply({ lead, lastUserMessage = "", transcript = []
 
   const prompt = await buildPrompt(lead, { transcript, lastUserMessage, conversationState, isWhyQuestion });
   const body = {
-    model: process.env.SARVAM_CHAT_MODEL || "sarvam-30b",
+    model: config.ai.sarvamChatModel,
     messages: [
       {
         role: "system",

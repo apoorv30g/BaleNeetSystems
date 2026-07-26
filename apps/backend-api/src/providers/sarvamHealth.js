@@ -111,7 +111,7 @@ function checkStt() {
     ws.on("open", () => {
       openResult = {
         ok: true,
-        model: process.env.SARVAM_STT_MODEL || "saaras:v3",
+        model: config.ai.sarvamSttModel,
         mode: process.env.SARVAM_STT_MODE || "codemix",
         sampleRate,
         messageSampleRate,
@@ -204,7 +204,7 @@ async function checkChat() {
   const timeoutMs = Number(process.env.SARVAM_PREFLIGHT_CHAT_TIMEOUT_MS || process.env.SARVAM_PREFLIGHT_TIMEOUT_MS || 2500);
   const startedAt = Date.now();
   const body = {
-    model: process.env.SARVAM_CHAT_MODEL || "sarvam-30b",
+    model: config.ai.sarvamChatModel,
     messages: [{ role: "user", content: "Reply with OK only." }],
     max_tokens: 4,
     temperature: 0,
@@ -272,7 +272,7 @@ async function fetchJsonWithTimeout(url, options, timeoutMs) {
 function sarvamSttParams() {
   return new URLSearchParams({
     "language-code": process.env.SARVAM_STT_LANGUAGE_CODE || "hi-IN",
-    model: process.env.SARVAM_STT_MODEL || "saaras:v3",
+    model: config.ai.sarvamSttModel,
     mode: process.env.SARVAM_STT_MODE || "codemix",
     sample_rate: String(process.env.SARVAM_STT_SAMPLE_RATE || 16000),
     input_audio_codec: process.env.SARVAM_STT_AUDIO_ENCODING || "pcm_s16le",

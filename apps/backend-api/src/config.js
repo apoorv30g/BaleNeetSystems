@@ -57,6 +57,20 @@ const corsOriginSuffixes = (process.env.CORS_ORIGIN_SUFFIXES || ".baleneetsystem
   .map(suffix => suffix.trim().toLowerCase())
   .filter(Boolean);
 
+// sarvam-m (and its size aliases) is the retired 24B Sarvam chat model. sarvam-30b / sarvam-105b
+// are the supported replacements (30b is faster -> better for live-call latency; 105b is higher
+// quality). Declared before module.exports so it is initialized when the ai block calls it.
+const DEPRECATED_SARVAM_CHAT_MODELS = new Set(["sarvam-m", "sarvam-m:v1", "sarvam-24b", "sarvam-2b"]);
+function resolveSarvamChatModel() {
+  const requested = String(process.env.SARVAM_CHAT_MODEL || "").trim();
+  if (requested && DEPRECATED_SARVAM_CHAT_MODELS.has(requested.toLowerCase())) {
+    console.warn(`[config] SARVAM_CHAT_MODEL="${requested}" is a deprecated Sarvam chat model (retired 2026-07-27). ` +
+      `Falling back to "sarvam-30b". Please update the env var to sarvam-30b or sarvam-105b.`);
+    return "sarvam-30b";
+  }
+  return requested || "sarvam-30b";
+}
+
 module.exports = {
   port: process.env.PORT || 4000,
   nodeEnv: process.env.NODE_ENV || "development",
@@ -95,6 +109,14 @@ module.exports = {
       .map(model => model.trim())
       .filter(Boolean),
     sarvamApiKey: process.env.SARVAM_API_KEY,
+    // Centralized Sarvam model names. The /chat/completions, /text-to-speech and STT endpoints
+    // themselves are current; only the legacy sarvam-m (24B) CHAT model is being retired
+    // (Sarvam end-of-life 2026-07-27). resolveSarvamChatModel() auto-upgrades a deprecated value
+    // to the recommended replacement and warns, so a stale env var degrades gracefully instead
+    // of failing calls. TTS (bulbul) and STT (saaras) are unaffected.
+    sarvamChatModel: resolveSarvamChatModel(),
+    sarvamTtsModel: process.env.SARVAM_TTS_MODEL || "bulbul:v3",
+    sarvamSttModel: process.env.SARVAM_STT_MODEL || "saaras:v3",
     deepgramApiKey: process.env.DEEPGRAM_API_KEY
   }
 };

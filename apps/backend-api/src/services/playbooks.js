@@ -205,10 +205,11 @@ async function getPlaybook(tenantId, key) {
 async function upsertPlaybook(tenantId, payload) {
   const key = normalizeKey(payload.key || payload.title);
   const steps = normalizeSteps(payload.steps);
+  const voiceConfig = normalizeVoiceConfig(payload.voiceConfig ?? payload.voice_config);
 
   const result = await query(
-    `INSERT INTO playbooks (tenant_id, key, title, category, task, trigger, cadence, goal, steps, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
+    `INSERT INTO playbooks (tenant_id, key, title, category, task, trigger, cadence, goal, steps, voice_config, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
      ON CONFLICT (tenant_id, key) DO UPDATE SET
        title=EXCLUDED.title,
        category=EXCLUDED.category,
@@ -217,6 +218,7 @@ async function upsertPlaybook(tenantId, payload) {
        cadence=EXCLUDED.cadence,
        goal=EXCLUDED.goal,
        steps=EXCLUDED.steps,
+       voice_config=COALESCE(EXCLUDED.voice_config, playbooks.voice_config),
        is_active=true
      RETURNING *`,
     [
@@ -228,11 +230,68 @@ async function upsertPlaybook(tenantId, payload) {
       payload.trigger || "",
       payload.cadence || "",
       payload.goal || "",
-      JSON.stringify(steps)
+      JSON.stringify(steps),
+      voiceConfig ? JSON.stringify(voiceConfig) : null
     ]
   );
 
   return { key: result.rows[0].key, ...rowToPlaybook(result.rows[0]) };
+}
+
+function normalizeVoiceConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const brand = value.brand && typeof value.brand === "object" && !Array.isArray(value.brand) ? value.brand : {};
+  const normalized = {
+    ...value,
+    brand: {
+      name: String(brand.name || "").trim() || undefined,
+      assistant: String(brand.assistant || "").trim() || undefined,
+      website: String(brand.website || "").trim() || undefined
+    }
+  };
+  if (!normalized.brand.name && !normalized.brand.assistant && !normalized.brand.website) delete normalized.brand;
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+// Removes one learned FAQ entry (identified by its exact phrase set) from a playbook's
+// voice_config -- the undo for an approved self-training proposal.
+function filterOutLearnedFaq(faqs, phrases) {
+  if (!Array.isArray(faqs)) return null;
+  const target = JSON.stringify([...(phrases || [])].map(p => String(p).toLowerCase().trim()).sort());
+  const next = faqs.filter(faq => !(faq.learned && JSON.stringify([...(faq.phrases || [])].sort()) === target));
+  return next.length === faqs.length ? null : next;
+}
+
+async function removeLearnedFaq(tenantId, key, phrases = []) {
+  const row = await query(
+    `SELECT voice_config FROM playbooks WHERE tenant_id=$1 AND key=$2 AND is_active=true LIMIT 1`,
+    [tenantId, key]
+  );
+  const voiceConfig = row.rows[0]?.voice_config;
+  const nextFaqs = filterOutLearnedFaq(voiceConfig?.flow?.faqs, phrases);
+  if (!nextFaqs) return false;
+  const updated = { ...voiceConfig, flow: { ...voiceConfig.flow, faqs: nextFaqs } };
+  await query(
+    `UPDATE playbooks SET voice_config=$3 WHERE tenant_id=$1 AND key=$2`,
+    [tenantId, key, JSON.stringify(updated)]
+  );
+  return true;
+}
+
+// Attaches the lead's playbook voice_config (brand identity etc.) so downstream sync code
+// (voicebot brand/URL resolution) can read it without extra queries per turn.
+async function attachVoiceConfig(lead) {
+  if (!lead || lead.voice_config !== undefined || !lead.tenant_id || !lead.playbook_type) return lead;
+  try {
+    const result = await query(
+      `SELECT voice_config FROM playbooks WHERE tenant_id=$1 AND key=$2 AND is_active=true LIMIT 1`,
+      [lead.tenant_id, lead.playbook_type]
+    );
+    return { ...lead, voice_config: result.rows[0]?.voice_config || null };
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) throw err;
+    return { ...lead, voice_config: null };
+  }
 }
 
 async function deletePlaybook(tenantId, key) {
@@ -580,7 +639,8 @@ function rowToPlaybook(row) {
     trigger: row.trigger || "",
     cadence: row.cadence || "",
     goal: row.goal || "",
-    steps: Array.isArray(row.steps) ? row.steps : []
+    steps: Array.isArray(row.steps) ? row.steps : [],
+    voiceConfig: row.voice_config || null
   };
   if (!String(row.key || "").startsWith("TEZ_")) return playbook;
   return {
@@ -615,4 +675,13 @@ function normalizeSteps(steps) {
   return String(steps || "").split(/\r?\n/).map(step => step.trim()).filter(Boolean);
 }
 
-module.exports = { PLAYBOOKS, buildPrompt, deletePlaybook, listPlaybooks, upsertPlaybook };
+module.exports = {
+  PLAYBOOKS,
+  attachVoiceConfig,
+  buildPrompt,
+  deletePlaybook,
+  listPlaybooks,
+  removeLearnedFaq,
+  upsertPlaybook,
+  _test: { filterOutLearnedFaq, normalizeVoiceConfig }
+};

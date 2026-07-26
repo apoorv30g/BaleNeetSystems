@@ -328,7 +328,7 @@ function transcribeWav(audio) {
     const sampleRate = String(process.env.SARVAM_STT_FILE_SAMPLE_RATE || process.env.SARVAM_STT_SAMPLE_RATE || 16000);
     const params = new URLSearchParams({
       "language-code": process.env.SARVAM_STT_LANGUAGE_CODE || "hi-IN",
-      model: process.env.SARVAM_STT_MODEL || "saaras:v3",
+      model: config.ai.sarvamSttModel,
       mode: process.env.SARVAM_STT_MODE || "codemix",
       sample_rate: sampleRate,
       input_audio_codec: "wav",

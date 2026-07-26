@@ -60,7 +60,7 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
   onStatus?.({
     provider: "sarvam",
     type: "ConnectAttempt",
-    model: process.env.SARVAM_STT_MODEL || "saaras:v3",
+    model: config.ai.sarvamSttModel,
     mode: process.env.SARVAM_STT_MODE || "codemix",
     languageCode,
     sampleRate,
@@ -80,7 +80,7 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
     onOpen?.({
       provider: "sarvam",
       flushedBytes,
-      model: process.env.SARVAM_STT_MODEL || "saaras:v3",
+      model: config.ai.sarvamSttModel,
       mode: process.env.SARVAM_STT_MODE || "codemix",
       languageCode,
       sampleRate,
@@ -205,7 +205,7 @@ function createSarvamLive({ languageCode = "hi-IN", onTranscript, onOpen, onClos
 function sarvamParams({ languageCode, sampleRate, audioEncoding }) {
   const params = new URLSearchParams({
     "language-code": languageCode,
-    model: process.env.SARVAM_STT_MODEL || "saaras:v3",
+    model: config.ai.sarvamSttModel,
     mode: process.env.SARVAM_STT_MODE || "codemix",
     sample_rate: String(sampleRate),
     input_audio_codec: audioEncoding,

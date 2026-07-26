@@ -1,6 +1,9 @@
 const { pool } = require("../db/pool");
 const logger = require("../utils/logger");
 const { cleanupRawRecordings, runTrainingBatch } = require("./trainingData");
+const { runFlowLearningBatch, runNetworkSeeding } = require("./flowLearning");
+const { runComplianceAuditBatch } = require("./complianceAudit");
+const { runVariantStatsBatch } = require("./variantStats");
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -21,6 +24,36 @@ function startTrainingScheduler() {
       await withAdvisoryLock("voice_training_cleanup_ist_2355", async () => {
         const result = await cleanupRawRecordings();
         logger.info("voice_training_cleanup_complete", result);
+      });
+    }),
+    // Self-training: mine yesterday's "didn't catch that" turns into proposed FAQ entries
+    // for human review on the dashboard (never auto-applied).
+    scheduleDailyIst("flow_learning_daily", 21, 30, async () => {
+      await withAdvisoryLock("flow_learning_daily_ist_2130", async () => {
+        const result = await runFlowLearningBatch();
+        logger.info("flow_learning_daily_complete", result);
+      });
+    }),
+    // Compliance autopilot: audit every unaudited recent call against the rule set.
+    scheduleDailyIst("compliance_audit_daily", 21, 0, async () => {
+      await withAdvisoryLock("compliance_audit_daily_ist_2100", async () => {
+        const result = await runComplianceAuditBatch();
+        logger.info("compliance_audit_daily_complete", result);
+      });
+    }),
+    // Self-optimizing scripts: recompute gate-variant success weights from recent outcomes.
+    scheduleDailyIst("variant_stats_daily", 22, 30, async () => {
+      await withAdvisoryLock("variant_stats_daily_ist_2230", async () => {
+        const result = await runVariantStatsBatch();
+        logger.info("variant_stats_daily_complete", result);
+      });
+    }),
+    // Cross-client network: seed opted-in tenants with proposals for topics the network
+    // knows but their playbook cannot answer yet (proposals still require human approval).
+    scheduleDailyIst("network_seeding_daily", 23, 0, async () => {
+      await withAdvisoryLock("network_seeding_daily_ist_2300", async () => {
+        const result = await runNetworkSeeding();
+        logger.info("network_seeding_daily_complete", result);
       });
     })
   ];
