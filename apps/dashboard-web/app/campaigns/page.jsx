@@ -50,6 +50,19 @@ export default function Campaigns() {
     }
   }
 
+  async function deleteCampaign(campaign) {
+    if (!confirm(`Delete campaign "${campaign.name}"? This also permanently deletes its ${campaign.lead_count || 0} lead(s) and cannot be undone.`)) return;
+    setError("");
+    setMessage("");
+    try {
+      await apiFetch(`/campaigns/${campaign.id}`, { method: "DELETE" });
+      setMessage("Campaign deleted.");
+      await loadCampaigns();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <Shell>
       <div className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
@@ -109,6 +122,7 @@ export default function Campaigns() {
                   <div className="flex justify-end gap-2">
                     <Link className="btn-secondary" href={`/campaigns/${campaign.id}`}>Open</Link>
                     <button onClick={() => queueCalls(campaign.id)} className="btn-secondary">Queue Calls</button>
+                    <button onClick={() => deleteCampaign(campaign)} className="btn-secondary text-red-600 hover:text-red-700">Delete</button>
                   </div>
                 </td>
               </tr>
