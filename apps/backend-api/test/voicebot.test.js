@@ -1369,3 +1369,45 @@ test("LLM grounding rejects invented facts and allows known TezCredit facts", ()
   assert.doesNotMatch(grounded, /fake-loan|guaranteed|50,000/);
   assert.match(grounded, /TezCredit|bank verification/i);
 });
+
+test("frustration pattern catches English phrasing alongside existing Hindi/Hinglish terms", () => {
+  assert.ok(_test.FRUSTRATION_PATTERN.test("please stop calling me again and again"));
+  assert.ok(_test.FRUSTRATION_PATTERN.test("this is such a waste of time"));
+  assert.ok(_test.FRUSTRATION_PATTERN.test("you are harassing me, so annoying"));
+  // Existing Hindi/Hinglish coverage must be unchanged.
+  assert.ok(_test.FRUSTRATION_PATTERN.test("mujhe ye nahi chahiye, band karo"));
+  assert.ok(_test.FRUSTRATION_PATTERN.test("मुझे बहुत परेशान कर दिया"));
+  assert.ok(!_test.FRUSTRATION_PATTERN.test("haan theek hai, sure batao"));
+});
+
+test("pickConversationalStarter recognizes English frustration and still handles Hindi", () => {
+  const state = session();
+  assert.match(_test.pickConversationalStarter(state, "stop calling me so many times", false), /समझ|ठीक|सुन/);
+  assert.match(_test.pickConversationalStarter(state, "stop calling me so many times", true), /understand|fair enough|hear you/i);
+});
+
+test("LLM reply gets an empathy prefix on an English frustration phrase via refineAssistantReply", () => {
+  const state = session("English", {}, { userTurns: 2 });
+  const reply = _test.refineAssistantReply(state, "this is such a waste of time, stop calling me", "Aapka loan process ho raha hai.", { source: "llm" });
+  assert.match(reply, /understand|fair enough|hear you/i);
+});
+
+test("pickFrustrationEmpathyText rotates by frustrationCount and matches session language", () => {
+  const hindiState = session("Hinglish", {}, { frustrationCount: 1 });
+  const englishState = session("English", {}, { frustrationCount: 1 });
+  const hindiText = _test.pickFrustrationEmpathyText(hindiState);
+  const englishText = _test.pickFrustrationEmpathyText(englishState);
+  assert.ok(hindiText.length > 0);
+  assert.ok(englishText.length > 0);
+  assert.notEqual(hindiText, englishText);
+
+  const second = _test.pickFrustrationEmpathyText(session("English", {}, { frustrationCount: 2 }));
+  assert.notEqual(second, englishText, "consecutive frustrated turns should not repeat the same empathy phrase");
+});
+
+test("pickAckLongtailText returns a phrase distinct from the primary FAST_ACK pool", () => {
+  const state = session("English", {}, { userTurns: 1 });
+  const longtail = _test.pickAckLongtailText(state);
+  assert.ok(longtail.length > 0);
+  assert.notEqual(longtail, "Haan ji, ek second.");
+});

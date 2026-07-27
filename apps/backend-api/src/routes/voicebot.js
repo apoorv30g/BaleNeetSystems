@@ -39,6 +39,14 @@ const {
 const FAST_INTRO_TEXT = process.env.VOICEBOT_FAST_INTRO_TEXT || `Namaste, main ${config.assistantName} ${config.brandName} se bol rahi hoon. Kya aap mujhe sun paa rahe hain?`;
 const FAST_ACK_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_TEXTS || process.env.VOICEBOT_FAST_ACK_TEXT || "Haan ji, ek second.|Samjha, dekhte hain.|Theek hai, sure.|Hmm, bilkul.|Achha, okay.|Got it.|Haan, sure.");
 const FAST_ACK_TEXT = FAST_ACK_TEXTS[0] || "Haan ji.";
+// Spoken only if the reply is still not ready after the primary ack finishes playing -- must
+// read as continued patience, not a repeat of FAST_ACK_TEXTS, or slow turns start to sound broken.
+const FAST_ACK_LONGTAIL_TEXTS = parseVoicebotTexts(process.env.VOICEBOT_FAST_ACK_LONGTAIL_TEXTS || "Bas do second, aa raha hai.|Almost there.|Thoda ruko, batati hoon.|Ek minute, dhoond rahi hoon.");
+// Shared frustration detector -- used both to prefix LLM-fallback replies (pickConversationalStarter)
+// and to acknowledge frustration on scripted-flow replies, and to log frustrationCount per call.
+const FRUSTRATION_PATTERN = /nahin chahiye|nahi chahiye|band karo|mat karo|bakwaas|tang|परेशान|बंद करो|stop calling|so many times|again and again|waste of time|harass|annoying|irritat|frustrat/i;
+const FRUSTRATION_EMPATHY_TEXTS_EN = parseVoicebotTexts(process.env.VOICEBOT_FRUSTRATION_EMPATHY_TEXTS_EN || "I understand, I'm sorry about that.|I hear you, apologies for the trouble.|I get it, let me help.");
+const FRUSTRATION_EMPATHY_TEXTS_HI = parseVoicebotTexts(process.env.VOICEBOT_FRUSTRATION_EMPATHY_TEXTS_HI || "समझ सकती हूँ, माफ़ कीजिए।|जी, माफ़ी चाहूँगी, मदद करती हूँ।|थोड़ा सा समय दीजिए, देखती हूँ।");
 const FAST_CLARIFY_TEXT = process.env.VOICEBOT_FAST_CLARIFY_TEXT || "Sorry, awaaz clear nahi aayi. Ek baar phir bolenge?";
 const NO_SPEECH_PROMPT_TEXT_HI = process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXT || "Hello, क्या मेरी आवाज़ आपको आ रही है?";
 const NO_SPEECH_PROMPT_TEXT_EN = process.env.VOICEBOT_NO_SPEECH_PROMPT_TEXT_EN || "Hello, am I audible?";
@@ -1146,6 +1154,12 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  const frustrated = FRUSTRATION_PATTERN.test(normalizeVoiceIntent(text));
+  if (frustrated) {
+    session.frustrationCount = (session.frustrationCount || 0) + 1;
+    await logVoicebotEvent(session, "user_frustration_detected", { text, frustrationCount: session.frustrationCount });
+  }
+
   const promptTranscript = session.callId ? await getTranscript(session.callId) : [];
   const scriptedReply = buildScriptedReply(session, text);
   const whyQuestion = !scriptedReply && isWhyQuestion(text);
@@ -1231,6 +1245,14 @@ async function processUserTranscript(ws, session, event) {
       `UPDATE calls SET outcome=$1, summary=$2, updated_at=NOW() WHERE id=$3`,
       [classification.outcome, classification.summary, session.callId]
     );
+  }
+
+  // LLM-fallback replies already get an empathy prefix via addConversationalStarter/refineAssistantReply.
+  // Scripted-flow replies are TTS-prewarmed by exact text, so the empathy line is spoken as its own
+  // separate utterance instead of being concatenated -- that keeps the scripted text's cache hit intact.
+  if (frustrated && scriptedReply) {
+    const empathyText = pickFrustrationEmpathyText(session);
+    if (empathyText) await speakText(ws, session, empathyText, "frustration_empathy_played");
   }
 
   await speakText(ws, session, reply, "reply_played");
@@ -1543,6 +1565,15 @@ async function maybeSpeakDelayedAck(ws, session, replyPromise, ackText, turnSeq)
   if (settled || !isCurrentTurn(session, turnSeq) || session.speaking) return false;
 
   await speakText(ws, session, ackText, "ack_played");
+
+  // Primary ack already took real seconds to play out (TTS + playback). If the reply still
+  // isn't ready, a slow/retried LLM call is in progress -- one more distinct filler beats dead
+  // air, but only once, so unusually slow turns don't turn into a filler loop.
+  if (!settled && isCurrentTurn(session, turnSeq) && !session.speaking) {
+    const longtailText = pickAckLongtailText(session);
+    if (longtailText) await speakText(ws, session, longtailText, "ack_longtail_played");
+  }
+
   return true;
 }
 
@@ -3536,7 +3567,7 @@ function addConversationalStarter(session = {}, userText = "", reply = "") {
 
 function pickConversationalStarter(session = {}, normalized = "", english = false) {
   const isConfused = /samajh nahi|kya bol|what did|repeat|sorry|confus|समझ नहीं|क्या बोल/.test(normalized);
-  const isFrustrated = /nahin chahiye|nahi chahiye|band karo|mat karo|bakwaas|tang|परेशान|बंद करो/.test(normalized);
+  const isFrustrated = FRUSTRATION_PATTERN.test(normalized);
   const isAgreeing = /^(haan|haa|yes|ok|okay|theek|bilkul|sure|ठीक|हाँ|बिल्कुल)$/.test(normalized);
   const isAsking = /\?/.test(normalized) || /kya|kyun|kaise|kitna|कब|क्या|कैसे|कितना/.test(normalized);
 
@@ -4309,6 +4340,19 @@ function pickAckText(session) {
   if (!FAST_ACK_TEXTS.length) return "";
   const index = Math.max((session.userTurns || 1) - 1, 0) % FAST_ACK_TEXTS.length;
   return FAST_ACK_TEXTS[index];
+}
+
+function pickAckLongtailText(session) {
+  if (!FAST_ACK_LONGTAIL_TEXTS.length) return "";
+  const index = Math.max((session.userTurns || 1) - 1, 0) % FAST_ACK_LONGTAIL_TEXTS.length;
+  return FAST_ACK_LONGTAIL_TEXTS[index];
+}
+
+function pickFrustrationEmpathyText(session) {
+  const pool = isEnglishSession(session) ? FRUSTRATION_EMPATHY_TEXTS_EN : FRUSTRATION_EMPATHY_TEXTS_HI;
+  if (!pool.length) return "";
+  const index = Math.max((session.frustrationCount || 1) - 1, 0) % pool.length;
+  return pool[index];
 }
 
 const BARGE_IN_ACK_TEXTS = parseVoicebotTexts(
@@ -5485,6 +5529,10 @@ module.exports = {
     availabilityDeclineOutcome,
     namedCalleeDenialReply,
     shouldCancelAssistantSpeech,
-    updateConversationMemory
+    updateConversationMemory,
+    FRUSTRATION_PATTERN,
+    pickConversationalStarter,
+    pickFrustrationEmpathyText,
+    pickAckLongtailText
   }
 };
