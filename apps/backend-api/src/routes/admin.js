@@ -48,8 +48,6 @@ router.get("/overview", async (req, res) => {
       database: "ok",
       redis,
       exotel: Boolean(config.exotel.accountSid && config.exotel.apiKey && config.exotel.apiToken && config.exotel.fromNumber),
-      gemini: Boolean(config.ai.geminiApiKey),
-      deepgram: Boolean(config.ai.deepgramApiKey),
       sarvam: Boolean(config.ai.sarvamApiKey),
       stt: liveSttProviderStatus(),
       llm: llmProviderStatus(),
@@ -272,7 +270,9 @@ router.post("/test-data-cleanup", async (req, res) => {
   res.json(result);
 });
 
-router.get("/gemini-test", async (req, res) => {
+// Renamed from /gemini-test when Gemini was removed -- this was always a generic
+// "can we reach the LLM" probe, and Sarvam is now the only provider.
+router.get("/llm-test", async (req, res) => {
   const startedAt = Date.now();
   const providerStatus = llmProviderStatus();
   try {
@@ -291,8 +291,7 @@ router.get("/gemini-test", async (req, res) => {
     res.json({
       ok: true,
       provider: providerStatus.primary,
-      fallbackProvider: providerStatus.fallback,
-      model: providerStatus.primary === "sarvam" ? providerStatus.sarvamModel : providerStatus.geminiModel,
+      model: providerStatus.sarvamModel,
       elapsedMs: Date.now() - startedAt,
       reply
     });
@@ -300,8 +299,7 @@ router.get("/gemini-test", async (req, res) => {
     res.status(502).json({
       ok: false,
       provider: providerStatus.primary,
-      fallbackProvider: providerStatus.fallback,
-      model: providerStatus.primary === "sarvam" ? providerStatus.sarvamModel : providerStatus.geminiModel,
+      model: providerStatus.sarvamModel,
       elapsedMs: Date.now() - startedAt,
       error: err.message
     });
@@ -377,8 +375,6 @@ async function platformOverview() {
       database: "ok",
       redis,
       exotel: Boolean(config.exotel.accountSid && config.exotel.apiKey && config.exotel.apiToken && config.exotel.fromNumber),
-      gemini: Boolean(config.ai.geminiApiKey),
-      deepgram: Boolean(config.ai.deepgramApiKey),
       sarvam: Boolean(config.ai.sarvamApiKey),
       stt: liveSttProviderStatus(),
       llm: llmProviderStatus(),
@@ -435,6 +431,8 @@ async function platformCostOverview(days) {
         SELECT
           CASE
             WHEN LOWER(e.provider) LIKE '%sarvam%' THEN 'sarvam'
+            -- Deepgram is no longer used, but historical call_stt_events rows still carry
+            -- 'deepgram'/'deepgram-live'; keep normalizing them so past reports group cleanly.
             WHEN LOWER(e.provider) LIKE '%deepgram%' THEN 'deepgram'
             ELSE LOWER(e.provider)
           END AS provider,
@@ -514,10 +512,8 @@ async function platformCostOverview(days) {
   const rates = costRates();
   const callStats = calls.rows[0] || {};
   const sarvamStt = stt.rows.find(row => row.provider === "sarvam") || {};
-  const deepgramStt = stt.rows.find(row => row.provider === "deepgram") || {};
   const ttsStats = tts.rows[0] || {};
   const sarvamLlm = llm.rows[0] || {};
-  const geminiLlm = {};
   const periodMonths = costPeriodMonths(days, callStats);
   const exotelUsageCost = roundMoney(
     number(callStats.billable_minutes) * rates.exotelOutboundCostPerMinuteInr
@@ -593,24 +589,6 @@ async function platformCostOverview(days) {
       quantity: number(sarvamLlm.total_tokens) / 1000,
       rawUsage: `${formatNumber(sarvamLlm.input_tokens)} input + ${formatNumber(sarvamLlm.output_tokens)} output tokens, ${sarvamLlm.replies || 0} LLM replies`,
       rate: rates.sarvamLlmCostPer1kTokensInr
-    }),
-    component({
-      key: "deepgram_stt",
-      vendor: "Deepgram",
-      label: "Fallback STT",
-      unit: "billable minute",
-      quantity: number(deepgramStt.billable_minutes),
-      rawUsage: `${formatNumber(deepgramStt.duration_seconds)} seconds, ${deepgramStt.events || 0} transcript events`,
-      rate: rates.deepgramCostPerMinuteInr
-    }),
-    component({
-      key: "gemini_llm",
-      vendor: "Gemini",
-      label: "Fallback LLM",
-      unit: "1K estimated output tokens",
-      quantity: estimatedTokens(geminiLlm.text_bytes) / 1000,
-      rawUsage: `${formatNumber(estimatedTokens(geminiLlm.text_bytes))} estimated output tokens, ${geminiLlm.replies || 0} LLM replies`,
-      rate: rates.geminiCostPer1kTokensInr
     }),
     component({
       key: "infra_runtime",
@@ -691,8 +669,6 @@ function costRates() {
     sarvamSttCostPerHourInr: moneyEnv("SARVAM_STT_COST_PER_HOUR_INR", 30),
     sarvamTtsCostPer1kCharsInr: moneyEnv("SARVAM_TTS_COST_PER_1K_CHARS_INR", 1.5),
     sarvamLlmCostPer1kTokensInr: moneyEnv("SARVAM_LLM_COST_PER_1K_TOKENS_INR", 0.01),
-    deepgramCostPerMinuteInr: moneyEnv("DEEPGRAM_COST_PER_MINUTE_INR"),
-    geminiCostPer1kTokensInr: moneyEnv("GEMINI_COST_PER_1K_TOKENS_INR"),
     infraCostPerMinuteInr: moneyEnv("INFRA_COST_PER_MINUTE_INR", 0.03),
     gstRate: numberEnv("GST_RATE", 0.18)
   };

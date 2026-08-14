@@ -5,7 +5,6 @@ const { liveSttProviderStatus } = require("../providers/sttLive");
 const { getSarvamHealth } = require("../providers/sarvamHealth");
 const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
-const { transcribeAudioUrl } = require("../providers/deepgram");
 const { classifyConversation, isOptOut } = require("../services/outcomes");
 const { getTenantSettings } = require("../services/settings");
 const { attachVoiceConfig } = require("../services/playbooks");
@@ -164,8 +163,6 @@ router.get("/exotel/voicebot-health", async (req, res) => {
     introDelayMs: Number(process.env.VOICEBOT_INTRO_DELAY_MS || 0),
     stt: liveSttProviderStatus(),
     llm: llmProviderStatus(),
-    deepgramConfigured: Boolean(config.ai.deepgramApiKey),
-    geminiConfigured: Boolean(config.ai.geminiApiKey),
     sarvamConfigured: Boolean(config.ai.sarvamApiKey),
     sarvamLive,
     tokenRequired: Boolean(config.voicebotToken)
@@ -348,45 +345,29 @@ async function resolveUserMessage(req, { lead, call }) {
   const directMessage = body.SpeechResult || body.speech || body.TranscriptionText || body.Digits || req.query.message || "";
   if (directMessage) return String(directMessage).trim();
 
+  // Recording-URL transcription previously went to Deepgram, which was removed for India
+  // data-residency compliance (borrower call audio must not leave Indian jurisdiction).
+  // There is no batch transcription provider wired up now, so this legacy ExoML/<Gather>
+  // path can only use the speech text Exotel supplies directly. The live WebSocket voicebot
+  // is unaffected -- it streams to Sarvam and does not use this function.
   const audioUrl = body.RecordingUrl || body.RecordingURL || body.AudioUrl || body.AudioURL || req.query.audioUrl || "";
   if (!audioUrl) return "";
 
-  try {
-    const result = await transcribeAudioUrl(audioUrl, { language: deepgramLanguage(lead.language) });
-    await logSttEvent({
-      tenantId: lead.tenant_id,
-      callId: call?.id,
-      audioUrl,
-      transcript: result.transcript,
-      confidence: result.confidence,
-      status: result.mode
-    });
-    return result.transcript || "";
-  } catch (err) {
-    await logSttEvent({
-      tenantId: lead.tenant_id,
-      callId: call?.id,
-      audioUrl,
-      status: "failed",
-      error: err.message
-    });
-    return "";
-  }
+  await logSttEvent({
+    tenantId: lead.tenant_id,
+    callId: call?.id,
+    audioUrl,
+    status: "skipped_no_resident_provider"
+  });
+  return "";
 }
 
 async function logSttEvent({ tenantId, callId, audioUrl, transcript = "", confidence = null, status, error = "" }) {
   await query(
     `INSERT INTO call_stt_events (tenant_id, call_id, provider, audio_url, transcript, confidence, status, error)
-     VALUES ($1,$2,'deepgram',$3,$4,$5,$6,$7)`,
+     VALUES ($1,$2,'none',$3,$4,$5,$6,$7)`,
     [tenantId, callId || null, audioUrl || null, transcript, confidence, status, error || null]
   );
-}
-
-function deepgramLanguage(language) {
-  const value = String(language || "").toLowerCase();
-  if (value.includes("hindi")) return "hi";
-  if (value.includes("english")) return "en";
-  return process.env.DEEPGRAM_LANGUAGE || "multi";
 }
 
 function parseCustomCallId(value) {

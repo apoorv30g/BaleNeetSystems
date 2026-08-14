@@ -1,9 +1,13 @@
 const config = require("../config");
-const { createDeepgramLive } = require("./deepgramLive");
 const { createSarvamLive } = require("./sarvamLive");
 
+// Sarvam is the ONLY supported live-STT provider. Deepgram was removed for India
+// data-residency compliance -- borrower call audio must not leave Indian jurisdiction.
+// The cross-provider fallback machinery below is retained but inert (no second provider
+// is configurable); primary reconnect-on-close is still active and is now the sole
+// resilience mechanism. Do not reintroduce a non-Indian provider without compliance review.
 const DEFAULT_PRIMARY = "sarvam";
-const DEFAULT_FALLBACK = "deepgram";
+const DEFAULT_FALLBACK = "";
 
 function createLiveStt({ leadLanguage, onTranscript, onOpen, onClose, onStatus, onError }) {
   const primaryProvider = normalizeProvider(process.env.STT_PROVIDER || DEFAULT_PRIMARY);
@@ -170,17 +174,6 @@ function createLiveStt({ leadLanguage, onTranscript, onOpen, onClose, onStatus, 
 }
 
 function createProvider(provider, options) {
-  if (provider === "deepgram") {
-    return createDeepgramLive({
-      language: sttLanguageForProvider("deepgram", options.leadLanguage),
-      onTranscript: options.onTranscript,
-      onOpen: options.onOpen,
-      onClose: options.onClose,
-      onStatus: options.onStatus,
-      onError: options.onError
-    });
-  }
-
   return createSarvamLive({
     languageCode: sttLanguageForProvider("sarvam", options.leadLanguage),
     onTranscript: options.onTranscript,
@@ -193,13 +186,6 @@ function createProvider(provider, options) {
 
 function sttLanguageForProvider(provider, language) {
   const value = String(language || "").toLowerCase();
-  if (provider === "deepgram") {
-    if (value.includes("english")) return "en";
-    if (value.includes("hinglish")) return process.env.DEEPGRAM_LANGUAGE || "multi";
-    if (value.includes("hindi")) return "hi";
-    return process.env.DEEPGRAM_LANGUAGE || "multi";
-  }
-
   const explicit = process.env.SARVAM_STT_LANGUAGE_CODE;
   if (explicit) return explicit;
   if (value.includes("english")) return "en-IN";
@@ -217,14 +203,12 @@ function sttLanguageForProvider(provider, language) {
 function normalizeProvider(value) {
   const provider = String(value || "").trim().toLowerCase();
   if (["sarvam", "sarvam-live", "saaras"].includes(provider)) return "sarvam";
-  if (["deepgram", "deepgram-live"].includes(provider)) return "deepgram";
   if (["none", "off", "false"].includes(provider)) return "";
   return provider;
 }
 
 function isConfigured(provider) {
   if (provider === "sarvam") return Boolean(config.ai.sarvamApiKey);
-  if (provider === "deepgram") return Boolean(config.ai.deepgramApiKey);
   return false;
 }
 

@@ -52,7 +52,7 @@ The project is a **monorepo** (`npm workspaces`) with **three applications** und
                                      │
               ┌──────────────────────┼──────────────────────┐
               ▼                      ▼                       ▼
-        Deepgram/Sarvam        Sarvam / Gemini          Sarvam TTS
+          Sarvam STT             Sarvam LLM             Sarvam TTS
         (speech → text)        (decide the reply)       (text → voice)
 ```
 
@@ -71,9 +71,16 @@ The project is a **monorepo** (`npm workspaces`) with **three applications** und
 | **PostgreSQL** | The single source of truth for all data (tenants, leads, calls, transcripts, playbooks…). |
 | **Redis + BullMQ** | A job queue. When a campaign is launched, one job per lead is enqueued; the worker consumes them. |
 | **Exotel** | Indian cloud telephony. Places the actual phone call and streams the live call audio to our backend. |
-| **Deepgram / Sarvam** | Speech-to-Text (STT) — turns the customer's spoken words into text, in real time. |
-| **Sarvam / Gemini** | The LLM ("brain") that generates a reply when the scripted flow can't answer. **Sarvam is the primary provider.** |
+| **Sarvam STT** | Speech-to-Text — turns the customer's spoken words into text, in real time. |
+| **Sarvam LLM** | The "brain" that generates a reply when the scripted flow can't answer. |
 | **Sarvam TTS** | Text-to-Speech — turns the bot's reply text into a natural spoken voice. |
+
+> **Sarvam is the only permitted AI provider.** Gemini (LLM) and Deepgram (STT) were removed
+> for **India data-residency compliance** — borrower call audio and transcripts must not leave
+> Indian jurisdiction. Sarvam is an Indian company. Do not reintroduce a non-Indian AI provider
+> without a compliance review; the removal is enforced in `config.js`, `providers/llm.js` and
+> `providers/sttLive.js`. Note this also means **there is no cross-provider failover** — if
+> Sarvam is down, LLM-fallback replies fail and the call falls back to scripted-flow text only.
 
 ---
 
@@ -122,8 +129,8 @@ connection. This file (~5000 lines) is the real-time conversation engine.
 
 **Step 5 — The conversation loop.** For each turn:
 1. Customer speaks → audio chunks arrive over the WebSocket.
-2. **VAD** (Voice Activity Detection, `services/vad.js`) + **live STT** (`providers/sttLive.js`,
-   Deepgram/Sarvam) convert speech to text, waiting for the customer to finish (turn-taking).
+2. **VAD** (Voice Activity Detection, `services/vad.js`) + **live STT** (`providers/sttLive.js`
+   → Sarvam) convert speech to text, waiting for the customer to finish (turn-taking).
 3. `buildScriptedReply()` decides the reply:
    - First it tries the **scripted flow engine** (`runScriptedFlow`, see §6) — fast, exact,
      compliant.
@@ -400,11 +407,11 @@ Each job also has a manual **admin trigger** endpoint for testing (e.g.
 - `compliance.js`, `testDataCleanup.js`, `trainingData.js` — supporting logic.
 
 **`providers/`** (adapters to external AI/telephony services — swappable)
-- `llm.js` — LLM router with a circuit breaker; picks the provider. **Sarvam is primary.**
+- `llm.js` — LLM entry point with a circuit breaker. **Sarvam only** (see the data-residency
+  note in §2); the breaker now limits hammering a failing Sarvam rather than diverting traffic.
 - `sarvamChat.js` / `sarvam.js` / `sarvamLive.js` / `sarvamHealth.js` — Sarvam chat (LLM), TTS,
   live STT, health checks.
-- `deepgram.js` / `deepgramLive.js` / `sttLive.js` — Deepgram STT + the live-STT abstraction.
-- `gemini.js` — Google Gemini LLM adapter (available but not primary).
+- `sttLive.js` — live-STT abstraction (Sarvam only; retains primary reconnect-on-close).
 - `audio.js` — PCM/codec conversion for Exotel's audio format.
 - `notifications.js` — SMS/WhatsApp link sending.
 
@@ -446,7 +453,7 @@ Set in Railway (or `.env` locally). The important ones:
 | `VOICEBOT_TOKEN` | Protects the voicebot WebSocket endpoint. |
 | `BRAND_NAME`, `ASSISTANT_NAME`, `LOAN_APP_URL` | Deployment-default brand (overridden per-playbook by `voice_config`). |
 | `EXOTEL_*` | Telephony credentials + caller number + channel count. |
-| `SARVAM_API_KEY`, `DEEPGRAM_API_KEY`, `GEMINI_API_KEY` | AI provider keys. Sarvam is primary. |
+| `SARVAM_API_KEY` | The only AI provider key. `SARVAM_CHAT_MODEL` / `SARVAM_STT_MODEL` / `SARVAM_TTS_MODEL` pin the model versions. |
 | `CALL_WINDOW_START/END`, `MAX_CALL_ATTEMPTS`, `MAX_CONCURRENT_CALLS` | Calling policy defaults. |
 
 ---
@@ -532,7 +539,7 @@ finished speaking, handling interruptions, and never talking over them. This all
 2. Each incoming frame is fed to two things in parallel:
    - **VAD** (`services/vad.js`) — Voice Activity Detection. Cheap, fast: "is there speech energy
      in this frame?" Used to detect *when the customer starts and stops talking*.
-   - **Live STT** (`providers/sttLive.js` → Deepgram or Sarvam over their own WebSocket) — converts
+   - **Live STT** (`providers/sttLive.js` → Sarvam over its own WebSocket) — converts
      the audio to text incrementally, emitting **interim** transcripts (guesses that keep changing)
      and **final** transcripts (committed text for an utterance).
 
@@ -665,11 +672,15 @@ approval, never ask for OTP/PIN/password, keep it to 1–2 short spoken sentence
 complete sentence*, etc. This is **defense layer 3** for compliance (see §8).
 
 ### Provider routing (`providers/llm.js`)
-A thin router with a **circuit breaker**: it calls the configured provider (**Sarvam** primary via
-`sarvamChat.js`; Gemini available via `gemini.js`). If a provider fails N times in a row
-(`LLM_CIRCUIT_THRESHOLD`), the breaker "opens" and skips it for `LLM_CIRCUIT_RESET_MS` so a
-failing provider doesn't add latency to every call. On total failure, `safeGenerateReply` returns a
+A thin entry point with a **circuit breaker**, calling **Sarvam** via `sarvamChat.js` — the only
+permitted provider (see the data-residency note in §2). If it fails N times in a row
+(`LLM_CIRCUIT_THRESHOLD`), the breaker "opens" and fast-fails for `LLM_CIRCUIT_RESET_MS` so a
+failing provider doesn't add latency to every call. On failure, `safeGenerateReply` returns a
 safe canned fallback rather than crashing the call.
+
+**There is no cross-provider failover.** With Gemini removed, a Sarvam outage means LLM-fallback
+turns degrade to the canned reply; scripted-flow turns (the majority) are unaffected because they
+never call the LLM.
 
 ### The grounding filter (`groundGeneratedAssistantReply` → `assistantGroundingIssues`)
 Runs on **every** LLM reply. It flags and, if any flag fires, **discards** the reply (replacing it
@@ -863,9 +874,11 @@ they run in ~1s and are safe to run constantly while developing.
 1. In the playbook's `voice_config`, give a gate `questionVariants: [{hi,en}, {hi,en}]`. The system
    optimizes automatically; view results at `GET /playbooks/:key/variant-stats`.
 
-**Swap/adjust an AI provider (config):**
-1. Set the relevant `SARVAM_*` / `DEEPGRAM_*` / `GEMINI_*` env vars. `providers/llm.js` routing and the
-   circuit breaker handle failover.
+**Adjust the AI models (config):**
+1. Set `SARVAM_CHAT_MODEL` / `SARVAM_STT_MODEL` / `SARVAM_TTS_MODEL`. `config.js` validates the chat
+   model and auto-upgrades deprecated values.
+2. **Adding a different AI vendor requires a compliance review first** — see the data-residency note
+   in §2. The single-provider constraint is deliberate, not an oversight.
 
 ---
 

@@ -17,7 +17,7 @@ Exotel Outbound Call
       ↓
 AI Playbook Engine
       ↓
-SarvamAI / Gemini
+Sarvam AI (STT / LLM / TTS)
 ```
 
 This version is designed for:
@@ -110,11 +110,11 @@ EXOTEL_CHANNEL_MONTHLY_COST_INR=1500
 EXOTEL_CHANNEL_COUNT=1
 EXOTEL_MIN_MONTHLY_BILLING_INR=20000
 
-GEMINI_API_KEY=
+# Sarvam is the only permitted AI provider (India data-residency compliance).
 SARVAM_API_KEY=
-DEEPGRAM_API_KEY=
-DEEPGRAM_MODEL=nova-2
-DEEPGRAM_LANGUAGE=multi
+SARVAM_CHAT_MODEL=sarvam-30b
+SARVAM_STT_MODEL=saaras:v3
+SARVAM_TTS_MODEL=bulbul:v3
 
 CALL_WINDOW_START=9
 CALL_WINDOW_END=20
@@ -291,7 +291,7 @@ If your Exotel flow can pass dynamic parameters, prefer:
 wss://your-backend-domain.com/webhooks/exotel/voicebot?token=your_shared_token&leadId=<leadId>&campaignId=<campaignId>
 ```
 
-Enable recording in the applet. The WSS endpoint streams Exotel PCM audio into Deepgram live STT, sends final transcripts to Gemini, converts Sarvam output to 16-bit Linear PCM 8kHz mono via ffmpeg, and sends media back to Exotel.
+Enable recording in the applet. The WSS endpoint streams Exotel PCM audio into Sarvam live STT, sends final transcripts to the Sarvam LLM, converts Sarvam TTS output to 16-bit Linear PCM 8kHz mono via ffmpeg, and sends media back to Exotel.
 
 WSS health metadata:
 
@@ -319,7 +319,7 @@ Before live volume, place one test call through Exotel and confirm:
 - Exotel accepts the `<Gather input="speech dtmf">` response format
 - Voicebot applet connects successfully to `/webhooks/exotel/voicebot`
 - `SpeechResult` or equivalent speech payload reaches `/webhooks/exotel/respond`
-- If Exotel sends `RecordingUrl`, `RecordingURL`, `AudioUrl`, or `AudioURL` instead of speech text, Deepgram transcribes that audio and writes a `call_stt_events` row
+- If Exotel sends `RecordingUrl`, `RecordingURL`, `AudioUrl`, or `AudioURL` instead of speech text, the turn is skipped and a `call_stt_events` row is written with status `skipped_no_resident_provider` — batch transcription of recording URLs was removed with Deepgram (India data-residency compliance) and has no replacement provider wired up. The live WebSocket voicebot is unaffected.
 - Sarvam audio, if enabled, plays from `/webhooks/audio/:token`
 
 The worker triggers outbound calls through Exotel. Some Exotel accounts require slightly different call-flow parameters; adjust `apps/worker/src/exotel.js` after confirming with Exotel support.
@@ -360,8 +360,7 @@ FRESH_LEAD
 Use:
 
 ```txt
-SarvamAI for voice
-Gemini Flash for reasoning
+SarvamAI for voice and reasoning
 Playbook-controlled calls
 Short replies
 Max call duration policy

@@ -12,8 +12,7 @@ Supports:
 - CSV lead upload
 - Queue-based outbound calls
 - Exotel telephony
-- SarvamAI TTS-focused low-cost setup
-- Gemini Flash reasoning
+- Sarvam AI for STT, TTS and LLM (sole AI provider — India data-residency compliance)
 - PostgreSQL
 - Redis + BullMQ
 - Professional dark Next.js dashboard

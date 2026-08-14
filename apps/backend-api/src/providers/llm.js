@@ -1,12 +1,16 @@
 const config = require("../config");
-const { generateReply: generateGeminiReply } = require("./gemini");
 const { generateSarvamReply } = require("./sarvamChat");
 
+// Sarvam is the ONLY supported LLM provider. Gemini was removed for India data-residency
+// compliance -- borrower conversation data must not leave Indian jurisdiction, and Gemini
+// is a US-hosted service. Do not reintroduce a non-Indian provider here without a
+// compliance review.
 const DEFAULT_PRIMARY = "sarvam";
-const DEFAULT_FALLBACK = "gemini";
 
-// Simple circuit breaker — fast-fails a provider after THRESHOLD consecutive errors,
-// then re-allows after RESET_MS to let it recover.
+// Circuit breaker — fast-fails after THRESHOLD consecutive errors, then re-allows after
+// RESET_MS. With a single provider this no longer diverts traffic elsewhere; it stops us
+// hammering a failing Sarvam and lets scripted-flow replies degrade quickly instead of
+// each turn waiting on a doomed request.
 const CIRCUIT_THRESHOLD = Number(process.env.LLM_CIRCUIT_THRESHOLD || 5);
 const CIRCUIT_RESET_MS = Number(process.env.LLM_CIRCUIT_RESET_MS || 30000);
 const circuitState = {}; // { [provider]: { failures: number, openAt: number|null } }
@@ -39,33 +43,26 @@ function recordFailure(provider) {
 }
 
 async function generateReply(args) {
-  const primary = normalizeProvider(process.env.LLM_PROVIDER || DEFAULT_PRIMARY);
-  const fallback = normalizeProvider(process.env.LLM_FALLBACK_PROVIDER || DEFAULT_FALLBACK);
-  const providers = uniqueProviders([primary, fallback]);
-  const errors = [];
+  const provider = normalizeProvider(process.env.LLM_PROVIDER || DEFAULT_PRIMARY);
+  if (!provider) throw new Error("LLM is disabled (LLM_PROVIDER is set to none)");
 
-  for (const provider of providers) {
-    if (isCircuitOpen(provider)) {
-      errors.push(`${provider}: circuit open (too many recent failures)`);
-      continue;
-    }
-    try {
-      const result = await generateWithProvider(provider, args);
-      recordSuccess(provider);
-      return result;
-    } catch (err) {
-      recordFailure(provider);
-      errors.push(`${provider}: ${err.message}`);
-    }
+  if (isCircuitOpen(provider)) {
+    throw new Error(`${provider}: circuit open (too many recent failures)`);
   }
 
-  throw new Error(`LLM failed for all configured providers: ${errors.join(" | ")}`);
+  try {
+    const result = await generateWithProvider(provider, args);
+    recordSuccess(provider);
+    return result;
+  } catch (err) {
+    recordFailure(provider);
+    throw new Error(`LLM failed (${provider}): ${err.message}`);
+  }
 }
 
 async function generateWithProvider(provider, args) {
   if (provider === "sarvam") return generateSarvamReply(args);
-  if (provider === "gemini") return generateGeminiReply(args);
-  throw new Error(`Unsupported LLM provider: ${provider}`);
+  throw new Error(`Unsupported LLM provider: ${provider}. Only "sarvam" is permitted (data-residency policy).`);
 }
 
 function normalizeProvider(value) {
@@ -74,25 +71,18 @@ function normalizeProvider(value) {
   // deprecated sarvam-m chat MODEL. The actual model name is resolved separately via
   // config.ai.sarvamChatModel, which already guards against the deprecated model id.
   if (["sarvam", "sarvam-chat", "sarvam-m"].includes(provider)) return "sarvam";
-  if (["gemini", "google", "google-gemini"].includes(provider)) return "gemini";
   if (["none", "off", "false"].includes(provider)) return "";
   return provider;
 }
 
-function uniqueProviders(providers) {
-  return [...new Set(providers.map(normalizeProvider).filter(Boolean))];
-}
-
 function llmProviderStatus() {
   const primary = normalizeProvider(process.env.LLM_PROVIDER || DEFAULT_PRIMARY);
-  const fallback = normalizeProvider(process.env.LLM_FALLBACK_PROVIDER || DEFAULT_FALLBACK);
   return {
     primary,
-    fallback,
+    fallback: "",
     primaryConfigured: isConfigured(primary),
-    fallbackConfigured: isConfigured(fallback),
-    sarvamModel: process.env.SARVAM_CHAT_MODEL || "sarvam-30b",
-    geminiModel: config.ai.geminiModel,
+    fallbackConfigured: false,
+    sarvamModel: config.ai.sarvamChatModel,
     circuits: Object.fromEntries(
       Object.entries(circuitState).map(([p, c]) => [p, { open: isCircuitOpen(p), failures: c.failures }])
     )
@@ -101,7 +91,6 @@ function llmProviderStatus() {
 
 function isConfigured(provider) {
   if (provider === "sarvam") return Boolean(config.ai.sarvamApiKey);
-  if (provider === "gemini") return Boolean(config.ai.geminiApiKey);
   return false;
 }
 

@@ -63,7 +63,7 @@ function parseMaybeJson(text) {
 }
 
 function cleanReply(value) {
-  const maxWords = Number(process.env.SARVAM_REPLY_MAX_WORDS || process.env.GEMINI_REPLY_MAX_WORDS || 28);
+  const maxWords = Number(process.env.SARVAM_REPLY_MAX_WORDS || 28);
   const text = String(value || "")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/^[\s"'`*_>-]+/g, "")

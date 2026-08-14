@@ -101,13 +101,10 @@ module.exports = {
     apiBase: process.env.EXOTEL_API_BASE || "https://api.in.exotel.com",
     channelCount: Number(process.env.EXOTEL_CHANNEL_COUNT || process.env.MAX_CONCURRENT_CALLS || 1)
   },
+  // Sarvam is the ONLY permitted AI provider. Gemini (LLM) and Deepgram (STT) were removed
+  // for India data-residency compliance: borrower audio and transcripts must not leave
+  // Indian jurisdiction. Do not add a non-Indian provider here without a compliance review.
   ai: {
-    geminiApiKey: process.env.GEMINI_API_KEY,
-    geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite",
-    geminiFallbackModels: (process.env.GEMINI_FALLBACK_MODELS || "gemini-2.5-flash,gemini-flash-latest")
-      .split(",")
-      .map(model => model.trim())
-      .filter(Boolean),
     sarvamApiKey: process.env.SARVAM_API_KEY,
     // Centralized Sarvam model names. The /chat/completions, /text-to-speech and STT endpoints
     // themselves are current; only the legacy sarvam-m (24B) CHAT model is being retired
@@ -116,8 +113,7 @@ module.exports = {
     // of failing calls. TTS (bulbul) and STT (saaras) are unaffected.
     sarvamChatModel: resolveSarvamChatModel(),
     sarvamTtsModel: process.env.SARVAM_TTS_MODEL || "bulbul:v3",
-    sarvamSttModel: process.env.SARVAM_STT_MODEL || "saaras:v3",
-    deepgramApiKey: process.env.DEEPGRAM_API_KEY
+    sarvamSttModel: process.env.SARVAM_STT_MODEL || "saaras:v3"
   }
 };
 

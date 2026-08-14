@@ -95,8 +95,6 @@ export default function AdminPage() {
       ["Redis / Queue", status.redis === "ok"],
       ["Exotel", status.exotel],
       ["Sarvam", status.sarvam],
-      ["Gemini fallback", status.gemini],
-      ["Deepgram fallback", status.deepgram],
       ["API URL", status.serverUrl],
       ["App URL", status.frontendUrl]
     ];

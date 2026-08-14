@@ -238,8 +238,6 @@ function rateVariableFor(key) {
     sarvam_stt: "SARVAM_STT_COST_PER_HOUR_INR",
     sarvam_tts: "SARVAM_TTS_COST_PER_1K_CHARS_INR",
     sarvam_llm: "SARVAM_LLM_COST_PER_1K_TOKENS_INR",
-    deepgram_stt: "DEEPGRAM_COST_PER_MINUTE_INR",
-    gemini_llm: "GEMINI_COST_PER_1K_TOKENS_INR",
     infra_runtime: "INFRA_COST_PER_MINUTE_INR",
     gst: "GST_RATE"
   }[key] || "COST_RATE_VARIABLE";
