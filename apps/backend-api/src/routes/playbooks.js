@@ -1,10 +1,11 @@
 const express = require("express");
+const { asyncRouter } = require("../utils/asyncRouter");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { deletePlaybook, listPlaybooks, removeLearnedFaq, upsertPlaybook } = require("../services/playbooks");
 const { approveProposal, listProposals, rejectProposal, runFlowLearningBatch } = require("../services/flowLearning");
 const { variantStatsForPlaybook, runVariantStatsBatch } = require("../services/variantStats");
 
-const router = express.Router();
+const router = asyncRouter();
 router.use(requireAuth);
 
 router.get("/", async (req, res) => {

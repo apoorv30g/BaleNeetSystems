@@ -4,7 +4,8 @@ const { Worker } = require("bullmq");
 const config = require("./config");
 const { query } = require("./db");
 const { triggerOutboundCall } = require("./exotel");
-const { assertSarvamReadyForCall } = require("./health");
+const { assertSarvamReadyForCall, preflightFailureCount } = require("./health");
+const { sendAlert } = require("./alerts");
 
 async function tenantSettings(tenantId) {
   const result = await query(`SELECT * FROM tenant_settings WHERE tenant_id=$1`, [tenantId]);
@@ -12,8 +13,52 @@ async function tenantSettings(tenantId) {
   return {
     callWindowStart: Number(row?.call_window_start || config.callWindowStart),
     callWindowEnd: Number(row?.call_window_end || config.callWindowEnd),
-    maxCallAttempts: Number(row?.max_call_attempts || config.maxCallAttempts)
+    maxCallAttempts: Number(row?.max_call_attempts || config.maxCallAttempts),
+    // Cross-campaign caps (RBI fair-practice). Read with ?? so an explicit 0 ("no cap")
+    // is honoured rather than falling back to the default.
+    maxContactsPerDay: Number(row?.max_contacts_per_day ?? config.maxContactsPerDay),
+    maxContactsPerWeek: Number(row?.max_contacts_per_week ?? config.maxContactsPerWeek)
   };
+}
+
+// Counts calls that actually reached this PERSON in the recent past, across every campaign in
+// the tenant -- keyed on phone, not lead id.
+//
+// campaigns.max_attempts only limits one lead row in one campaign. A borrower enrolled in
+// three campaigns has three lead rows with three independent counters, so the per-campaign
+// checks all pass while the person is called three times in a day. That is the "persistent
+// bothering" pattern RBI fair-practice guidance calls out, so the cap has to be per person.
+//
+// Only connected calls count: a failed dial did not bother anyone, and counting it would
+// strand borrowers whose number is briefly unreachable.
+//
+// ⚠️ THIS IS THE ENFORCING COPY. An advisory duplicate lives at
+// apps/backend-api/src/services/contactFrequency.js, used to preview how many queued leads
+// will be skipped. It cannot be imported here (separate workspace, separate db client -- the
+// same reason config.js is duplicated). Keep the rule identical in both: the window, the
+// connected-status list, and the last-10-digits phone matching.
+async function contactFrequencyBlock(tenantId, phone, settings) {
+  const maxPerDay = settings.maxContactsPerDay;
+  const maxPerWeek = settings.maxContactsPerWeek;
+  if (!phone || (!(maxPerDay > 0) && !(maxPerWeek > 0))) return null;
+
+  const result = await query(
+    `SELECT
+       COUNT(*) FILTER (WHERE c.created_at >= NOW() - INTERVAL '24 hours')::int AS today,
+       COUNT(*) FILTER (WHERE c.created_at >= NOW() - INTERVAL '7 days')::int  AS week
+     FROM calls c
+     JOIN leads l ON l.id = c.lead_id
+     WHERE c.tenant_id = $1
+       AND RIGHT(l.phone, 10) = RIGHT($2, 10)
+       AND c.status IN ('completed','streaming')`,
+    [tenantId, String(phone)]
+  );
+  const today = Number(result.rows[0]?.today || 0);
+  const week = Number(result.rows[0]?.week || 0);
+
+  if (maxPerDay > 0 && today >= maxPerDay) return { reason: "daily_contact_cap", today, week, maxPerDay, maxPerWeek };
+  if (maxPerWeek > 0 && week >= maxPerWeek) return { reason: "weekly_contact_cap", today, week, maxPerDay, maxPerWeek };
+  return null;
 }
 
 function insideCallWindow(settings) {
@@ -38,6 +83,19 @@ const worker = new Worker("lead-calls", async (job) => {
   if (lead.attempt_count >= settings.maxCallAttempts) {
     await query(`UPDATE leads SET status='max_attempts' WHERE id=$1`, [leadId]);
     return;
+  }
+
+  // `force` is an operator-initiated single call (a "call now" button), not a campaign
+  // dispatch, so it bypasses the cap the same way it bypasses the calling window.
+  if (!force) {
+    const capped = await contactFrequencyBlock(tenantId, lead.phone, settings);
+    if (capped) {
+      // Marked rather than failed: this lead is legitimately callable later, so it must not
+      // burn a retry or land in the failed pile. A distinct status keeps it visible.
+      await query(`UPDATE leads SET status='frequency_capped' WHERE id=$1`, [leadId]);
+      console.log("contact frequency cap blocked call", { leadId, campaignId, ...capped });
+      return;
+    }
   }
 
   const providerHealth = await assertSarvamReadyForCall();
@@ -78,8 +136,31 @@ const worker = new Worker("lead-calls", async (job) => {
 
 let shuttingDown = false;
 let jobsCompleted = 0, jobsFailed = 0;
-worker.on("completed", job => { jobsCompleted++; console.log(`completed job ${job.id}`); });
-worker.on("failed", (job, err) => { jobsFailed++; console.error(`failed job ${job?.id}: ${err.message}`); });
+
+// A run of consecutive failures means the queue is draining without placing calls -- leads
+// burn their attempt counts and nobody finds out until someone opens the dashboard.
+const CONSECUTIVE_FAILURE_ALERT = Number(process.env.WORKER_FAILURE_ALERT_THRESHOLD || 5);
+let consecutiveFailures = 0;
+
+worker.on("completed", job => {
+  jobsCompleted++;
+  consecutiveFailures = 0;
+  console.log(`completed job ${job.id}`);
+});
+
+worker.on("failed", (job, err) => {
+  jobsFailed++;
+  consecutiveFailures++;
+  console.error(`failed job ${job?.id}: ${err.message}`);
+  if (consecutiveFailures >= CONSECUTIVE_FAILURE_ALERT) {
+    sendAlert(
+      "worker_consecutive_failures",
+      `${consecutiveFailures} call jobs have failed in a row — outbound calling is effectively stopped.`,
+      { consecutiveFailures, jobsCompleted, jobsFailed, lastError: String(err.message).slice(0, 300) },
+      "critical"
+    ).catch(() => {});
+  }
+});
 
 console.log(`Worker started with concurrency ${config.maxConcurrentCalls}`);
 
@@ -90,9 +171,19 @@ const healthServer = http.createServer(async (req, res) => {
   if (req.url !== "/health") { res.writeHead(404); res.end(); return; }
   let dbOk = true;
   try { await query("SELECT 1"); } catch { dbOk = false; }
+  const sarvamPreflightFailures = preflightFailureCount();
   const ok = !shuttingDown && dbOk;
   res.writeHead(ok ? 200 : 503, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ ok, shuttingDown, dbOk, jobsCompleted, jobsFailed, concurrency: config.maxConcurrentCalls }));
+  res.end(JSON.stringify({
+    ok,
+    shuttingDown,
+    dbOk,
+    jobsCompleted,
+    jobsFailed,
+    // Non-zero means calls are currently being blocked before dispatch.
+    sarvamPreflightFailures,
+    concurrency: config.maxConcurrentCalls
+  }));
 });
 healthServer.listen(HEALTH_PORT, () => console.log(`Worker health server on :${HEALTH_PORT}`));
 

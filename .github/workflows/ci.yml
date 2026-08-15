@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Backend tests
+    runs-on: ubuntu-latest
+
+    # A real Postgres so the integration tests (tenant isolation) actually execute.
+    # Without TEST_DATABASE_URL they skip, which would silently hide the checks that matter most.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: loanconnect_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      JWT_SECRET: ci_test_secret
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/loanconnect_ci
+      REDIS_URL: redis://localhost:6379
+      SERVER_URL: http://localhost:4000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run migrations
+        # migrate.js is a script that self-executes and closes the pool, so it must run as its
+        # own step rather than from inside a test.
+        run: npm run migrate
+
+      - name: Run backend test suite (unit + integration)
+        run: npm test
+        env:
+          # Presence of this var switches the integration tests from "skip" to "run".
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/loanconnect_ci
+
+      - name: Verify integration tests actually ran
+        # Guards against the isolation tests silently skipping forever because the env var
+        # got dropped — a skipped security test looks identical to a passing one in the summary.
+        run: |
+          if npm test 2>&1 | grep -q "TEST_DATABASE_URL not set"; then
+            echo "::error::Tenant isolation integration tests were SKIPPED in CI."
+            exit 1
+          fi
+          echo "Integration tests executed."
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/loanconnect_ci
+
+  build-dashboard:
+    name: Dashboard build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Next.js dashboard
+        run: npm run build --workspace dashboard-web
+        env:
+          # NEXT_PUBLIC_* is inlined at build time; any placeholder compiles fine here since
+          # CI only checks that the build succeeds.
+          NEXT_PUBLIC_API_BASE_URL: https://api.example.invalid
+          NEXT_TELEMETRY_DISABLED: '1'
+
+  docker-build:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    # Proves the production images build before a 2 GB VPS ever tries. Building Next.js on
+    # the target box will OOM, so images must be built here (or locally) and pulled there.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend-api/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/worker/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build dashboard-web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/dashboard-web/Dockerfile
+          push: false
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=https://api.example.invalid
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

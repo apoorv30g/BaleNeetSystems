@@ -20,7 +20,9 @@ async function getTenantSettings(tenantId) {
     aiDisclosure: `This is ${config.assistantName} calling from ${config.brandName} about your loan application.`,
     smsWebhookUrl: "",
     whatsappWebhookUrl: "",
-    shareLearnings: false
+    shareLearnings: false,
+    maxContactsPerDay: Number(process.env.MAX_CONTACTS_PER_DAY ?? 1),
+    maxContactsPerWeek: Number(process.env.MAX_CONTACTS_PER_WEEK ?? 3)
   };
 }
 
@@ -34,7 +36,10 @@ function normalize(row) {
     aiDisclosure: normalizeAiDisclosure(row.ai_disclosure),
     smsWebhookUrl: row.sms_webhook_url || "",
     whatsappWebhookUrl: row.whatsapp_webhook_url || "",
-    shareLearnings: Boolean(row.share_learnings)
+    shareLearnings: Boolean(row.share_learnings),
+    // ?? not || : an explicit 0 means "no cap" and must not fall back to the default.
+    maxContactsPerDay: Number(row.max_contacts_per_day ?? 1),
+    maxContactsPerWeek: Number(row.max_contacts_per_week ?? 3)
   };
 }
 

@@ -1,10 +1,12 @@
 const express = require("express");
+const { asyncRouter } = require("../utils/asyncRouter");
 const { query } = require("../db/pool");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { getTenantSettings } = require("../services/settings");
 const { auditSummary, flaggedCalls, runComplianceAuditBatch } = require("../services/complianceAudit");
+const { promisesForTenant } = require("../services/collections");
 
-const router = express.Router();
+const router = asyncRouter();
 router.use(requireAuth);
 
 router.get("/settings", async (req, res) => {
@@ -29,17 +31,27 @@ router.put("/settings", requireRole("admin"), async (req, res) => {
     retryDelayMinutes,
     aiDisclosure,
     smsWebhookUrl,
-    whatsappWebhookUrl
+    whatsappWebhookUrl,
+    maxContactsPerDay,
+    maxContactsPerWeek
   } = req.body;
 
   if (Number(callWindowStart) < 0 || Number(callWindowEnd) > 24 || Number(callWindowStart) >= Number(callWindowEnd)) {
     return res.status(400).json({ error: "Invalid call window" });
   }
 
+  // Cross-campaign contact caps. 0 means "no cap"; negative is meaningless, so reject it
+  // rather than silently storing a value that disables the guardrail by accident.
+  const perDay = maxContactsPerDay === undefined ? 1 : Number(maxContactsPerDay);
+  const perWeek = maxContactsPerWeek === undefined ? 3 : Number(maxContactsPerWeek);
+  if (!Number.isInteger(perDay) || perDay < 0 || !Number.isInteger(perWeek) || perWeek < 0) {
+    return res.status(400).json({ error: "Contact caps must be whole numbers of 0 or more (0 = no cap)" });
+  }
+
   const result = await query(
     `INSERT INTO tenant_settings
-     (tenant_id, call_window_start, call_window_end, max_call_attempts, retry_delay_minutes, ai_disclosure, sms_webhook_url, whatsapp_webhook_url, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+     (tenant_id, call_window_start, call_window_end, max_call_attempts, retry_delay_minutes, ai_disclosure, sms_webhook_url, whatsapp_webhook_url, max_contacts_per_day, max_contacts_per_week, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
      ON CONFLICT (tenant_id) DO UPDATE SET
        call_window_start=EXCLUDED.call_window_start,
        call_window_end=EXCLUDED.call_window_end,
@@ -48,6 +60,8 @@ router.put("/settings", requireRole("admin"), async (req, res) => {
        ai_disclosure=EXCLUDED.ai_disclosure,
        sms_webhook_url=EXCLUDED.sms_webhook_url,
        whatsapp_webhook_url=EXCLUDED.whatsapp_webhook_url,
+       max_contacts_per_day=EXCLUDED.max_contacts_per_day,
+       max_contacts_per_week=EXCLUDED.max_contacts_per_week,
        updated_at=NOW()
      RETURNING *`,
     [
@@ -58,7 +72,9 @@ router.put("/settings", requireRole("admin"), async (req, res) => {
       Number(retryDelayMinutes),
       aiDisclosure || "",
       smsWebhookUrl || "",
-      whatsappWebhookUrl || ""
+      whatsappWebhookUrl || "",
+      perDay,
+      perWeek
     ]
   );
 
@@ -138,6 +154,14 @@ router.get("/audit/flagged", async (req, res) => {
 router.post("/audit/run", requireRole("admin"), async (req, res) => {
   const result = await runComplianceAuditBatch({ sinceHours: Number(req.body?.sinceHours || 26) });
   res.json(result);
+});
+
+// ---- Promise-to-pay ----
+// The working list for a collections team: who committed to pay, how much, and by when.
+// Captured automatically from live calls (see routes/voicebot.js).
+router.get("/promises", async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days || 30), 1), 365);
+  res.json(await promisesForTenant(req.user.tenantId, { days }));
 });
 
 // ---- Cross-client learning network opt-in ----

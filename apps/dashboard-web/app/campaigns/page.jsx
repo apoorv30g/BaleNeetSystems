@@ -43,7 +43,10 @@ export default function Campaigns() {
     setMessage("");
     try {
       const result = await apiFetch(`/campaigns/${campaignId}/queue-calls`, { method: "POST" });
-      setMessage(`Queued ${result.queued} calls. Blocked ${result.blocked} DNC leads.`);
+      const cappedNote = result.frequencyCapped
+        ? ` ${result.frequencyCapped} will be skipped by the contact-frequency cap.`
+        : "";
+      setMessage(`Queued ${result.queued} calls. Blocked ${result.blocked} DNC leads.${cappedNote}`);
       await loadCampaigns();
     } catch (err) {
       setError(err.message);

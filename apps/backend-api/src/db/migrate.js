@@ -113,6 +113,38 @@ async function migrate() {
     );
   `);
 
+  // Bumped whenever a user's sessions must be invalidated (password change, deactivation).
+  // The value is embedded in issued JWTs and checked on every authenticated request, so a
+  // leaked or stale token stops working immediately instead of lasting the full token TTL.
+  // Collections guardrails (RBI fair-practice). max_call_attempts is per-lead-per-campaign,
+  // which does NOT stop a borrower enrolled in several campaigns being called repeatedly in
+  // one day -- exactly the "persistent bothering" the guidance names. These caps apply per
+  // PHONE across every campaign in the tenant.
+  // Promise-to-pay commitments captured on collection calls. Kept in its own table rather
+  // than as columns on `calls`: a borrower can make (and revise) more than one commitment,
+  // and this is the record an NBFC's collections team actually works from.
+  await query(`
+    CREATE TABLE IF NOT EXISTS promise_to_pay (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+      call_id UUID REFERENCES calls(id) ON DELETE SET NULL,
+      lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+      promised_amount NUMERIC,
+      promised_date DATE,
+      raw_text TEXT,
+      confidence TEXT DEFAULT 'stated',
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS idx_ptp_tenant_date ON promise_to_pay(tenant_id, promised_date);`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_ptp_lead ON promise_to_pay(lead_id, created_at DESC);`);
+
+  await query(`ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS max_contacts_per_day INTEGER NOT NULL DEFAULT 1;`);
+  await query(`ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS max_contacts_per_week INTEGER NOT NULL DEFAULT 3;`);
+
+  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;`);
+  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;`);
+
   await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS external_lead_id TEXT;`);
   await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_status TEXT;`);
   await query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_reject_reason TEXT;`);

@@ -1,8 +1,9 @@
 const express = require("express");
+const { asyncRouter } = require("../utils/asyncRouter");
 const { query } = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 
-const router = express.Router();
+const router = asyncRouter();
 router.use(requireAuth);
 
 router.get("/summary", async (req, res) => {

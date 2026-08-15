@@ -278,6 +278,33 @@ async function removeLearnedFaq(tenantId, key, phrases = []) {
   return true;
 }
 
+// Loads a lead by id for the telephony paths (Exotel webhooks and the voicebot WebSocket).
+//
+// These entry points have no authenticated tenant -- the lead id arrives from the telephony
+// provider, and the tenant is DERIVED from the row. So this cannot be "scoped" the way a
+// dashboard query is. What it can do is refuse to hand back a lead belonging to a different
+// tenant than the caller already established, which turns a silent cross-tenant mix-up
+// (bug or tampering) into a hard failure.
+//
+// @param {string} leadId
+// @param {object} [options]
+// @param {string} [options.expectedTenantId] Reject the lead if it belongs elsewhere.
+async function findLeadById(leadId, { expectedTenantId = "" } = {}) {
+  if (!leadId) return null;
+  const result = await query(`SELECT * FROM leads WHERE id=$1`, [leadId]);
+  const lead = result.rows[0];
+  if (!lead) return null;
+
+  if (expectedTenantId && String(lead.tenant_id) !== String(expectedTenantId)) {
+    const err = new Error("Lead does not belong to the expected tenant");
+    err.code = "TENANT_MISMATCH";
+    err.leadId = leadId;
+    throw err;
+  }
+
+  return attachVoiceConfig(lead);
+}
+
 // Attaches the lead's playbook voice_config (brand identity etc.) so downstream sync code
 // (voicebot brand/URL resolution) can read it without extra queries per turn.
 async function attachVoiceConfig(lead) {
@@ -609,8 +636,10 @@ function asksForReferenceDetails(step) {
 
 function freshLeadNameProvided(lead, lastUserMessage) {
   if (lead.playbook_type !== "FRESH_LEAD") return false;
+  // \b never fires beside Devanagari (it is defined against ASCII-only \w), so the Hindi
+  // branch needs space/edge anchoring instead or it silently never matches.
   return /\b(my name is|i am|this is|mera naam)\b/i.test(String(lastUserMessage || "")) ||
-    /\b(मेरा नाम|मैं)\b/u.test(String(lastUserMessage || ""));
+    /(?<=^|\s)(?:मेरा नाम|मैं)(?=\s|$)/u.test(String(lastUserMessage || ""));
 }
 
 function formatTranscript(transcript) {
@@ -678,6 +707,7 @@ function normalizeSteps(steps) {
 module.exports = {
   PLAYBOOKS,
   attachVoiceConfig,
+  findLeadById,
   buildPrompt,
   deletePlaybook,
   listPlaybooks,

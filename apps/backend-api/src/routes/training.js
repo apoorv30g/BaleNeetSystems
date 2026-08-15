@@ -1,4 +1,5 @@
 const express = require("express");
+const { asyncRouter } = require("../utils/asyncRouter");
 const multer = require("multer");
 const {
   requireTrainingAuth,
@@ -13,7 +14,7 @@ const {
   storeTrainingRecording
 } = require("../services/trainingData");
 
-const router = express.Router();
+const router = asyncRouter();
 const UPLOAD_MAX_BYTES = Number(process.env.TRAINING_UPLOAD_MAX_BYTES || 30 * 1024 * 1024);
 const upload = multer({
   storage: multer.memoryStorage(),

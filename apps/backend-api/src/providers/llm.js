@@ -1,5 +1,6 @@
 const config = require("../config");
 const { generateSarvamReply } = require("./sarvamChat");
+const { sendAlert, clearAlert } = require("../services/alerts");
 
 // Sarvam is the ONLY supported LLM provider. Gemini was removed for India data-residency
 // compliance -- borrower conversation data must not leave Indian jurisdiction, and Gemini
@@ -32,14 +33,27 @@ function isCircuitOpen(provider) {
 
 function recordSuccess(provider) {
   const c = getCircuit(provider);
+  const wasOpen = c.openAt !== null || c.failures >= CIRCUIT_THRESHOLD;
   c.failures = 0;
   c.openAt = null;
+  // Reset throttling so the next outage alerts immediately rather than being swallowed.
+  if (wasOpen) clearAlert(`llm_circuit_open_${provider}`);
 }
 
 function recordFailure(provider) {
   const c = getCircuit(provider);
   c.failures += 1;
-  if (c.failures >= CIRCUIT_THRESHOLD) c.openAt = Date.now();
+  if (c.failures >= CIRCUIT_THRESHOLD && c.openAt === null) {
+    c.openAt = Date.now();
+    // With Gemini removed there is no failover -- an open circuit means LLM-fallback turns
+    // are degrading to canned replies on live calls. Somebody needs to know now.
+    sendAlert(
+      `llm_circuit_open_${provider}`,
+      `LLM circuit breaker OPEN for "${provider}" — no fallback provider exists, so off-script turns are degrading to canned replies.`,
+      { provider, consecutiveFailures: c.failures, resetMs: CIRCUIT_RESET_MS },
+      "critical"
+    ).catch(() => {});
+  }
 }
 
 async function generateReply(args) {

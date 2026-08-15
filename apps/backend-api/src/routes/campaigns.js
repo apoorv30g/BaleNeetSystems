@@ -1,10 +1,13 @@
 const express = require("express");
+const { asyncRouter } = require("../utils/asyncRouter");
 const multer = require("multer");
 const { query } = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
+const { validate } = require("../utils/validate");
 const { callQueue } = require("../queue");
 const { isDnc, logCompliance } = require("../services/compliance");
 const { getTenantSettings } = require("../services/settings");
+const { checkContactFrequency } = require("../services/contactFrequency");
 const { describeOutcome, OUTCOMES } = require("../services/outcomes");
 const { sendLeadLink } = require("../providers/notifications");
 const { assertSarvamHealthyForCall } = require("../providers/sarvamHealth");
@@ -12,11 +15,23 @@ const { listPlaybooks } = require("../services/playbooks");
 const { parseLeadUpload } = require("../services/leadImport");
 const config = require("../config");
 
-const router = express.Router();
+const router = asyncRouter();
 const UPLOAD_MAX_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 50 * 1024 * 1024); // 50 MB
 const UPLOAD_MAX_ROWS = Number(process.env.UPLOAD_MAX_ROWS || 10000);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: UPLOAD_MAX_BYTES } });
 router.use(requireAuth);
+
+// playbookType is validated separately against the tenant's actual playbooks, since the
+// valid set is per-tenant data rather than a fixed enum.
+const campaignSchema = {
+  name: { type: "string", required: true, min: 1, max: 200 },
+  description: { type: "string", max: 2000 },
+  campaignType: { type: "string", oneOf: ["RETARGETING", "COLLECTION", "TARGETING"] },
+  playbookType: { type: "string", max: 100 },
+  dailyLimit: { type: "number", integer: true, min: 1, max: 100000 },
+  maxAttempts: { type: "number", integer: true, min: 1, max: 10 },
+  language: { type: "string", max: 50 }
+};
 
 function withTimeout(promise, ms, message) {
   return Promise.race([
@@ -174,7 +189,7 @@ router.get("/:campaignId", async (req, res) => {
   res.json(campaign.rows[0]);
 });
 
-router.post("/", async (req, res) => {
+router.post("/", validate(campaignSchema), async (req, res) => {
   const { name, description, campaignType, playbookType, dailyLimit, maxAttempts, language } = req.body;
   const playbooks = await listPlaybooks(req.user.tenantId);
   const selectedPlaybook = playbookType || "UNAPPROVED_USERS";
@@ -307,12 +322,39 @@ router.post("/:campaignId/upload", (req, res, next) => {
 router.post("/:campaignId/queue-calls", async (req, res) => {
   try {
     const result = await enqueueLeads({ tenantId: req.user.tenantId, campaignId: req.params.campaignId });
-    res.json(result);
+    // Advisory only. The cap is ENFORCED in the worker immediately before dialling (that is the
+    // authoritative check, since counts change between queueing and dispatch). This tells the
+    // operator up front how many of the leads they just queued will be skipped, instead of
+    // leaving them to notice later that fewer calls went out than expected.
+    const capped = await countFrequencyCappedLeads(req.user.tenantId, req.params.campaignId);
+    res.json({ ...result, frequencyCapped: capped });
   } catch (err) {
     console.error("queue-calls failed", err);
     res.status(503).json({ error: "Queue calls failed", detail: err.message });
   }
 });
+
+// Counts queued leads for this campaign that the worker's contact-frequency cap will skip.
+// Uses the shared checkContactFrequency() so the preview and the enforcement agree on the rule.
+async function countFrequencyCappedLeads(tenantId, campaignId) {
+  const settings = await getTenantSettings(tenantId);
+  const limits = { maxPerDay: settings.maxContactsPerDay, maxPerWeek: settings.maxContactsPerWeek };
+  if (!(limits.maxPerDay > 0) && !(limits.maxPerWeek > 0)) return 0;
+
+  const leads = await query(
+    `SELECT phone FROM leads
+     WHERE tenant_id=$1 AND campaign_id=$2 AND status IN ('pending','queued','called','frequency_capped')
+     LIMIT 2000`,
+    [tenantId, campaignId]
+  );
+
+  let capped = 0;
+  for (const row of leads.rows) {
+    const check = await checkContactFrequency(tenantId, row.phone, limits);
+    if (!check.allowed) capped++;
+  }
+  return capped;
+}
 
 router.post("/:campaignId/leads/:leadId/queue-call", async (req, res) => {
   try {

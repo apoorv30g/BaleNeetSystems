@@ -1,4 +1,5 @@
 const express = require("express");
+const { asyncRouter } = require("../utils/asyncRouter");
 const { query } = require("../db/pool");
 const { generateReply, llmProviderStatus } = require("../providers/llm");
 const { liveSttProviderStatus } = require("../providers/sttLive");
@@ -7,11 +8,11 @@ const { synthesizeSpeech } = require("../providers/sarvam");
 const { toExotelPcmBase64 } = require("../providers/audio");
 const { classifyConversation, isOptOut } = require("../services/outcomes");
 const { getTenantSettings } = require("../services/settings");
-const { attachVoiceConfig } = require("../services/playbooks");
+const { attachVoiceConfig, findLeadById } = require("../services/playbooks");
 const logger = require("../utils/logger");
 const config = require("../config");
 
-const router = express.Router();
+const router = asyncRouter();
 const FAST_EXOML_GREETING = `Namaste, main ${config.assistantName} ${config.brandName} se bol rahi hoon. Yeh ek test call hai. Dhanyavaad.`;
 
 // Validates EXOTEL_WEBHOOK_SECRET. Exotel cannot sign payloads, so we use a shared secret
@@ -179,7 +180,10 @@ router.all("/exotel/voicebot-url", async (req, res) => {
   const params = { ...req.query, ...bodyOf(req) };
   const lead = await resolveVoicebotLead(params);
   const leadId = params.leadId || lead?.id || "";
-  const campaignId = params.campaignId || lead?.campaign_id || "";
+  // Prefer the lead's own campaign over the supplied parameter: a lead belongs to exactly one
+  // campaign, so a differing parameter is either stale or tampered with, and propagating it
+  // into the stream URL would pair this lead's tenant with another tenant's campaign.
+  const campaignId = lead?.campaign_id || params.campaignId || "";
   const callId = await latestCallIdForLead(leadId);
   const callSid = params.CallSid || params.callSid || params.Sid || "";
 
@@ -280,10 +284,11 @@ function escapeXml(str) {
   return String(str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-async function findLead(leadId) {
-  const leadResult = await query(`SELECT * FROM leads WHERE id=$1`, [leadId]);
-  const lead = leadResult.rows[0];
-  return lead ? attachVoiceConfig(lead) : lead;
+async function findLead(leadId, options = {}) {
+  // Delegates to the shared helper so the tenant-consistency check lives in one place.
+  // These webhooks have no authenticated tenant -- the id comes from Exotel -- so the tenant
+  // is derived from the row. Pass expectedTenantId wherever the caller already knows it.
+  return findLeadById(leadId, options);
 }
 
 async function latestCallForLead(leadId) {
@@ -310,7 +315,11 @@ async function resolveVoicebotLead(params) {
      ORDER BY created_at DESC LIMIT 1`,
     [phone]
   );
-  return result.rows[0] || null;
+  // Attach voice_config on this path too. Without it a lead resolved by phone loses its
+  // per-playbook brand and falls back to the deployment default -- i.e. it could introduce
+  // itself as the wrong company, which is exactly the leak the per-playbook brand exists
+  // to prevent. The leadId path above already attaches it via findLead.
+  return result.rows[0] ? attachVoiceConfig(result.rows[0]) : null;
 }
 
 function normalizePhone(value) {

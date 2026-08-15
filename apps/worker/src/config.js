@@ -31,6 +31,10 @@ module.exports = {
   callWindowEnd: Number(process.env.CALL_WINDOW_END || 20),
   callWindowTimeZone: process.env.CALL_WINDOW_TIME_ZONE || "Asia/Kolkata",
   maxCallAttempts: Number(process.env.MAX_CALL_ATTEMPTS || 3),
+  // Cross-campaign contact caps per borrower (RBI fair-practice). Overridden per tenant via
+  // tenant_settings. Set to 0 to disable capping.
+  maxContactsPerDay: Number(process.env.MAX_CONTACTS_PER_DAY ?? 1),
+  maxContactsPerWeek: Number(process.env.MAX_CONTACTS_PER_WEEK ?? 3),
   callDispatchEnabled: process.env.CALL_DISPATCH_ENABLED === "true",
   dryRunCalls: process.env.DRY_RUN_CALLS === "true",
   serverUrl: required("SERVER_URL", isProduction ? railwayUrl() : "http://localhost:4000"),

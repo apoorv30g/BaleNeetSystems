@@ -23,6 +23,12 @@ const logger = require("../utils/logger");
 const config = require("../config");
 const { attachVoiceConfig } = require("../services/playbooks");
 const { pickVariantIndex, variantWeightsForPlaybook } = require("../services/variantStats");
+const {
+  isThirdPartyAnswerer,
+  guardThirdPartyDisclosure,
+  extractPromiseToPay,
+  recordPromiseToPay
+} = require("../services/collections");
 const { sendLeadLink } = require("../providers/notifications");
 const { expandCurrencyForSpeech } = require("../services/speechText");
 const {
@@ -577,7 +583,20 @@ async function initializeSession(session, message) {
   session.tenantId = lead.tenant_id;
   session.lead = lead;
   session.preferredLanguage = normalizePreferredLanguage(lead.language);
-  session.campaignId = session.campaignId || lead.campaign_id;
+
+  // campaignId arrives as an untrusted URL parameter while tenant_id is derived from the
+  // lead row. Trusting the parameter would let a mismatched (or tampered) value create a
+  // call row pairing this lead's tenant with another tenant's campaign. A lead belongs to
+  // exactly one campaign, so the lead is always the authority.
+  const requestedCampaignId = session.campaignId;
+  session.campaignId = lead.campaign_id || null;
+  if (requestedCampaignId && lead.campaign_id && requestedCampaignId !== lead.campaign_id) {
+    await logVoicebotEvent(session, "campaign_id_mismatch_ignored", {
+      requestedCampaignId,
+      leadCampaignId: lead.campaign_id,
+      leadId: lead.id
+    });
+  }
 
   // Load learned gate-variant weights once per call so the sync flow engine can sample
   // phrasings without per-turn queries (self-optimizing scripts).
@@ -1076,6 +1095,35 @@ async function processUserTranscript(ws, session, event) {
     return;
   }
 
+  // Someone other than the borrower is on the line ("I'm his wife", "he's not here",
+  // "wrong number"). RBI fair-practice prohibits disclosing a borrower's debt to relatives,
+  // employers or any unverified third party, so from here on nothing debt-related may be
+  // spoken, and the call closes without confirming that a debt exists at all.
+  //
+  // Runs AFTER isNamedCalleeDenial so the softer "is <name> available?" clarification still
+  // gets first go at the name gate; this catches the follow-up and any later turn.
+  if (!session.confirmedName && isThirdPartyAnswerer(text)) {
+    session.thirdPartySuspected = true;
+    session.ending = true;
+    const reply = thirdPartyCloseText(session);
+    await logVoicebotEvent(session, "third_party_answerer_detected", {
+      text,
+      confirmedName: Boolean(session.confirmedName),
+      nextAction: "Closed without disclosing any account details."
+    });
+    if (session.callId) {
+      await addTranscript(session.callId, "assistant", reply);
+      await finalizeCall(session, {
+        outcome: "WRONG_NUMBER",
+        // Deliberately vague: the summary is read by staff, but it should not assert a debt
+        // relationship with whoever happened to answer.
+        summary: "Respondent indicated they are not the intended customer. Call closed without sharing account details."
+      });
+    }
+    await speakAndClose(ws, session, reply, "third_party_close");
+    return;
+  }
+
   if (isAvailabilityDecline(session, text)) {
     session.ending = true;
     const reply = availabilityDeclineReply(session);
@@ -1158,6 +1206,32 @@ async function processUserTranscript(ws, session, event) {
   if (frustrated) {
     session.frustrationCount = (session.frustrationCount || 0) + 1;
     await logVoicebotEvent(session, "user_frustration_detected", { text, frustrationCount: session.frustrationCount });
+  }
+
+  // Promise-to-pay capture. Runs on every playbook rather than only COLLECTION campaigns:
+  // the extractor already requires an explicit payment intent PLUS a concrete amount or date,
+  // so it stays quiet elsewhere, and gating on campaign_type would silently miss commitments
+  // whenever that field is unset on imported leads.
+  //
+  // Only recorded once identity is confirmed -- a commitment attributed to an unidentified
+  // answerer is not something a collections team can act on.
+  if (session.confirmedName && !session.promiseToPayCaptured) {
+    const promise = extractPromiseToPay(text);
+    if (promise) {
+      session.promiseToPayCaptured = true;
+      await logVoicebotEvent(session, "promise_to_pay_captured", {
+        amount: promise.amount,
+        date: promise.date
+      });
+      await recordPromiseToPay({
+        tenantId: session.tenantId,
+        callId: session.callId,
+        leadId: session.lead?.id,
+        amount: promise.amount,
+        date: promise.date,
+        rawText: promise.raw
+      }).catch(err => logger.warn("ptp_record_failed", { error: err.message, callId: session.callId }));
+    }
   }
 
   const promptTranscript = session.callId ? await getTranscript(session.callId) : [];
@@ -1692,6 +1766,28 @@ function isNamedCalleeDenial(session = {}, text = "") {
       && !/(wrong number|गलत number|गलत नंबर)/.test(normalized);
 }
 
+// Closing line for a third-party answerer. Says nothing about a loan, an amount, or why we
+// called -- naming the reason to the wrong person is itself the disclosure we are avoiding.
+function thirdPartyCloseText(session = {}) {
+  return isEnglishSession(session)
+    ? "Apologies for the disturbance. I have the wrong contact — I will not call this number again. Thank you."
+    : "माफ़ कीजिए, गलती से call हो गया। मैं इस number पर दोबारा call नहीं करूँगी। धन्यवाद।";
+}
+
+// Neutral stand-in used when a reply would have disclosed account details to someone whose
+// identity is not confirmed.
+function identityFirstReply(session = {}) {
+  const name = conversationalLeadName(session.lead?.name);
+  if (isEnglishSession(session)) {
+    return name
+      ? `Before I share anything, could you confirm whether I am speaking with ${name}?`
+      : "Before I share anything, could you confirm I am speaking with the account holder?";
+  }
+  return name
+    ? `कुछ भी बताने से पहले, क्या आप confirm करेंगे कि मेरी बात ${name} जी से हो रही है?`
+    : "कुछ भी बताने से पहले, क्या आप confirm करेंगे कि मेरी बात account holder से हो रही है?";
+}
+
 function namedCalleeDenialReply(session = {}) {
   const name = conversationalLeadName(session.lead?.name);
   if (isEnglishSession(session)) {
@@ -1731,8 +1827,15 @@ function extractNameAnswer(text) {
     /\bi am\s+([a-z][a-z\s.'-]{1,40})/i,
     /\bthis is\s+([a-z][a-z\s.'-]{1,40})/i,
     /\bmera naam\s+([a-z][a-z\s.'-]{1,40})/i,
-    /\bमेरा नाम\s+([\p{L}\s.'-]{1,40})/iu,
-    /\bमैं\s+([\p{L}\s.'-]{1,40})/iu
+    // Two Devanagari hazards handled here:
+    // 1. NO \b -- JavaScript's \b is defined against ASCII-only \w, so there is never a word
+    //    boundary beside a Devanagari character and a \b-anchored Hindi pattern silently never
+    //    matches. Anchored on start-or-space instead.
+    // 2. \p{M} in the character class -- Devanagari vowel marks (matras) are Unicode category
+    //    Mark, NOT Letter. Without \p{M}, "राहुल" captures only "र" because matching stops at
+    //    the first matra, truncating every Hindi name to its opening consonant.
+    /(?:^|\s)मेरा नाम\s+([\p{L}\p{M}\s.'-]{1,40})/iu,
+    /(?:^|\s)मैं\s+([\p{L}\p{M}\s.'-]{1,40})/iu
   ];
 
   for (const pattern of patterns) {
@@ -1748,7 +1851,9 @@ function shortNameAnswer(text) {
   let candidate = String(text || "")
     .replace(/\b(yes|yeah|haan|han|ji|okay|ok|correct|right)\b/gi, " ")
     .replace(/\b(my name is|i am|this is|mera naam|main|mein)\b/gi, " ")
-    .replace(/\b(मेरा नाम|मैं|जी|हाँ|ठीक है)\b/giu, " ")
+    // Lookarounds rather than \b -- \b never fires beside Devanagari (see extractNameAnswer).
+    // Space/edge anchoring also stops "जी" being stripped from inside a name like "भाईजी".
+    .replace(/(?<=^|\s)(?:मेरा नाम|मैं|जी|हाँ|ठीक है)(?=\s|$)/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -1794,6 +1899,11 @@ function cleanNameCandidate(value) {
     .trim();
 
   if (!candidate || candidate.length < 2 || candidate.length > 50) return "";
+  // "मैं" means "I", not necessarily "I am <name>", so the Hindi extraction pattern happily
+  // captures "मैं ही बोल रहा हूँ" ("I am the one speaking") as a name. A captured name
+  // containing speech verbs is never a name -- and letting one through is worse than missing
+  // it, because a bogus name fails the identity match and blocks a genuine confirmation.
+  if (/(बोल|बता|रहा|रही|रहे|हूँ|हूं|बात|speaking|talking)/.test(candidate)) return "";
   return candidate;
 }
 
@@ -3527,6 +3637,23 @@ function refineAssistantReply(session = {}, userText = "", reply = "", { source 
     : surfaceCorrected;
   const cleaned = completeSpokenReply(String(groundedReply || "").replace(/\s+/g, " ").trim(), session);
   if (!cleaned) return normalizeTezCreditReply(session, antiRepeatReply(session, userText));
+
+  // Third-party disclosure guard (RBI fair-practice). Deliberately scoped to sessions where a
+  // third party has actually been signalled, NOT to every turn before identity is confirmed --
+  // identity is unconfirmed at the start of every call, and blocking replies there would break
+  // the normal opening, which is itself designed to establish identity before any detail.
+  if (session.thirdPartySuspected && !session.confirmedName) {
+    const guard = guardThirdPartyDisclosure(cleaned, { identityConfirmed: false });
+    if (!guard.safe) {
+      logVoicebotEvent(session, "third_party_disclosure_blocked", {
+        source,
+        issues: guard.issues,
+        suppressed: cleaned.slice(0, 200)
+      }).catch(() => {});
+      return identityFirstReply(session);
+    }
+  }
+
   if (isConversationGatePrompt(cleaned)) return cleaned;
 
   if (isTooSimilarToRecentAssistant(session, cleaned)) {
@@ -5528,6 +5655,8 @@ module.exports = {
     availabilityDeclineReply,
     availabilityDeclineOutcome,
     namedCalleeDenialReply,
+    thirdPartyCloseText,
+    identityFirstReply,
     shouldCancelAssistantSpeech,
     updateConversationMemory,
     FRUSTRATION_PATTERN,

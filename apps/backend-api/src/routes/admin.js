@@ -1,9 +1,11 @@
 const express = require("express");
+const { asyncRouter } = require("../utils/asyncRouter");
 const bcrypt = require("bcryptjs");
 const { query } = require("../db/pool");
 const { redisClient } = require("../queue");
 const config = require("../config");
-const { requireAuth, requireRole } = require("../middleware/auth");
+const { requireAuth, requireRole, invalidateUserCache } = require("../middleware/auth");
+const { validate, fields } = require("../utils/validate");
 const { getTenantSettings } = require("../services/settings");
 const { generateReply, llmProviderStatus } = require("../providers/llm");
 const { liveSttProviderStatus } = require("../providers/sttLive");
@@ -13,8 +15,30 @@ const {
   DEFAULT_TEST_PHONES
 } = require("../services/testDataCleanup");
 
-const router = express.Router();
+const router = asyncRouter();
 router.use(requireAuth, requireRole("platform_admin", "admin"));
+
+// Password complexity is enforced where passwords are SET, not at login (see routes/auth.js) --
+// adding a minimum length at login would lock out accounts whose passwords predate the rule.
+const createClientSchema = {
+  clientName: { type: "string", required: true, min: 2, max: 200 },
+  planType: { type: "string", oneOf: ["starter", "growth", "enterprise"] },
+  adminName: fields.name,
+  adminEmail: fields.email,
+  adminPassword: fields.password
+};
+
+const createUserSchema = {
+  name: fields.name,
+  email: fields.email,
+  password: fields.password,
+  role: { type: "string", oneOf: ["admin", "operator", "viewer"] }
+};
+
+const createClientUserSchema = {
+  ...createUserSchema,
+  role: { type: "string", oneOf: ["operator", "viewer"] }
+};
 
 router.get("/overview", async (req, res) => {
   if (isPlatformAdmin(req)) return res.json(await platformOverview());
@@ -70,7 +94,7 @@ router.get("/costs", async (req, res) => {
   res.json(await platformCostOverview(days));
 });
 
-router.post("/clients", async (req, res) => {
+router.post("/clients", validate(createClientSchema), async (req, res) => {
   if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Platform admin access required" });
 
   const {
@@ -126,7 +150,7 @@ router.get("/clients/:tenantId/users", async (req, res) => {
   res.json(result.rows);
 });
 
-router.post("/clients/:tenantId/users", async (req, res) => {
+router.post("/clients/:tenantId/users", validate(createClientUserSchema), async (req, res) => {
   if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Platform admin access required" });
   const { name, email, password, role = "operator" } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
@@ -155,7 +179,7 @@ router.get("/users", async (req, res) => {
   res.json(result.rows);
 });
 
-router.post("/users", async (req, res) => {
+router.post("/users", validate(createUserSchema), async (req, res) => {
   const { name, email, password, role = "operator" } = req.body;
   if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
   if (!["admin", "operator", "viewer"].includes(role)) return res.status(400).json({ error: "Invalid role" });
@@ -190,6 +214,9 @@ router.patch("/users/:userId", async (req, res) => {
     values.push(bcrypt.hashSync(password, 10));
     fields.push(`password_hash=$${values.length}`);
   }
+  // A password change or a role change must end existing sessions -- otherwise an old token
+  // keeps working (with its old role baked into the claims) for the rest of its 8h lifetime.
+  if (password || role) fields.push("token_version = token_version + 1");
   if (!fields.length) return res.status(400).json({ error: "Nothing to update" });
 
   values.push(req.params.userId, req.user.tenantId);
@@ -200,9 +227,61 @@ router.patch("/users/:userId", async (req, res) => {
     values
   );
   if (!result.rows[0]) return res.status(404).json({ error: "User not found" });
+  if (password || role) invalidateUserCache(req.params.userId);
 
-  await audit(req, "user_update", { userId: req.params.userId, role: role || undefined, passwordChanged: Boolean(password) });
+  await audit(req, "user_update", {
+    userId: req.params.userId,
+    role: role || undefined,
+    passwordChanged: Boolean(password),
+    sessionsRevoked: Boolean(password || role)
+  });
   res.json(result.rows[0]);
+});
+
+// Explicit "sign this user out everywhere" — for a lost laptop or a suspected token leak.
+router.post("/users/:userId/revoke-sessions", async (req, res) => {
+  const result = await query(
+    `UPDATE users SET token_version = token_version + 1
+     WHERE id=$1 AND tenant_id=$2
+     RETURNING id, email`,
+    [req.params.userId, req.user.tenantId]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: "User not found" });
+  invalidateUserCache(req.params.userId);
+
+  await audit(req, "user_sessions_revoked", { userId: req.params.userId, email: result.rows[0].email });
+  res.json({ ok: true, revoked: result.rows[0].email });
+});
+
+// Disable without deleting — preserves audit history and call records, but immediately
+// blocks both new logins and every existing session.
+router.post("/users/:userId/deactivate", async (req, res) => {
+  if (req.params.userId === req.user.userId) {
+    return res.status(400).json({ error: "You cannot deactivate your own user" });
+  }
+  const result = await query(
+    `UPDATE users SET is_active=false, token_version = token_version + 1
+     WHERE id=$1 AND tenant_id=$2
+     RETURNING id, email`,
+    [req.params.userId, req.user.tenantId]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: "User not found" });
+  invalidateUserCache(req.params.userId);
+
+  await audit(req, "user_deactivate", { userId: req.params.userId, email: result.rows[0].email });
+  res.json({ ok: true, deactivated: result.rows[0].email });
+});
+
+router.post("/users/:userId/reactivate", async (req, res) => {
+  const result = await query(
+    `UPDATE users SET is_active=true WHERE id=$1 AND tenant_id=$2 RETURNING id, email`,
+    [req.params.userId, req.user.tenantId]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: "User not found" });
+  invalidateUserCache(req.params.userId);
+
+  await audit(req, "user_reactivate", { userId: req.params.userId, email: result.rows[0].email });
+  res.json({ ok: true, reactivated: result.rows[0].email });
 });
 
 router.delete("/users/:userId", async (req, res) => {

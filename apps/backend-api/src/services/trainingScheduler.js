@@ -4,6 +4,7 @@ const { cleanupRawRecordings, runTrainingBatch } = require("./trainingData");
 const { runFlowLearningBatch, runNetworkSeeding } = require("./flowLearning");
 const { runComplianceAuditBatch } = require("./complianceAudit");
 const { runVariantStatsBatch } = require("./variantStats");
+const { runRetentionSweep } = require("./dataRetention");
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -54,6 +55,15 @@ function startTrainingScheduler() {
       await withAdvisoryLock("network_seeding_daily_ist_2300", async () => {
         const result = await runNetworkSeeding();
         logger.info("network_seeding_daily_complete", result);
+      });
+    }),
+    // Data retention: expire old transcripts and raw events. Runs at 03:30 IST -- well
+    // outside the calling window, and after the learning/audit jobs above have already
+    // mined the data they need from recent calls.
+    scheduleDailyIst("data_retention_daily", 3, 30, async () => {
+      await withAdvisoryLock("data_retention_daily_ist_0330", async () => {
+        const result = await runRetentionSweep();
+        logger.info("data_retention_daily_complete", result);
       });
     })
   ];

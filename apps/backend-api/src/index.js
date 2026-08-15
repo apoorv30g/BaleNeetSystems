@@ -10,6 +10,7 @@ const { redisClient, callQueue } = require("./queue");
 const logger = require("./utils/logger");
 const { attachVoicebot } = require("./routes/voicebot");
 const { startTrainingScheduler } = require("./services/trainingScheduler");
+const { increment, metricsSnapshot, startMetricsMonitor } = require("./services/metrics");
 
 const app = express();
 const server = http.createServer(app);
@@ -27,12 +28,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Request logging
+// Request logging + metrics
 app.use((req, res, next) => {
   const start = Date.now();
   res.on("finish", () => {
     const ms = Date.now() - start;
-    if (req.path !== "/health") {
+    if (req.path !== "/health" && req.path !== "/metrics") {
+      increment("httpRequests");
+      if (res.statusCode >= 500) increment("httpErrors5xx");
+      if (res.statusCode === 401 || res.statusCode === 403) increment("authFailures");
       logger.info("http_request", {
         method: req.method,
         path: req.path,
@@ -119,6 +123,27 @@ app.get("/health", async (_, res) => {
   res.status(ok ? 200 : 503).json({ ok, service: "loanconnect-backend", checks, ts: new Date().toISOString() });
 });
 
+// Operational metrics for your own scraper/uptime check. Protected by a bearer token rather
+// than a user JWT so a monitoring agent can poll it without holding a user session.
+// Exposes counts and rates only -- never borrower data.
+app.get("/metrics", async (req, res) => {
+  const expected = process.env.METRICS_TOKEN || "";
+  if (expected) {
+    const provided = (req.headers.authorization || "").replace(/^Bearer /, "") || req.query.token;
+    if (provided !== expected) return res.status(401).json({ error: "Unauthorized" });
+  } else if (config.nodeEnv === "production") {
+    // Fail closed: without a token this would publish operational internals to the internet.
+    return res.status(503).json({ error: "METRICS_TOKEN is not configured" });
+  }
+
+  try {
+    res.json(await metricsSnapshot());
+  } catch (err) {
+    logger.error("metrics_snapshot_failed", { error: err.message });
+    res.status(500).json({ ok: false, error: "metrics unavailable" });
+  }
+});
+
 app.use("/auth", authLimiter, require("./routes/auth"));
 app.use("/admin", apiLimiter, require("./routes/admin"));
 app.use("/campaigns", apiLimiter, require("./routes/campaigns"));
@@ -144,6 +169,7 @@ app.use((err, req, res, next) => {
 
 attachVoicebot(server);
 const trainingScheduler = startTrainingScheduler();
+const metricsMonitor = startMetricsMonitor();
 
 server.listen(config.port, () => logger.info("backend_started", { port: config.port }));
 
@@ -154,6 +180,7 @@ async function gracefulShutdown(signal) {
   shuttingDown = true;
   logger.info("shutdown_initiated", { signal });
   trainingScheduler.stop();
+  metricsMonitor.stop();
   server.close(async () => {
     try {
       await pool.end();
