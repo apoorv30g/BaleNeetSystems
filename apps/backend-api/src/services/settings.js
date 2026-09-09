@@ -22,7 +22,8 @@ async function getTenantSettings(tenantId) {
     whatsappWebhookUrl: "",
     shareLearnings: false,
     maxContactsPerDay: Number(process.env.MAX_CONTACTS_PER_DAY ?? 1),
-    maxContactsPerWeek: Number(process.env.MAX_CONTACTS_PER_WEEK ?? 3)
+    maxContactsPerWeek: Number(process.env.MAX_CONTACTS_PER_WEEK ?? 3),
+    callerId: ""
   };
 }
 
@@ -39,7 +40,9 @@ function normalize(row) {
     shareLearnings: Boolean(row.share_learnings),
     // ?? not || : an explicit 0 means "no cap" and must not fall back to the default.
     maxContactsPerDay: Number(row.max_contacts_per_day ?? 1),
-    maxContactsPerWeek: Number(row.max_contacts_per_week ?? 3)
+    maxContactsPerWeek: Number(row.max_contacts_per_week ?? 3),
+    // Empty means "use the deployment default" (EXOTEL_FROM_NUMBER).
+    callerId: row.caller_id || ""
   };
 }
 

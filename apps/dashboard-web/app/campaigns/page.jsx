@@ -10,7 +10,7 @@ export default function Campaigns() {
   const [campaigns, setCampaigns] = useState([]);
   const [playbooks, setPlaybooks] = useState({});
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", description: "", campaignType: "RETARGETING", playbookType: "UNAPPROVED_USERS", dailyLimit: 200, maxAttempts: 3, language: "Hinglish" });
+  const [form, setForm] = useState({ name: "", description: "", campaignType: "RETARGETING", playbookType: "UNAPPROVED_USERS", dailyLimit: 200, maxAttempts: 3, language: "Hinglish", callerId: "" });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
@@ -95,6 +95,7 @@ export default function Campaigns() {
           <input className="input" type="number" min="1" placeholder="Daily call limit, e.g. 200" aria-label="Daily call limit" title="Daily call limit" value={form.dailyLimit} onChange={e => setForm({ ...form, dailyLimit: Number(e.target.value) })} />
           <input className="input" type="number" min="1" placeholder="Max attempts per lead, e.g. 3" aria-label="Max attempts per lead" title="Max attempts per lead" value={form.maxAttempts} onChange={e => setForm({ ...form, maxAttempts: Number(e.target.value) })} />
           <input className="input" placeholder="Language, e.g. Hinglish, Hindi, English" value={form.language} onChange={e => setForm({ ...form, language: e.target.value })} />
+          <input className="input" placeholder="Caller ID override, e.g. 1600123456 (blank = client default)" aria-label="Caller ID override" title="Overrides the client default caller ID for this campaign" value={form.callerId} onChange={e => setForm({ ...form, callerId: e.target.value })} />
           <button className="btn"><Megaphone size={16} /> Create</button>
         </form>
       )}

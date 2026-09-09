@@ -33,8 +33,17 @@ router.put("/settings", requireRole("admin"), async (req, res) => {
     smsWebhookUrl,
     whatsappWebhookUrl,
     maxContactsPerDay,
-    maxContactsPerWeek
+    maxContactsPerWeek,
+    callerId
   } = req.body;
+
+  // Digits, spaces, +, - and () only. Rejecting junk here matters more than usual: a malformed
+  // caller ID is not rejected by Exotel until dial time, so the failure would otherwise appear
+  // as every call in the campaign failing for no obvious reason.
+  const normalizedCallerId = String(callerId ?? "").trim();
+  if (normalizedCallerId && !/^[+()\d][\d\s()+-]{5,19}$/.test(normalizedCallerId)) {
+    return res.status(400).json({ error: "Caller ID must be a phone number (digits, spaces, +, - and brackets only)" });
+  }
 
   if (Number(callWindowStart) < 0 || Number(callWindowEnd) > 24 || Number(callWindowStart) >= Number(callWindowEnd)) {
     return res.status(400).json({ error: "Invalid call window" });
@@ -50,8 +59,8 @@ router.put("/settings", requireRole("admin"), async (req, res) => {
 
   const result = await query(
     `INSERT INTO tenant_settings
-     (tenant_id, call_window_start, call_window_end, max_call_attempts, retry_delay_minutes, ai_disclosure, sms_webhook_url, whatsapp_webhook_url, max_contacts_per_day, max_contacts_per_week, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+     (tenant_id, call_window_start, call_window_end, max_call_attempts, retry_delay_minutes, ai_disclosure, sms_webhook_url, whatsapp_webhook_url, max_contacts_per_day, max_contacts_per_week, caller_id, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
      ON CONFLICT (tenant_id) DO UPDATE SET
        call_window_start=EXCLUDED.call_window_start,
        call_window_end=EXCLUDED.call_window_end,
@@ -62,6 +71,7 @@ router.put("/settings", requireRole("admin"), async (req, res) => {
        whatsapp_webhook_url=EXCLUDED.whatsapp_webhook_url,
        max_contacts_per_day=EXCLUDED.max_contacts_per_day,
        max_contacts_per_week=EXCLUDED.max_contacts_per_week,
+       caller_id=EXCLUDED.caller_id,
        updated_at=NOW()
      RETURNING *`,
     [
@@ -74,7 +84,8 @@ router.put("/settings", requireRole("admin"), async (req, res) => {
       smsWebhookUrl || "",
       whatsappWebhookUrl || "",
       perDay,
-      perWeek
+      perWeek,
+      normalizedCallerId || null
     ]
   );
 

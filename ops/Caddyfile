@@ -1,0 +1,107 @@
+# Reverse proxy + automatic TLS for the self-hosted deployment.
+#
+# Caddy obtains and renews Let's Encrypt certificates on its own -- no certbot, no cron.
+# Requires ports 80 and 443 open and the DNS A records already pointing at this box.
+#
+# THE CRITICAL PART is the api.* block: the voicebot is a long-lived WebSocket carrying
+# real-time call audio. A default proxy configuration will buffer it (adding latency) and time
+# it out mid-conversation. Both are handled explicitly below.
+
+{
+	# Replace with a real address -- Let's Encrypt uses it for expiry warnings.
+	email ops@baleneetsystems.in
+
+	# Uncomment to test against the staging CA first. Staging certs are untrusted by browsers
+	# but are not rate-limited, so you can iterate without burning your weekly quota.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# ---------------------------------------------------------------------------
+# API + voicebot WebSocket
+# ---------------------------------------------------------------------------
+api.baleneetsystems.in {
+	encode zstd gzip
+
+	# Exotel's media stream. Matched first so the streaming settings apply only where needed.
+	@voicebot path /webhooks/exotel/voicebot*
+	handle @voicebot {
+		reverse_proxy backend-api:4000 {
+			# -1 disables response buffering entirely. Without this, Caddy accumulates audio
+			# frames before forwarding, which adds latency to every conversational turn --
+			# the exact problem the move to an India region is meant to fix.
+			flush_interval -1
+
+			transport http {
+				# A call can legitimately run for minutes with quiet stretches. Anything
+				# shorter cuts the customer off mid-conversation.
+				read_timeout 30m
+				write_timeout 30m
+				dial_timeout 10s
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy backend-api:4000 {
+			transport http {
+				read_timeout 120s
+				write_timeout 120s
+				dial_timeout 10s
+			}
+		}
+	}
+
+	# /metrics is bearer-token protected in the app, but there is no reason to serve it
+	# to the whole internet. Uncomment and set your monitoring host to restrict it further.
+	# @metrics path /metrics
+	# handle @metrics {
+	# 	@blocked not remote_ip 203.0.113.4
+	# 	respond @blocked 403
+	# 	reverse_proxy backend-api:4000
+	# }
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/api-access.log {
+			roll_size 50MiB
+			roll_keep 5
+		}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+app.baleneetsystems.in {
+	encode zstd gzip
+
+	reverse_proxy dashboard-web:3000 {
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+			dial_timeout 10s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/app-access.log {
+			roll_size 50MiB
+			roll_keep 5
+		}
+	}
+}

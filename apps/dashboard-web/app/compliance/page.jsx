@@ -239,6 +239,23 @@ export default function Compliance() {
             <input className="input" type="number" min="1" placeholder="Max attempts, e.g. 3" aria-label="Maximum call attempts" title="Maximum call attempts" value={settingsForm?.maxCallAttempts || 3} onChange={e => setSettingsForm({ ...settingsForm, maxCallAttempts: Number(e.target.value) })} />
             <input className="input" type="number" min="1" placeholder="Retry delay minutes, e.g. 360" aria-label="Retry delay in minutes" title="Retry delay in minutes" value={settingsForm?.retryDelayMinutes || 360} onChange={e => setSettingsForm({ ...settingsForm, retryDelayMinutes: Number(e.target.value) })} />
           </div>
+          <div className="mt-4 rounded-lg border border-sky-200 bg-sky-50 p-3">
+            <div className="text-xs font-bold uppercase tracking-widest text-sky-700">Outbound caller ID</div>
+            <p className="mt-1 text-xs text-slate-600">
+              The number customers see. Each lender is a separately registered entity, so a 1600-series
+              number belongs to one client only. Leave blank to use the platform default.
+              A campaign can override this.
+            </p>
+            <input
+              className="input mt-3"
+              placeholder="e.g. 1600123456"
+              aria-label="Outbound caller ID"
+              title="Outbound caller ID for this client"
+              value={settingsForm?.callerId || ""}
+              onChange={e => setSettingsForm({ ...settingsForm, callerId: e.target.value })}
+            />
+          </div>
+
           <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
             <div className="text-xs font-bold uppercase tracking-widest text-amber-700">Contact frequency caps</div>
             <p className="mt-1 text-xs text-slate-600">

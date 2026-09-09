@@ -21,6 +21,29 @@ async function tenantSettings(tenantId) {
   };
 }
 
+// Resolves which number this call should originate from.
+//
+// Precedence: campaign > tenant > global env. Each lender is a separately registered entity
+// and a 1600-series number is registered TO that entity, so dialling one client's borrowers
+// from another client's number misrepresents the caller -- a regulatory problem, not just a
+// branding one. The campaign level exists because a lender may run a 1600-series collections
+// campaign and a promotional campaign from different numbers.
+async function resolveCallerId(tenantId, campaignId) {
+  const result = await query(
+    `SELECT c.caller_id AS campaign_caller_id, ts.caller_id AS tenant_caller_id
+     FROM campaigns c
+     LEFT JOIN tenant_settings ts ON ts.tenant_id = c.tenant_id
+     WHERE c.id=$1 AND c.tenant_id=$2`,
+    [campaignId, tenantId]
+  );
+  const row = result.rows[0] || {};
+  const resolved = String(row.campaign_caller_id || row.tenant_caller_id || "").trim();
+  return {
+    callerId: resolved || config.exotel.fromNumber,
+    source: row.campaign_caller_id ? "campaign" : (row.tenant_caller_id ? "tenant" : "global_default")
+  };
+}
+
 // Counts calls that actually reached this PERSON in the recent past, across every campaign in
 // the tenant -- keyed on phone, not lead id.
 //
@@ -114,9 +137,14 @@ const worker = new Worker("lead-calls", async (job) => {
     [tenantId, campaignId, leadId]
   );
 
+  const { callerId, source: callerIdSource } = await resolveCallerId(tenantId, campaignId);
+  // Recorded on every dispatch: "which number did we call this borrower from" is a question
+  // a compliance reviewer will ask, and the answer must not require guessing.
+  console.log("resolved caller id", { leadId, campaignId, callerId, callerIdSource });
+
   let dispatched;
   try {
-    dispatched = await triggerOutboundCall({ to: lead.phone, leadId, campaignId, callId: callRow.rows[0].id });
+    dispatched = await triggerOutboundCall({ to: lead.phone, leadId, campaignId, callId: callRow.rows[0].id, callerId });
     await query(`UPDATE calls SET call_sid=$1, status='dialing', updated_at=NOW() WHERE id=$2`, [dispatched.callSid, callRow.rows[0].id]);
     await query(`UPDATE leads SET status='called', attempt_count=attempt_count+1, last_called_at=NOW() WHERE id=$1`, [leadId]);
   } catch (err) {

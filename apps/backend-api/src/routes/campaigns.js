@@ -30,7 +30,10 @@ const campaignSchema = {
   playbookType: { type: "string", max: 100 },
   dailyLimit: { type: "number", integer: true, min: 1, max: 100000 },
   maxAttempts: { type: "number", integer: true, min: 1, max: 10 },
-  language: { type: "string", max: 50 }
+  language: { type: "string", max: 50 },
+  // Overrides the tenant default. Each lender is a separately registered entity, so a
+  // 1600-series number belongs to one client only.
+  callerId: { type: "string", max: 20 }
 };
 
 function withTimeout(promise, ms, message) {
@@ -190,15 +193,15 @@ router.get("/:campaignId", async (req, res) => {
 });
 
 router.post("/", validate(campaignSchema), async (req, res) => {
-  const { name, description, campaignType, playbookType, dailyLimit, maxAttempts, language } = req.body;
+  const { name, description, campaignType, playbookType, dailyLimit, maxAttempts, language, callerId } = req.body;
   const playbooks = await listPlaybooks(req.user.tenantId);
   const selectedPlaybook = playbookType || "UNAPPROVED_USERS";
   if (!playbooks[selectedPlaybook]) return res.status(400).json({ error: "Invalid playbookType" });
 
   const result = await query(
     `INSERT INTO campaigns
-     (tenant_id, name, description, campaign_type, playbook_type, daily_limit, max_attempts, language, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft') RETURNING *`,
+     (tenant_id, name, description, campaign_type, playbook_type, daily_limit, max_attempts, language, caller_id, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft') RETURNING *`,
     [
       req.user.tenantId,
       name,
@@ -207,17 +210,25 @@ router.post("/", validate(campaignSchema), async (req, res) => {
       selectedPlaybook,
       dailyLimit || 200,
       maxAttempts || 3,
-      language || "Hinglish"
+      language || "Hinglish",
+      String(callerId || "").trim() || null
     ]
   );
   res.json(result.rows[0]);
 });
 
 router.put("/:campaignId", async (req, res) => {
-  const { name, description, campaignType, playbookType, dailyLimit, maxAttempts, language, status } = req.body;
+  const { name, description, campaignType, playbookType, dailyLimit, maxAttempts, language, status, callerId } = req.body;
   if (playbookType) {
     const playbooks = await listPlaybooks(req.user.tenantId);
     if (!playbooks[playbookType]) return res.status(400).json({ error: "Invalid playbookType" });
+  }
+
+  // An empty string explicitly CLEARS the override (fall back to the tenant number);
+  // undefined leaves it untouched. COALESCE alone cannot express the difference.
+  const nextCallerId = callerId === undefined ? null : (String(callerId).trim() || "");
+  if (nextCallerId && !/^[+()\d][\d\s()+-]{5,19}$/.test(nextCallerId)) {
+    return res.status(400).json({ error: "Caller ID must be a phone number (digits, spaces, +, - and brackets only)" });
   }
 
   const result = await query(
@@ -229,10 +240,13 @@ router.put("/:campaignId", async (req, res) => {
        daily_limit=COALESCE($5,daily_limit),
        max_attempts=COALESCE($6,max_attempts),
        language=COALESCE($7,language),
-       status=COALESCE($8,status)
-     WHERE id=$9 AND tenant_id=$10
+       status=COALESCE($8,status),
+       caller_id=CASE WHEN $9::text IS NULL THEN caller_id
+                      WHEN $9::text = '' THEN NULL
+                      ELSE $9::text END
+     WHERE id=$10 AND tenant_id=$11
      RETURNING *`,
-    [name, description, campaignType, playbookType, dailyLimit, maxAttempts, language, status, req.params.campaignId, req.user.tenantId]
+    [name, description, campaignType, playbookType, dailyLimit, maxAttempts, language, status, nextCallerId, req.params.campaignId, req.user.tenantId]
   );
   if (!result.rows[0]) return res.status(404).json({ error: "Campaign not found" });
   res.json(result.rows[0]);

@@ -139,6 +139,18 @@ async function migrate() {
   await query(`CREATE INDEX IF NOT EXISTS idx_ptp_tenant_date ON promise_to_pay(tenant_id, promised_date);`);
   await query(`CREATE INDEX IF NOT EXISTS idx_ptp_lead ON promise_to_pay(lead_id, created_at DESC);`);
 
+  // Per-client outbound caller ID. Previously every tenant dialled from one global
+  // EXOTEL_FROM_NUMBER, which for NBFCs is a regulatory problem and not just a branding one:
+  // each lender is a separately registered entity, and a 1600-series number is registered TO
+  // that entity. Calling one client's borrowers from another client's number misrepresents
+  // who is calling.
+  //
+  // Two levels: campaigns.caller_id overrides tenant_settings.caller_id, because a lender may
+  // legitimately run a 1600-series collections campaign and a promotional campaign from
+  // different numbers. Both NULL falls back to EXOTEL_FROM_NUMBER.
+  await query(`ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS caller_id TEXT;`);
+  await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS caller_id TEXT;`);
+
   await query(`ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS max_contacts_per_day INTEGER NOT NULL DEFAULT 1;`);
   await query(`ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS max_contacts_per_week INTEGER NOT NULL DEFAULT 3;`);
 

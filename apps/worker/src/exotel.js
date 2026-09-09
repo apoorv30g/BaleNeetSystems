@@ -4,9 +4,13 @@ function authHeader() {
   return `Basic ${Buffer.from(`${config.exotel.apiKey}:${config.exotel.apiToken}`).toString("base64")}`;
 }
 
-async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
+// `callerId` is resolved per campaign/tenant by the caller (see resolveCallerId in index.js).
+// It falls back to the global EXOTEL_FROM_NUMBER only when no client-specific number is set.
+async function triggerOutboundCall({ to, leadId, campaignId, callId, callerId = "" }) {
+  const resolvedCallerId = String(callerId || "").trim() || config.exotel.fromNumber;
+
   if (config.dryRunCalls) {
-    console.log("[dry-run] call", { to, leadId, campaignId, callId, mode: config.exotel.outboundMode });
+    console.log("[dry-run] call", { to, leadId, campaignId, callId, callerId: resolvedCallerId, mode: config.exotel.outboundMode });
     return { callSid: `dryrun_${Date.now()}`, dryRun: true };
   }
 
@@ -24,7 +28,7 @@ async function triggerOutboundCall({ to, leadId, campaignId, callId }) {
   const customField = `lc_call:${callId};lead:${leadId};campaign:${campaignId}`;
   const params = new FormData();
   params.set("From", formatCustomerNumber(to));
-  params.set("CallerId", config.exotel.fromNumber);
+  params.set("CallerId", resolvedCallerId);
   params.set("TimeOut", String(config.exotel.ringTimeoutSeconds));
   params.set("TimeLimit", String(config.exotel.timeLimitSeconds));
   params.set("CustomField", customField);

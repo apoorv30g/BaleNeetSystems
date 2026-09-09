@@ -9,14 +9,50 @@
 #   docker compose -f docker-compose.prod.yml up -d --build
 #   docker compose -f docker-compose.prod.yml exec backend-api npm run migrate
 #
-# TLS/routing: run Coolify (or Caddy/nginx) in front and proxy
-#   api.baleneetsystems.in -> backend-api:4000   (MUST allow WebSocket upgrade -- see notes below)
-#   app.baleneetsystems.in -> dashboard-web:3000
+# TLS and routing are handled by the caddy service below (ops/Caddyfile), which obtains
+# Let's Encrypt certificates automatically. Ports 80/443 must be open and DNS must already
+# point here.
 
 services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here. Losing this volume means re-issuing certs on restart, which
+      # can hit Let's Encrypt rate limits -- keep it.
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    depends_on:
+      backend-api:
+        condition: service_started
+      dashboard-web:
+        condition: service_started
+
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped
+    # Tuned for a small (2-4GB) shared box. Postgres defaults assume it owns the machine; here
+    # it shares with Redis and three Node processes.
+    #   max_connections 50  — pool.js caps at 20 per service (backend + worker = 40 worst case)
+    #   shared_buffers 256MB — ~12% of a 2GB box; the working set is tiny (DB is ~150MB)
+    #   work_mem 8MB        — deliberately low: it is per-sort, not per-connection
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=50"
+      - "-c"
+      - "shared_buffers=${PG_SHARED_BUFFERS:-256MB}"
+      - "-c"
+      - "effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-768MB}"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-loanconnect}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -36,8 +72,21 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # BullMQ jobs are re-derivable from the DB, but AOF avoids losing an in-flight queue on reboot.
-    command: ["redis-server", "--appendonly", "yes"]
+    # --appendonly: BullMQ jobs are re-derivable from the DB, but AOF avoids losing an
+    #   in-flight queue on reboot.
+    # --maxmemory: hard ceiling so Redis can never starve Postgres and the Node services on a
+    #   small box. 256MB is generous for this queue volume.
+    # --maxmemory-policy noeviction: REQUIRED for BullMQ. Any eviction policy would silently
+    #   discard job data — a dropped job means a borrower never gets called and nothing reports
+    #   it. Failing the write loudly instead is the correct trade.
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory"
+      - "${REDIS_MAXMEMORY:-256mb}"
+      - "--maxmemory-policy"
+      - "noeviction"
     volumes:
       - redis_data:/data
     expose:
@@ -109,3 +158,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
